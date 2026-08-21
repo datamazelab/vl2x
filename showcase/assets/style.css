@@ -53,6 +53,13 @@ header.site-header h1 {
   color: var(--header-text);
 }
 
+header.site-header .github-link {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--header-muted);
+}
+header.site-header .github-link:hover { color: #fff; }
+
 header.site-header .sub {
   color: var(--header-muted);
   font-size: 13px;
