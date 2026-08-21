@@ -33,3 +33,4 @@ __pycache__
 /showcase/examples/
 /showcase/index.html
 /showcase/status_*.json
+*.zip
