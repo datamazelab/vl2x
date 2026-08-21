@@ -1,0 +1,87 @@
+# vl2x
+
+Four sibling code generators that translate [Vega-Lite](https://vega.github.io/vega-lite/)
+JSON specifications into runnable code for a target visualization API in
+another language/library. Each takes a parsed Vega-Lite spec and returns
+source code (not a live chart object) that, when run, reconstructs the
+equivalent chart. Note that these are attempts to directly transpile the vega-lite json. This may not be possible using direct methods in D3 or with ggplot2. You can likely create an equivalent vis, just not by direct transformation of the json to code.
+
+
+| Tool | Target | Language |
+|---|---|---|
+| [`vl2altair/`](vl2altair) | [Altair](https://altair-viz.github.io/) | Python |
+| [`vl2vlapi/`](vl2vlapi) | [vega-lite-api](https://github.com/vega/vega-lite-api) | JavaScript |
+| [`vl2d3/`](vl2d3) | [D3](https://d3js.org/) | JavaScript |
+| [`vl2ggplot/`](vl2ggplot) | [ggplot2](https://ggplot2.tidyverse.org/) | R |
+
+`vl2altair` and `vl2vlapi` both target a library that already understands
+Vega-Lite's grammar (both compile down to a real Vega-Lite spec), so those
+two translations are largely mechanical and validate against ~99% of the
+same real-world corpus (below). `vl2d3` targets a lower-level toolkit with
+no grammar-of-graphics layer of its own, so it has to implement scale
+inference, mark drawing, and data aggregation itself — its scope is
+deliberately narrower, and its own `docs/ARCHITECTURE.md` explains why and
+what that boundary looks like in practice. `vl2ggplot` targets a *second,
+independent* grammar-of-graphics implementation (ggplot2) — close enough to
+Vega-Lite's own model that marks/aes/scales/facets map over directly, but
+different enough (its own aggregation stats, no built-in error-extent
+concept, R's atomic-vector-vs-list distinction) that it's real translation
+work rather than a calling-convention mapping; its coverage sits between its
+mechanical siblings and `vl2d3`.
+
+Each has its own README with install/usage instructions and a `docs/ARCHITECTURE.md`
+with design notes:
+
+- **[`vl2altair/README.md`](vl2altair/README.md)** · **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
+  (its docs and tests live at this repo's top level: [`docs/`](docs), [`tests/`](tests))
+- **[`vl2vlapi/README.md`](vl2vlapi/README.md)** · **[`vl2vlapi/docs/ARCHITECTURE.md`](vl2vlapi/docs/ARCHITECTURE.md)**
+  (self-contained: its own `src/`, `test/`, `docs/`, `package.json`)
+- **[`vl2d3/README.md`](vl2d3/README.md)** · **[`vl2d3/docs/ARCHITECTURE.md`](vl2d3/docs/ARCHITECTURE.md)**
+  (self-contained: its own `src/`, `test/`, `docs/`, `package.json`)
+- **[`vl2ggplot/README.md`](vl2ggplot/README.md)** · **[`vl2ggplot/docs/ARCHITECTURE.md`](vl2ggplot/docs/ARCHITECTURE.md)**
+  (self-contained: its own `R/`, `tests/`, `docs/`, `DESCRIPTION`/`NAMESPACE`)
+
+All four were validated during development against the same 600+
+real-world example specs bundled with the
+[vega-lite](https://github.com/vega/vega-lite) repo (`examples/specs/`) —
+see each project's `docs/ARCHITECTURE.md` for the validation methodology and
+current pass rate. `vl2altair`/`vl2vlapi` report a single pass rate;
+`vl2d3`/`vl2ggplot` report OK/documented-skip/failed separately, since a
+large fraction of the corpus legitimately uses features outside their scope
+(a deliberately narrow v1 for `vl2d3`; genuine gaps in ggplot2's own grammar
+relative to Vega-Lite's for `vl2ggplot`).
+
+## Showcase
+
+[`showcase/`](showcase) is a generated static site with one page per example
+spec in [`vega-lite-example-specs/`](vega-lite-example-specs) (all 633),
+showing the original chart next to the code and rendering each of the four
+translators produces — live for Altair/vega-lite-api/D3, a pre-rendered PNG
+for ggplot2. It's generated, not hand-written — nothing under `showcase/`
+should be hand-edited except `showcase/assets/` (plain static CSS/JS, never
+touched by the build).
+
+### Building the showcase
+
+Each step below regenerates one piece and can be re-run independently after
+the corresponding translator changes; `build_site.py` must run last since it
+reads everything the others produce.
+
+```bash
+# from the repo root
+python3 showcase_build/run_altair.py       # -> showcase/examples/<name>/altair.py + status_altair.json
+node showcase_build/run_vlapi.mjs          # -> showcase/examples/<name>/vlapi.js  + status_vlapi.json
+node showcase_build/run_d3.mjs             # -> showcase/examples/<name>/d3.js    + status_d3.json
+Rscript showcase_build/render_ggplot.R     # -> showcase/examples/<name>/ggplot.R + showcase/renders/<name>.png + status_ggplot.json
+python3 showcase_build/build_site.py       # -> showcase/index.html + showcase/examples/<name>/index.html (reads all of the above + showcase/thumbs_png/)
+```
+
+Requires: Python 3 with `jinja2` installed; Node; R with `vl2ggplot`
+installed (`R CMD INSTALL vl2ggplot`) plus `ggplot2`/`dplyr`/`patchwork`.
+`showcase/data/` (a copy of [vega-datasets](https://github.com/vega/vega-datasets))
+and `showcase/thumbs_png/` (a copy of
+[`vega-lite-example-compiled/`](vega-lite-example-compiled)'s official
+per-example PNGs) must already be populated — see
+[`showcase/README.md`](showcase/README.md) for how to (re)populate those and
+full details on viewing the built site (it needs an actual HTTP server, not
+`file://`, plus internet access for CDN-hosted `vega`/`d3`/`highlight.js`).

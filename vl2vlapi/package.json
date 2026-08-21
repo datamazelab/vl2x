@@ -1,0 +1,23 @@
+{
+  "name": "vl2vlapi",
+  "version": "0.1.0",
+  "description": "Translate Vega-Lite JSON specifications into vega-lite-api JavaScript code.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "vl2vlapi": "./bin/cli.js"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": ["vega-lite", "vega-lite-api", "visualization", "codegen"],
+  "license": "BSD-3-Clause",
+  "devDependencies": {
+    "vega": "^6.2.0",
+    "vega-lite": "^6.4.0",
+    "vega-lite-api": "^6.0.0"
+  }
+}

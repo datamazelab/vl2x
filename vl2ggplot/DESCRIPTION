@@ -1,0 +1,33 @@
+Package: vl2ggplot
+Title: Translate Vega-Lite JSON Specifications into ggplot2 R Code
+Version: 0.1.0
+Authors@R: person("vega-to-altair", "project", email = "noreply@example.com", role = c("aut", "cre"))
+Description: Given a parsed Vega-Lite JSON specification, generates a
+    standalone R script string that builds the equivalent chart using
+    ggplot2 (plus dplyr for data transforms and patchwork for
+    multi-view composition).
+License: MIT
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.0
+Imports:
+    jsonlite
+Suggests:
+    ggplot2,
+    dplyr,
+    patchwork,
+    scales,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Collate:
+    'literals.R'
+    'timeunit.R'
+    'aggops.R'
+    'expr.R'
+    'data.R'
+    'encoding.R'
+    'geoms.R'
+    'scales.R'
+    'facet.R'
+    'transforms.R'
+    'translator.R'

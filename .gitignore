@@ -1,0 +1,35 @@
+node_modules
+__pycache__
+.scratch
+.DS_Store
+
+# Editor lock/swap files
+.#*
+*~
+*.swp
+*.swo
+
+# R build/dev artifacts
+.Rhistory
+.Rproj.user/
+*.Rcheck/
+*.tar.gz
+
+# Python packaging/test artifacts
+*.egg-info/
+*.pyc
+
+# Large external reference checkout (not part of this project -- see how
+# vega-lite-example-specs/ and showcase/data/ are populated instead)
+/vega-lite/
+
+# Generated showcase output (regenerate via showcase_build/*, see
+# showcase/README.md) -- showcase/assets/ and showcase/README.md are
+# hand-written and stay tracked.
+/showcase/data/
+/showcase/renders/
+/showcase/thumbs/
+/showcase/thumbs_png/
+/showcase/examples/
+/showcase/index.html
+/showcase/status_*.json

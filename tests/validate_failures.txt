@@ -1,0 +1,186 @@
+===== bar_tooltip_filter.vl.json [EXEC] =====
+<SchemaValidationError: "Multiple errors were found.\n\nError 1: `Tooltip` has no parameter named 'filter'\n\n    Existing parameter names are:\n    shorthand      bin         format       title   \n    aggregate      condition   formatType   type    \n    bandPosition   field       timeUnit             \n\n    See the help for `Tooltip` to read the full description of these parameters\n\nError 2: `Tooltip` has no parameter named 'filter'\n\n    Existing parameter names are:\n    shorthand      bin         format       title   \n    aggregate      condition   formatType   type    \n    bandPosition   field       timeUnit             \n\n    See the help for `Tooltip` to read the full description of these parameters">
+import altair as alt
+
+source = {
+    'values': [
+        {'category': 'A', 'plotValue': 10, 'validTooltip': 10, 'nonZeroTooltip': 0},
+        {'category': 'B', 'plotValue': 7, 'validTooltip': 7, 'nonZeroTooltip': 1},
+        {'category': 'C', 'plotValue': 5, 'validTooltip': None, 'nonZeroTooltip': 1},
+        {'category': 'D', 'plotValue': 4, 'validTooltip': 4, 'nonZeroTooltip': 0},
+        {'category': 'E', 'plotValue': 12, 'validTooltip': 12, 'nonZeroTooltip': 1},
+        {'category': 'F', 'plotValue': 6, 'validTooltip': 6, 'nonZeroTooltip': 1},
+    ],
+}
+chart = alt.Chart(source)
+chart = chart.mark_bar()
+chart = chart.encode(
+    x=alt.X(field='category', type='nominal'),
+    y=alt.Y(field='plotValue', type='quantitative'),
+    color=alt.Color(field='nonZeroTooltip', type='nominal'),
+    tooltip=[alt.Tooltip(field='category', type='nominal'), alt.Tooltip(field='validTooltip', type='quantitative', filter={'valid': True}), alt.Tooltip(field='nonZeroTooltip', type='quantitative', filter={'not': {'equal': 0}})],
+)
+chart = chart.properties(description='A bar chart with fields that are conditionally omitted from generated tooltips.', width=420, height=260)
+
+chart
+
+
+Traceback (most recent call last):
+  File "/Users/eadar/Documents/GitHub/vega-to-altair/tests/validate_examples.py", line 46, in main
+    _ = ns["chart"].to_dict()
+        ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eadar/anaconda3/lib/python3.11/site-packages/altair/vegalite/v6/api.py", line 4173, in to_dict
+    return super().to_dict(**kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eadar/anaconda3/lib/python3.11/site-packages/altair/vegalite/v6/api.py", line 2121, in to_dict
+    vegalite_spec: Any = _top_schema_base(super(TopLevelMixin, copy)).to_dict(
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eadar/anaconda3/lib/python3.11/site-packages/altair/utils/schemapi.py", line 1238, in to_dict
+    raise SchemaValidationError(self, err) from None
+altair.utils.schemapi.SchemaValidationError: Multiple errors were found.
+
+Error 1: `Tooltip` has no parameter named 'filter'
+
+    Existing parameter names are:
+    shorthand      bin         format       title   
+    aggregate      condition   formatType   type    
+    bandPosition   field       timeUnit             
+
+    See the help for `Tooltip` to read the full description of these parameters
+
+Error 2: `Tooltip` has no parameter named 'filter'
+
+    Existing parameter names are:
+    shorthand      bin         format       title   
+    aggregate      condition   formatType   type    
+    bandPosition   field       timeUnit             
+
+    See the help for `Tooltip` to read the full description of these parameters
+
+
+===== facet_column_facet_column_point_future.vl.json [EXEC] =====
+TypeError("'FacetMapping' object is not callable")
+import altair as alt
+
+view_view_data = {'url': 'data/cars.json'}
+view_view = alt.Chart(view_view_data)
+view_view = view_view.mark_point()
+view_view = view_view.encode(
+    x=alt.X(field='Horsepower', type='quantitative'),
+    y=alt.Y(field='Acceleration', type='quantitative'),
+)
+view = view_view.facet(column={'field': 'Cylinders'})
+chart = view.facet(column={'field': 'Origin'})
+
+chart
+
+
+Traceback (most recent call last):
+  File "/Users/eadar/Documents/GitHub/vega-to-altair/tests/validate_examples.py", line 45, in main
+    exec(compile(code, f"<{name}>", "exec"), ns)
+  File "<facet_column_facet_column_point_future.vl.json>", line 11, in <module>
+TypeError: 'FacetMapping' object is not callable
+
+
+===== facet_column_facet_row_point_future.vl.json [EXEC] =====
+TypeError("'FacetMapping' object is not callable")
+import altair as alt
+
+view_view_data = {'url': 'data/cars.json'}
+view_view = alt.Chart(view_view_data)
+view_view = view_view.mark_point()
+view_view = view_view.encode(
+    x=alt.X(field='Horsepower', type='quantitative'),
+    y=alt.Y(field='Acceleration', type='quantitative'),
+)
+view = view_view.facet(row={'field': 'Cylinders'})
+chart = view.facet(column={'field': 'Origin'})
+
+chart
+
+
+Traceback (most recent call last):
+  File "/Users/eadar/Documents/GitHub/vega-to-altair/tests/validate_examples.py", line 45, in main
+    exec(compile(code, f"<{name}>", "exec"), ns)
+  File "<facet_column_facet_row_point_future.vl.json>", line 11, in <module>
+TypeError: 'FacetMapping' object is not callable
+
+
+===== facet_row_facet_row_point_future.vl.json [EXEC] =====
+TypeError("'FacetMapping' object is not callable")
+import altair as alt
+
+view_view_data = {'url': 'data/cars.json'}
+view_view = alt.Chart(view_view_data)
+view_view = view_view.mark_point()
+view_view = view_view.encode(
+    x=alt.X(field='Horsepower', type='quantitative'),
+    y=alt.Y(field='Acceleration', type='quantitative'),
+)
+view = view_view.facet(row={'field': 'Cylinders'})
+chart = view.facet(row={'field': 'Origin'})
+
+chart
+
+
+Traceback (most recent call last):
+  File "/Users/eadar/Documents/GitHub/vega-to-altair/tests/validate_examples.py", line 45, in main
+    exec(compile(code, f"<{name}>", "exec"), ns)
+  File "<facet_row_facet_row_point_future.vl.json>", line 11, in <module>
+TypeError: 'FacetMapping' object is not callable
+
+
+===== layer_line_exponential.vl.json [EXEC] =====
+<SchemaValidationError: "'{'exponential': 0.5}' is an invalid value for `aggregate`. Valid values are:\n\n- One of ['average', 'count', 'distinct', 'max', 'mean', 'median', 'min', 'missing', 'product', 'q1', 'q3', 'ci0', 'ci1', 'stderr', 'stdev', 'stdevp', 'sum', 'valid', 'values', 'variance', 'variancep', 'exponential', 'exponentialb']\n- Of type `str`\n\nAdditional properties are not allowed ('exponential' was unexpected)'argmax' is a required property\n'argmin' is a required property">
+import altair as alt
+
+layer1_data = {
+    'values': [
+        {'price': 9.2, 'year': 2020},
+        {'price': 10.76, 'year': 2020},
+        {'price': 36.88, 'year': 2021},
+        {'price': 3.44, 'year': 2021},
+        {'price': 10.55, 'year': 2022},
+        {'price': 9.65, 'year': 2022},
+        {'price': 7.15, 'year': 2023},
+        {'price': 15.0, 'year': 2023},
+        {'price': 10.19, 'year': 2024},
+        {'price': 8.86, 'year': 2024},
+    ],
+}
+layer1 = alt.Chart(layer1_data)
+layer1 = layer1.mark_line()
+layer1 = layer1.encode(
+    x=alt.X(field='year'),
+    y=alt.Y(field='price', aggregate='mean', type='quantitative', title='Avg Price'),
+)
+layer2 = alt.Chart(layer1_data)
+layer2 = layer2.mark_line(opacity=0.5)
+layer2 = layer2.encode(
+    x=alt.X(field='year'),
+    y=alt.Y(field='price', aggregate={'exponential': 0.5}, type='quantitative'),
+)
+chart = alt.layer(layer1, layer2)
+chart = chart.properties(width=400)
+
+chart
+
+
+Traceback (most recent call last):
+  File "/Users/eadar/Documents/GitHub/vega-to-altair/tests/validate_examples.py", line 46, in main
+    _ = ns["chart"].to_dict()
+        ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eadar/anaconda3/lib/python3.11/site-packages/altair/vegalite/v6/api.py", line 2121, in to_dict
+    vegalite_spec: Any = _top_schema_base(super(TopLevelMixin, copy)).to_dict(
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eadar/anaconda3/lib/python3.11/site-packages/altair/utils/schemapi.py", line 1238, in to_dict
+    raise SchemaValidationError(self, err) from None
+altair.utils.schemapi.SchemaValidationError: '{'exponential': 0.5}' is an invalid value for `aggregate`. Valid values are:
+
+- One of ['average', 'count', 'distinct', 'max', 'mean', 'median', 'min', 'missing', 'product', 'q1', 'q3', 'ci0', 'ci1', 'stderr', 'stdev', 'stdevp', 'sum', 'valid', 'values', 'variance', 'variancep', 'exponential', 'exponentialb']
+- Of type `str`
+
+Additional properties are not allowed ('exponential' was unexpected)'argmax' is a required property
+'argmin' is a required property
+
+

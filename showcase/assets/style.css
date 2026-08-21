@@ -1,0 +1,375 @@
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f8f8f8;
+  --panel: #f8f8f8;
+  --panel-alt: #f1f1f1;
+  --border: #e1e4e8;
+  --rule: #cccccc;
+  --text: #373a3c;
+  --muted: #6a6a6a;
+  --link: #4682b4;
+  --header-bg: #274c71;
+  --header-text: #e8edf2;
+  --header-muted: #b7c6d9;
+  --ok: #1a7f37;
+  --fail: #b53e3e;
+  --code-bg: #f6f8fa;
+  --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5em 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--link); cursor: pointer; }
+a:not(:hover) { text-decoration: none; }
+
+header.site-header {
+  background: var(--header-bg);
+  padding: 0 20px;
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  line-height: 54px;
+  flex-wrap: wrap;
+}
+
+header.site-header a {
+  color: var(--header-text);
+  font-weight: 600;
+}
+header.site-header a:hover { color: #fff; }
+
+header.site-header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--header-text);
+}
+
+header.site-header .sub {
+  color: var(--header-muted);
+  font-size: 13px;
+}
+
+main {
+  padding: 24px 20px 60px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+h1, h2, h3, h4 { margin: 0.7em 0 0.3em; font-weight: 500; color: #000; }
+h1 { font-size: 2.2em; font-weight: 300; }
+h2 { font-size: 1.6em; }
+h3 { font-size: 1.25em; }
+
+/* ---- Landing page ---- */
+
+.intro {
+  max-width: 900px;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.controls {
+  display: flex;
+  gap: 12px;
+  margin: 18px 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.controls input[type="search"] {
+  flex: 1;
+  min-width: 240px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: #fff;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.controls select {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: #fff;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.stat-summary {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+.toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-bottom: 28px;
+  font-size: 13.5px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.toc a { color: var(--link); }
+
+.section-h2 {
+  font-size: 1.75em;
+  font-weight: 500;
+  border-bottom: 1px solid var(--rule);
+  color: #000;
+  margin-top: 1.6em;
+  padding-bottom: 4px;
+  scroll-margin-top: 16px;
+}
+.section-h2:first-of-type { margin-top: 0; }
+
+.section-h3 {
+  font-size: 1.15em;
+  font-weight: 600;
+  color: #000;
+  margin: 1.4em 0 0.8em;
+  scroll-margin-top: 16px;
+}
+
+/* Gallery grid -- mirrors vega.github.io/vega-lite/examples/'s
+   .gallery/.imagegroup/.image/.image-title structure and spacing. */
+.gallery {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 -12px;
+}
+
+.imagegroup {
+  display: inline-block;
+  position: relative;
+  width: calc(25% - 36px);
+  margin: 12px 18px;
+  min-width: 140px;
+  color: var(--text);
+}
+.imagegroup:hover { text-decoration: none; }
+
+.thumb {
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-color: #fff;
+  border: 1px solid var(--border);
+  display: block;
+  width: 100%;
+  padding-bottom: 75%;
+  margin-bottom: 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  transition: border-color 0.15s ease;
+}
+.imagegroup:hover .thumb { border-color: var(--link); }
+
+.thumb.no-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--panel-alt);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  padding: 8px;
+}
+
+.image-title {
+  font-size: 0.95em;
+  display: block;
+}
+
+.image-badges { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+
+.badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.badge.ok { background: rgba(26,127,55,0.1); color: var(--ok); }
+.badge.fail { background: rgba(181,62,62,0.1); color: var(--fail); }
+
+.hidden { display: none !important; }
+
+/* ---- Example page ---- */
+
+.breadcrumb {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.example-title {
+  font-size: 2.2em;
+  font-weight: 300;
+  margin: 0.3em 0 0.2em;
+}
+
+.example-desc {
+  color: var(--muted);
+  font-size: 14.5px;
+  margin-bottom: 22px;
+  max-width: 900px;
+}
+
+.hero {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 28px;
+}
+
+.hero-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.hero-vis {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 120px;
+  overflow: auto;
+  background: #fff;
+}
+
+/* vega-embed's own SVG output has no intrinsic responsiveness (unlike the
+   generated D3 code, which sets this itself) -- without this, a chart wider
+   than its panel gets flex-centered and clipped equally on both sides,
+   which reads as truncation rather than "scroll to see more". Scaling it
+   down to fit instead avoids that entirely for the vast majority of charts;
+   .hero-vis/.render-wrap still scroll as a fallback for anything that
+   still doesn't fit (e.g. a chart taller than the panel, which this rule
+   deliberately doesn't constrain). */
+.hero-vis svg, .render-wrap svg {
+  max-width: 100%;
+  height: auto;
+}
+
+details.spec-toggle { margin-top: 12px; }
+details.spec-toggle summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+details.spec-toggle pre {
+  max-height: 400px;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+  gap: 20px;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.panel-head .title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #000;
+}
+
+.panel-head .lang {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.panel-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.code-wrap {
+  max-height: 340px;
+  overflow: auto;
+  background: var(--code-bg);
+}
+
+.code-wrap pre {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 12px;
+}
+
+.code-wrap code.hljs { background: transparent; padding: 0; }
+
+.render-wrap {
+  padding: 14px;
+  border-top: 1px solid var(--border);
+  min-height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: #fff;
+}
+
+.render-wrap img { max-width: 100%; height: auto; display: block; }
+
+.render-note {
+  padding: 9px 14px;
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.error-box {
+  padding: 12px 14px;
+  color: var(--fail);
+  font-size: 12.5px;
+  background: rgba(181,62,62,0.05);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.nav-arrows {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 30px;
+  font-size: 13px;
+}
+
+footer.site-footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 30px 0 10px;
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+}

@@ -1,0 +1,31 @@
+{
+  "name": "vl2d3",
+  "version": "0.1.0",
+  "description": "Translate Vega-Lite JSON specifications into D3 JavaScript code.",
+  "main": "src/index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "vega-lite",
+    "d3",
+    "visualization",
+    "codegen"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "vl2d3": "./bin/cli.js"
+  },
+  "devDependencies": {
+    "d3": "^7.9.0",
+    "jsdom": "^30.0.1"
+  }
+}

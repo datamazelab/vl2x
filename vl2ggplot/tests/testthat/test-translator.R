@@ -1,0 +1,184 @@
+spec_from_json <- function(json) jsonlite::fromJSON(json, simplifyVector = FALSE)
+
+# Translate a spec, execute the generated code, and return the built
+# ggplot object's plot data (one data.frame per layer) plus the source.
+run_spec <- function(spec) {
+  code <- vegalite_to_ggplot(spec)
+  plot_obj <- eval(parse(text = code), envir = new.env())
+  built <- ggplot2::ggplot_build(plot_obj)
+  list(built = built, plot = plot_obj, code = code)
+}
+
+test_that("simple bar chart", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": "A", "b": 28}, {"a": "B", "b": 55}, {"a": "C", "b": 43}]},
+    "mark": "bar",
+    "encoding": {"x": {"field": "a", "type": "nominal"}, "y": {"field": "b", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 3)
+})
+
+test_that("inline count aggregate uses geom_bar's own stat", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"cat": "x"}, {"cat": "x"}, {"cat": "y"}]},
+    "mark": "bar",
+    "encoding": {"x": {"field": "cat", "type": "nominal"}, "y": {"aggregate": "count", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+  expect_false(grepl("dplyr::summarise", r$code))
+})
+
+test_that("inline mean aggregate uses stat_summary", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"g": "a", "v": 1}, {"g": "a", "v": 3}, {"g": "b", "v": 10}]},
+    "mark": "bar",
+    "encoding": {"x": {"field": "g", "type": "nominal"}, "y": {"field": "v", "aggregate": "mean", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_true(grepl("stat = \"summary\"", r$code))
+  expect_equal(nrow(r$built$data[[1]]), 2)
+})
+
+test_that("histogram via bin + count uses geom_histogram", {
+  values <- lapply(seq_len(50), function(i) list(x = i))
+  spec <- list(
+    data = list(values = values), mark = "bar",
+    encoding = list(
+      x = list(field = "x", bin = TRUE, type = "quantitative"),
+      y = list(aggregate = "count", type = "quantitative")
+    )
+  )
+  r <- run_spec(spec)
+  expect_true(grepl("geom_histogram", r$code))
+  expect_gt(nrow(r$built$data[[1]]), 1)
+})
+
+test_that("scatter plot with color", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"x": 1, "y": 2, "c": "A"}, {"x": 2, "y": 3, "c": "B"}, {"x": 3, "y": 1, "c": "A"}]},
+    "mark": "point",
+    "encoding": {
+      "x": {"field": "x", "type": "quantitative"},
+      "y": {"field": "y", "type": "quantitative"},
+      "color": {"field": "c", "type": "nominal"}
+    }
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 3)
+  expect_equal(length(unique(r$built$data[[1]]$colour)), 2)
+})
+
+test_that("line chart", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"x": 1, "y": 2}, {"x": 2, "y": 3}, {"x": 3, "y": 1}]},
+    "mark": "line",
+    "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "y", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 3)
+})
+
+test_that("arc (pie) chart", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"cat": "a", "v": 10}, {"cat": "b", "v": 20}, {"cat": "c", "v": 30}]},
+    "mark": "arc",
+    "encoding": {"theta": {"field": "v", "type": "quantitative"}, "color": {"field": "cat", "type": "nominal"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 3)
+  expect_true(grepl("coord_polar", r$code))
+})
+
+test_that("filter and calculate transforms", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": "A", "b": 1}, {"a": "B", "b": 2}, {"a": "C", "b": 3}]},
+    "transform": [{"filter": "datum.b > 1"}, {"calculate": "datum.b * 10", "as": "b10"}],
+    "mark": "bar",
+    "encoding": {"x": {"field": "a", "type": "nominal"}, "y": {"field": "b10", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+  expect_equal(sort(r$built$data[[1]]$y), c(20, 30))
+})
+
+test_that("ternary calculate expression", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"sex": 1}, {"sex": 2}]},
+    "transform": [{"calculate": "datum.sex == 2 ? \\u0027Female\\u0027 : \\u0027Male\\u0027", "as": "gender"}],
+    "mark": "bar",
+    "encoding": {"x": {"field": "gender", "type": "nominal"}, "y": {"aggregate": "count", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_true(grepl("ifelse", r$code))
+  expect_equal(nrow(r$built$data[[1]]), 2)
+})
+
+test_that("top-level aggregate transform", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"g": "a", "v": 1}, {"g": "a", "v": 3}, {"g": "b", "v": 10}]},
+    "transform": [{"aggregate": [{"op": "sum", "field": "v", "as": "total"}], "groupby": ["g"]}],
+    "mark": "bar",
+    "encoding": {"x": {"field": "g", "type": "nominal"}, "y": {"field": "total", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+})
+
+test_that("layered bar + rule sharing scales", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": "A", "b": 10}, {"a": "B", "b": 20}]},
+    "layer": [
+      {"mark": "bar", "encoding": {"x": {"field": "a", "type": "nominal"}, "y": {"field": "b", "type": "quantitative"}}},
+      {"mark": "rule", "encoding": {"y": {"field": "b", "type": "quantitative", "aggregate": "mean"}}}
+    ]
+  }')
+  r <- run_spec(spec)
+  expect_equal(length(r$built$data), 2)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+})
+
+test_that("facet_wrap for the facet operator", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": "A", "b": 1, "g": "x"}, {"a": "B", "b": 2, "g": "y"}]},
+    "facet": {"field": "g", "type": "nominal"},
+    "spec": {
+      "mark": "point",
+      "encoding": {"x": {"field": "a", "type": "nominal"}, "y": {"field": "b", "type": "quantitative"}}
+    }
+  }')
+  r <- run_spec(spec)
+  expect_true(grepl("facet_wrap", r$code))
+})
+
+test_that("hconcat via patchwork", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": 1, "b": 2}]},
+    "hconcat": [
+      {"mark": "bar", "encoding": {"x": {"field": "a", "type": "quantitative"}, "y": {"field": "b", "type": "quantitative"}}},
+      {"mark": "point", "encoding": {"x": {"field": "a", "type": "quantitative"}, "y": {"field": "b", "type": "quantitative"}}}
+    ]
+  }')
+  r <- run_spec(spec)
+  expect_true(grepl("wrap_plots", r$code))
+  expect_s3_class(r$plot, "patchwork")
+})
+
+test_that("field names with spaces round-trip through backtick quoting", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"Fighter Name": "a", "Place Rank": 1}, {"Fighter Name": "b", "Place Rank": 2}]},
+    "mark": "point",
+    "encoding": {"x": {"field": "Place Rank", "type": "quantitative"}, "y": {"field": "Fighter Name", "type": "nominal"}}
+  }')
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+})
+
+test_that("facet/repeat throw a clear error for unsupported shapes", {
+  spec <- spec_from_json('{
+    "repeat": {"row": ["a"], "column": ["b"]},
+    "spec": {"mark": "point", "encoding": {}}
+  }')
+  expect_error(vegalite_to_ggplot(spec), "row/column/layer mapping")
+})

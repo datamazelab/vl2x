@@ -1,0 +1,75 @@
+===== histogram_log.vl.json [EXEC] =====
+Problem while setting up geom.
+ℹ Error occurred in the 1st layer.
+Caused by error in `compute_geom_1()`:
+! `geom_linerange()` requires the following missing aesthetics: ymin and
+  ymax or xmin and xmax.
+library(ggplot2)
+
+chart_data <- data.frame(
+  x = c(0.01, 0.1, 1, 1, 1, 1, 10, 10, 100, 500, 800),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, log_x = log(x)/log(10))
+chart_data <- dplyr::mutate(chart_data, .brks = list(pretty(log_x, 20)))
+chart_data <- dplyr::mutate(chart_data, bin_log_x = .brks[[1]][findInterval(log_x, .brks[[1]], all.inside = TRUE)], bin_log_x_end = .brks[[1]][findInterval(log_x, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)
+chart_data <- dplyr::mutate(chart_data, x1 = (10)^(bin_log_x))
+chart_data <- dplyr::mutate(chart_data, x2 = (10)^(bin_log_x_end))
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(xmin = x1, xmax = x2, y = ""),
+  stat = "count",
+  linewidth = 10
+)
+
+
+chart
+
+===== histogram_nonlinear.vl.json [EXEC] =====
+Discrete value supplied to a continuous scale.
+ℹ Example values: 0, 8.33, 12.50, 16.67, and 33.33.
+library(ggplot2)
+
+chart_data <- data.frame(
+  startTime = c("0", "8.33", "12.50", "16.67", "33.33", "50.00", "66.67", "83.33"),
+  endTime = c("8.33", "12.50", "16.67", "33.33", "50.00", "66.67", "83.33", "∞"),
+  residency = c(0, 0, 31.17, 38.96, 6.49, 2.9, 2.6, 16.88),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(y = residency, xmin = factor(startTime), xmax = endTime),
+  linewidth = 10
+)
+chart <- chart + ggplot2::scale_y_continuous(limits = c(0, 100))
+chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = list(step = 40), height = 100)
+
+
+chart
+
+===== rule_params.vl.json [TRANSLATE] =====
+"rule" mark requires an x and/or y encoding
+
+
+===== text_format.vl.json [EXEC] =====
+Problem while setting up geom.
+ℹ Error occurred in the 1st layer.
+Caused by error in `compute_geom_1()`:
+! `geom_text()` requires the following missing aesthetics: label.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/cars.json")
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_text(
+  mapping = ggplot2::aes(y = factor(Origin), label = Horsepower, x = ""),
+  stat = "summary",
+  fun = "mean"
+)
+# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 50)
+
+
+chart
+

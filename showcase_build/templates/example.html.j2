@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }} — vl2* showcase</title>
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script type="importmap">
+{ "imports": { "d3": "https://cdn.jsdelivr.net/npm/d3@7/+esm" } }
+</script>
+</head>
+<body>
+<header class="site-header">
+  <a href="../../index.html">← All examples</a>
+  <span class="sub">{{ title }}</span>
+</header>
+<main>
+  <div class="breadcrumb">{{ name }}.vl.json{% if category %} · category: {{ category }}{% endif %}</div>
+  <h1 class="example-title">{{ title }}</h1>
+  {% if description %}<p class="example-desc">{{ description }}</p>{% endif %}
+
+  <section class="hero">
+    <div class="hero-label">Original Vega-Lite spec (ground truth render)</div>
+    <div class="hero-vis"><div id="vis-original"></div></div>
+    <details class="spec-toggle">
+      <summary>View raw spec JSON</summary>
+      <div class="code-wrap"><pre><code class="language-json" id="spec-json"></code></pre></div>
+    </details>
+  </section>
+
+  <div class="panels">
+
+    <div class="panel">
+      <div class="panel-head"><span class="title">Altair {{ "✅" if altair.ok else "❌" }}</span><span class="lang">Python</span></div>
+      <div class="panel-body">
+        {% if altair.ok %}
+        <div class="code-wrap"><pre><code class="language-python">{{ altair.code }}</code></pre></div>
+        <div class="render-wrap"><div id="vis-altair"></div></div>
+        <div class="render-note">Altair compiles to a real Vega-Lite spec, so it renders via the same Vega-Lite/Vega runtime as the original above.</div>
+        {% else %}
+        <div class="error-box">{{ altair.error }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span class="title">vega-lite-api {{ "✅" if vlapi.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
+      <div class="panel-body">
+        {% if vlapi.ok %}
+        <div class="code-wrap"><pre><code class="language-javascript">{{ vlapi.code }}</code></pre></div>
+        <div class="render-wrap"><div id="vis-vlapi"></div></div>
+        <div class="render-note">vega-lite-api also compiles to a real Vega-Lite spec — same rendering path as the original.</div>
+        {% else %}
+        <div class="error-box">{{ vlapi.error }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span class="title">D3 {{ "✅" if d3.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
+      <div class="panel-body">
+        {% if d3.ok %}
+        <div class="code-wrap"><pre><code class="language-javascript">{{ d3.code }}</code></pre></div>
+        <div class="render-wrap"><div id="vis-d3"></div></div>
+        <div class="render-note">Generated D3 code running live in this page (no grammar-of-graphics layer — drawn from scratch).</div>
+        {% else %}
+        <div class="error-box">{{ d3.error }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span class="title">ggplot2 {{ "✅" if (ggplot.ok and ggplot.has_png) else "❌" }}</span><span class="lang">R</span></div>
+      <div class="panel-body">
+        {% if ggplot.ok and ggplot.has_png %}
+        <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
+        <div class="render-wrap"><img src="../../renders/{{ name }}.png" alt="ggplot2 render of {{ title }}"></div>
+        <div class="render-note">Static PNG rendered ahead of time with R (can't run R in a browser).</div>
+        {% elif ggplot.ok %}
+        <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
+        <div class="error-box">Translated, but evaluating the generated R failed.</div>
+        {% else %}
+        <div class="error-box">{{ ggplot.error }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+
+  <div class="nav-arrows">
+    {% if prev_name %}<a href="../{{ prev_name }}/index.html">← {{ prev_name }}</a>{% else %}<span></span>{% endif %}
+    {% if next_name %}<a href="../{{ next_name }}/index.html">{{ next_name }} →</a>{% else %}<span></span>{% endif %}
+  </div>
+</main>
+<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2ggplot — Vega-Lite translation showcase</footer>
+
+<script>
+  const spec = {{ spec_json | safe }};
+  document.getElementById('spec-json').textContent = JSON.stringify(spec, null, 2);
+  try {
+    hljs.highlightAll();
+  } catch (e) {
+    console.error('syntax highlighting failed (charts below are unaffected):', e);
+  }
+
+  vegaEmbed('#vis-original', spec, {actions: false}).catch(e => {
+    document.getElementById('vis-original').innerHTML =
+      '<div class="error-box">Vega-Lite render failed: ' + (e && e.message ? e.message : e) + '</div>';
+  });
+  {% if altair.ok %}
+  vegaEmbed('#vis-altair', spec, {actions: false}).catch(e => {
+    document.getElementById('vis-altair').innerHTML =
+      '<div class="error-box">Render failed: ' + (e && e.message ? e.message : e) + '</div>';
+  });
+  {% endif %}
+  {% if vlapi.ok %}
+  vegaEmbed('#vis-vlapi', spec, {actions: false}).catch(e => {
+    document.getElementById('vis-vlapi').innerHTML =
+      '<div class="error-box">Render failed: ' + (e && e.message ? e.message : e) + '</div>';
+  });
+  {% endif %}
+</script>
+{% if d3.ok %}
+<script type="module">
+  import chart from './d3.js';
+  const el = document.getElementById('vis-d3');
+  try {
+    const baseURL = new URL('/', location.origin).href;
+    const node = await chart(el, {baseURL});
+    if (node) el.appendChild(node);
+  } catch (e) {
+    el.innerHTML = '<div class="error-box">D3 render failed: ' + (e && e.message ? e.message : e) + '</div>';
+  }
+</script>
+{% endif %}
+</body>
+</html>
