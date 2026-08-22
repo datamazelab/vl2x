@@ -422,7 +422,18 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     is.null(encoding[[k]]$aggregate) && is.null(encoding[[k]]$bin) && is.null(encoding[[k]]$timeUnit)
   }, logical(1))]
 
-  empty_plan <- list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE)
+  # `aggregated`: was there a real value being *computed* here (an
+  # aggregate, of any shape) -- as opposed to a bare position field with no
+  # value at all. geoms.R's "bar/rect with x present, y absent" dispatch
+  # uses this to tell apart two shapes that otherwise look identical by the
+  # time they reach it (no y, no x2/y2, no residual ggplot2 `stat=`, since a
+  # groupless aggregate is computed at the data level via plain
+  # dplyr::summarise() rather than a stat): a real 1D aggregate value (e.g.
+  # `x: {"aggregate": "sum", ...}` with no groupby, "aggregated" here) wants
+  # a normal zero-baseline bar, while a bare position with nothing computed
+  # at all (e.g. a vertical reference-band position) wants the full-height
+  # highlight-band treatment instead.
+  empty_plan <- list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE)
 
   if (length(agg_keys) == 0 && length(bin_keys) == 0 && length(tu_only_keys) == 0) {
     # Nothing to aggregate/bin/timeUnit -- `encoding` here is the *merged*
@@ -442,7 +453,7 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
         pruned[[k]] <- NULL
       }
     }
-    return(list(statements = character(0), encoding = pruned, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE))
+    return(list(statements = character(0), encoding = pruned, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE))
   }
 
   # Map-only: timeUnit with no aggregation anywhere -> a single mutate().
@@ -468,6 +479,19 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
         assigns <- c(assigns, paste0(render_name(unescape_field_path(out)), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
         rewritten[[k]]$field <- out
         rewritten[[k]]$timeUnit <- NULL
+        # A timeUnit-derived field is a real Date/POSIXct value by
+        # construction, whether or not the spec bothered giving this
+        # channel an explicit `type` -- filled in only when absent so
+        # build_scale_calls() (which bails out entirely with no explicit
+        # `type`) still applies any `scale.domain`/`.reverse`/etc for it.
+        if (is.null(rewritten[[k]]$type)) rewritten[[k]]$type <- "temporal"
+        # A subday-precision timeUnit means the *coerced* column is a
+        # POSIXct, not a Date (see render_temporal_coercion()'s subday
+        # path, data.R) -- axis_kind() (scales.R) needs to know that to
+        # pick scale_*_datetime() over scale_*_date() for it (POSIXct
+        # limits/domain values under a Date-typed scale would otherwise
+        # error at build time).
+        if (is_subday_timeunit(def$timeUnit)) rewritten[[k]][[".posixct"]] <- TRUE
       } else if (!is.null(def$bin)) {
         # A bin with nothing to aggregate against: leave the field as-is
         # (an honest simplification -- see vl2d3's binMapExpr for the same
@@ -494,7 +518,9 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     length(agg_keys) > 0 &&
     all(vapply(agg_keys, function(k) identical(encoding[[k]]$aggregate, "count"), logical(1)))
   if (is_2d_bin) {
-    return(plan_2d_bin(mark_type, encoding, agg_keys))
+    plan <- plan_2d_bin(mark_type, encoding, agg_keys)
+    plan$aggregated <- TRUE
+    return(plan)
   }
 
   # From here, at least one channel aggregates.
@@ -515,6 +541,7 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
   if (length(bin_keys) == 1) {
     plan <- plan_histogram(mark_type, encoding, bin_keys[1], agg_keys, var_name, ignore_unsupported)
     plan$statements <- c(plan_notes, plan$statements)
+    plan$aggregated <- TRUE
     return(plan)
   }
 
@@ -547,12 +574,14 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     if (op == "count" || is_stat_summary_op(op)) {
       plan <- plan_native_stat(encoding, agg_keys, op, group_keys, var_name, ignore_unsupported)
       plan$statements <- c(plan_notes, plan$statements)
+      plan$aggregated <- TRUE
       return(plan)
     }
   }
 
   plan <- plan_explicit_aggregate(encoding, agg_keys, group_keys, var_name, ignore_unsupported)
   plan$statements <- c(plan_notes, plan$statements)
+  plan$aggregated <- TRUE
   plan
 }
 

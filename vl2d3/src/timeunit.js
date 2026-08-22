@@ -37,6 +37,7 @@ const local = {
   hours: d => `new Date(${REF_YEAR}, 0, 1, ${d}.getHours())`,
   minutes: d => `new Date(${REF_YEAR}, 0, 1, 0, ${d}.getMinutes())`,
   seconds: d => `new Date(${REF_YEAR}, 0, 1, 0, 0, ${d}.getSeconds())`,
+  monthdate: d => `new Date(${REF_YEAR}, ${d}.getMonth(), ${d}.getDate())`,
   yearmonth: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), 1)`,
   yearmonthdate: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate())`,
   yearquarter: d => `new Date(${d}.getFullYear(), Math.floor(${d}.getMonth() / 3) * 3, 1)`,

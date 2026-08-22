@@ -176,9 +176,28 @@ datetime_object_to_r_date <- function(datum) {
   year <- datum$year %||% 2012
   month <- if (!is.null(datum$quarter)) (datum$quarter - 1) * 3 + 1 else (datum$month %||% 1)
   day <- datum$date %||% 1
+  # A DateTime object with any clock (hours/minutes/seconds) component
+  # needs a real POSIXct, not a Date (which has no time-of-day at all) --
+  # `hours: 24` (a common "end of day" domain endpoint) is also valid here
+  # even though it overflows a single day's 0-23 range, exactly the way
+  # `new Date(year, month, day, 24, ...)` auto-rolls over to midnight the
+  # next day in JS -- as.POSIXct() with a plain numeric `seconds since
+  # midnight` offset added to a real Date does the same via ordinary
+  # arithmetic, rather than needing that overflow handled specially.
+  has_clock <- !is.null(datum$hours) || !is.null(datum$minutes) || !is.null(datum$seconds) || !is.null(datum$milliseconds)
+  if (!has_clock) {
+    return(sprintf(
+      'as.Date(sprintf("%%04d-%%02d-%%02d", %s, %s, %s))',
+      format_value(year), format_value(month), format_value(day)
+    ))
+  }
+  hours <- datum$hours %||% 0
+  minutes <- datum$minutes %||% 0
+  seconds <- datum$seconds %||% 0
   sprintf(
-    'as.Date(sprintf("%%04d-%%02d-%%02d", %s, %s, %s))',
-    format_value(year), format_value(month), format_value(day)
+    'as.POSIXct(sprintf("%%04d-%%02d-%%02d", %s, %s, %s), tz = "UTC") + (%s * 3600 + %s * 60 + %s)',
+    format_value(year), format_value(month), format_value(day),
+    format_value(hours), format_value(minutes), format_value(seconds)
   )
 }
 
@@ -208,7 +227,16 @@ discrete_field_ref <- function(def) {
   ref <- field_ref(def$field)
   if (!identical(def$type, "ordinal") && !identical(def$type, "nominal")) return(ref)
   if (is.list(def$sort) && is.null(names(def$sort))) {
-    return(sprintf("factor(%s, levels = %s)", ref, format_value(def$sort)))
+    # An explicit sort array may be *partial* -- Vega-Lite still shows
+    # every distinct value, appending whichever ones aren't named (in
+    # their own default/ascending order) after the named ones, rather than
+    # dropping them. `levels = <sort list>` alone would instead turn any
+    # value not in that list into NA (factor()'s own behavior for a level
+    # it was never told about), and ggplot2 silently drops NA rows -- so
+    # this unions in the data's own remaining distinct values at runtime
+    # (unknowable at code-generation time) rather than trusting the list
+    # to already be complete.
+    return(sprintf("factor(%s, levels = union(%s, sort(unique(%s))))", ref, format_value(def$sort), ref))
   }
   sprintf("factor(%s)", ref)
 }

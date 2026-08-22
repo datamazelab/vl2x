@@ -85,7 +85,46 @@ collect_temporal_fields <- function(encoding, transform_list) {
   from_filter <- unlist(lapply(transform_list, function(t) {
     if (is.character(t$filter) && length(t$filter) == 1) extract_date_function_fields(t$filter) else character(0)
   }))
-  unique(c(from_encoding, from_tu_transform[!is.na(from_tu_transform)], from_calc, from_filter))
+  drop_bracket_fields(unique(c(from_encoding, from_tu_transform[!is.na(from_tu_transform)], from_calc, from_filter)))
+}
+
+# A bracket-indexed field (`argmax_US_Gross['Production Budget']`, a
+# compound-aggregate result -- see parse_bracket_field_path()) isn't a real
+# column yet at the point any of these collectors run: flatten_bracket_fields()
+# (below) creates the real (flattened) column afterward, from the *base*
+# name, and rewrites the encoding to point at that instead -- so a bracket
+# path reaching field_ref() (e.g. via render_temporal_coercion()/
+# render_quantitative_coercion(), both keyed off these collectors) throws
+# "Unsupported: bracket-indexed field reference" outright, before that
+# rewrite has even happened. None of these fields need this coercion
+# anyway (the underlying values were already real numbers/dates going into
+# the aggregate that produced them), so they're simply excluded here.
+drop_bracket_fields <- function(fields) {
+  Filter(function(f) is.null(parse_bracket_field_path(f)), fields)
+}
+
+# A field only ever bucketed at day-or-coarser granularity round-trips fine
+# through as.Date() (see collect_temporal_fields() above); a field used
+# with an "hours"/"minutes"/"seconds"-level timeUnit or date-function needs
+# its time-of-day preserved instead, i.e. as.POSIXct() (see
+# render_temporal_coercion()'s subday_fields argument, data.R).
+is_subday_timeunit <- function(unit) grepl("hours|minutes|seconds", timeunit_label(unit), fixed = FALSE)
+
+collect_subday_temporal_fields <- function(encoding, transform_list) {
+  from_encoding <- character(0)
+  for (def in encoding) {
+    if (is.list(def) && !is.null(def$field) && !is.null(def$timeUnit) && is_subday_timeunit(def$timeUnit)) {
+      from_encoding <- c(from_encoding, def$field)
+    }
+  }
+  from_tu_transform <- unlist(lapply(transform_list, function(t) {
+    if (!is.null(t$timeUnit) && is_subday_timeunit(t$timeUnit)) t$field else NULL
+  }))
+  from_calc <- unlist(lapply(transform_list, function(t) if (!is.null(t$calculate)) extract_subday_date_function_fields(t$calculate) else character(0)))
+  from_filter <- unlist(lapply(transform_list, function(t) {
+    if (is.character(t$filter) && length(t$filter) == 1) extract_subday_date_function_fields(t$filter) else character(0)
+  }))
+  drop_bracket_fields(unique(c(from_encoding, from_tu_transform, from_calc, from_filter)))
 }
 
 # Fields whose encoding channel is explicitly `type: "quantitative"` but
@@ -156,7 +195,7 @@ collect_quantitative_fields <- function(encoding, transform_list = list()) {
       fields <- c(fields, def$field)
     }
   }
-  setdiff(unique(fields), produced$fields)
+  drop_bracket_fields(setdiff(unique(fields), produced$fields))
 }
 
 render_quantitative_coercion <- function(var_name, fields) {
@@ -173,6 +212,16 @@ render_quantitative_coercion <- function(var_name, fields) {
 
 extract_date_function_fields <- function(expr) {
   pattern <- paste0("\\b(", paste(names(.date_funcs), collapse = "|"), ")\\s*\\(\\s*datum\\.([A-Za-z_][A-Za-z0-9_.]*)\\s*\\)")
+  m <- gregexpr(pattern, expr, perl = TRUE)
+  matches <- regmatches(expr, m)[[1]]
+  if (length(matches) == 0) return(character(0))
+  sub(pattern, "\\2", matches, perl = TRUE)
+}
+
+.subday_date_funcs <- c("hours", "minutes", "seconds", "time")
+
+extract_subday_date_function_fields <- function(expr) {
+  pattern <- paste0("\\b(", paste(.subday_date_funcs, collapse = "|"), ")\\s*\\(\\s*datum\\.([A-Za-z_][A-Za-z0-9_.]*)\\s*\\)")
   m <- gregexpr(pattern, expr, perl = TRUE)
   matches <- regmatches(expr, m)[[1]]
   if (length(matches) == 0) return(character(0))
@@ -234,7 +283,53 @@ flatten_bracket_fields <- function(encoding, work_var) {
   list(statements = statements, encoding = rewritten)
 }
 
+# Vega-Lite's compound argmin/argmax encoding shorthand
+# (`{"aggregate": {"argmax": "otherField"}, "field": "thisField"}`) is
+# exactly equivalent to -- and, per Vega-Lite's own compiler, literally
+# desugars into -- a top-level `aggregate` transform computing the whole
+# matching row (grouped by every other discrete encoding channel), plus a
+# bracket-indexed reference into it: precisely the shape a hand-written
+# `bar_argmax_transform`-style spec already uses, and this project already
+# fully supports (aggops.R's argmax/argmin summarise expr,
+# flatten_bracket_fields()). Desugaring the shorthand into that same shape
+# up front lets the rest of the pipeline treat both forms identically,
+# rather than teaching every aggregate-handling function a second,
+# compound-shaped case of its own.
+desugar_compound_aggregate_encoding <- function(node) {
+  encoding <- node$encoding
+  if (is.null(encoding)) return(node)
+  compound_channel <- NULL
+  for (ch in names(encoding)) {
+    def <- encoding[[ch]]
+    agg <- if (is.list(def)) def$aggregate else NULL
+    if (is.list(agg) && !is.null(names(agg)) && any(names(agg) %in% c("argmax", "argmin"))) {
+      compound_channel <- ch
+      break
+    }
+  }
+  if (is.null(compound_channel)) return(node)
+
+  def <- encoding[[compound_channel]]
+  op <- intersect(names(def$aggregate), c("argmax", "argmin"))[1]
+  sort_field <- def$aggregate[[op]]
+  value_field <- def$field
+  as_name <- paste0(op, "_", gsub("[^A-Za-z0-9_]", "_", sort_field))
+
+  group_keys <- setdiff(names(encoding), compound_channel)
+  groupby_fields <- unique(unlist(lapply(encoding[group_keys], function(d) if (is.list(d)) d$field else NULL)))
+
+  node$transform <- c(node$transform, list(list(
+    aggregate = list(list(op = op, field = sort_field, as = as_name)),
+    groupby = as.list(groupby_fields)
+  )))
+  encoding[[compound_channel]]$aggregate <- NULL
+  encoding[[compound_channel]]$field <- sprintf("%s['%s']", as_name, value_field)
+  node$encoding <- encoding
+  node
+}
+
 prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL) {
+  node <- desugar_compound_aggregate_encoding(node)
   node_encoding <- node$encoding %||% list()
   geo_channel <- intersect(names(node_encoding), .geo_channels)
   if (length(geo_channel) > 0) {
@@ -322,7 +417,8 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     # be declared on the enclosing layer wrapper (e.g. a shared x/timeUnit),
     # but still needs Date-parsing before that computation can use it.
     temporal_fields <- collect_temporal_fields(encoding_effective, node$transform %||% list())
-    coercion <- render_temporal_coercion(work_var, temporal_fields)
+    subday_fields <- collect_subday_temporal_fields(encoding_effective, node$transform %||% list())
+    coercion <- render_temporal_coercion(work_var, temporal_fields, subday_fields)
     if (length(coercion)) emit(emitter, coercion)
 
     quantitative_coercion <- render_quantitative_coercion(work_var, collect_quantitative_fields(encoding_effective, node$transform %||% list()))
@@ -356,7 +452,7 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   plan <- if (length(channel_entries(encoding_effective)) > 0) {
     plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported)
   } else {
-    list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE)
+    list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE)
   }
   if (length(plan$statements)) emit(emitter, plan$statements)
 
@@ -370,7 +466,8 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   list(
     data_var = data_var, encoding = plan$encoding, original_encoding = encoding,
     mark = node$mark, extra_fixed = extra_fixed, extra_aes = extra_aes,
-    use_histogram = plan$use_histogram, extent_params = collect_extent_params(node$transform %||% list())
+    use_histogram = plan$use_histogram, aggregated = isTRUE(plan$aggregated),
+    extent_params = collect_extent_params(node$transform %||% list())
   )
 }
 
@@ -476,13 +573,22 @@ apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_u
 }
 
 translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
+  # An encoding-level row/column (or facet) channel's own timeUnit needs
+  # the same derived-field treatment inject_facet_timeunit_transforms()
+  # gives the top-level `facet` operator (translate_facet()) -- injected
+  # here, before prepare_unit() runs, so the resulting transform (and the
+  # temporal coercion it implies) is in place by the time this view's data
+  # is actually built.
+  early_facet_def <- extract_facet_channels(spec$encoding)
+  if (!is.null(early_facet_def)) spec <- inject_facet_timeunit_transforms(spec, early_facet_def)
+
   prepared <- prepare_unit(spec, emitter, hint, ignore_unsupported = ignore_unsupported)
   if (is.null(prepared$data_var)) stop("A view must have a data source")
 
   plot_var <- new_var(emitter, hint)
   emit(emitter, sprintf("%s <- ggplot2::ggplot(%s)", plot_var, prepared$data_var))
 
-  geom <- render_geom_layer(prepared$mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram), ignore_unsupported, prepared$data_var, prepared$extent_params)
+  geom <- render_geom_layer(prepared$mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE), ignore_unsupported, prepared$data_var, prepared$extent_params)
   emit(emitter, geom$notes)
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
@@ -540,6 +646,12 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   plot_var <- new_var(emitter, hint)
 
   wrapper_encoding <- spec$encoding %||% list()
+  # See translate_unit()'s identical injection: a wrapper-level row/column
+  # (or facet) channel's own timeUnit needs its derived field created
+  # before the wrapper's data gets loaded/transformed/coerced below.
+  early_facet_def <- extract_facet_channels(wrapper_encoding)
+  if (!is.null(early_facet_def)) spec <- inject_facet_timeunit_transforms(spec, early_facet_def)
+
   has_nested_layer <- any(vapply(spec$layer, function(c) !is.null(c$layer), logical(1)))
   if (has_nested_layer && !ignore_unsupported) {
     stop("Unsupported: nested layer-of-layers is not yet supported by vl2ggplot")
@@ -597,7 +709,8 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     wrapper_data_var <- new_var(emitter, paste0(base_hint, "_data"))
     emit(emitter, render_data_load(spec$data, wrapper_data_var, ignore_unsupported))
     temporal_fields <- collect_temporal_fields(wrapper_encoding, spec$transform %||% list())
-    coercion <- render_temporal_coercion(wrapper_data_var, temporal_fields)
+    subday_fields <- collect_subday_temporal_fields(wrapper_encoding, spec$transform %||% list())
+    coercion <- render_temporal_coercion(wrapper_data_var, temporal_fields, subday_fields)
     if (length(coercion)) emit(emitter, coercion)
     quantitative_coercion <- render_quantitative_coercion(wrapper_data_var, collect_quantitative_fields(wrapper_encoding, spec$transform %||% list()))
     if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
@@ -631,7 +744,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     data_arg <- prepared$data_var # NULL means "inherit the plot's data"
     geom <- render_geom_layer(
       prepared$mark, prepared$encoding, data_arg,
-      list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram),
+      list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE),
       ignore_unsupported,
       prepared$data_var %||% wrapper_data_var,
       merge_named(wrapper_extent_params, prepared$extent_params)
@@ -664,6 +777,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 translate_facet <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   child_hint <- if (identical(hint, "chart")) "view" else paste0(hint, "_view")
   child_spec <- inherit_wrapper(spec$spec, spec)
+  child_spec <- inject_facet_timeunit_transforms(child_spec, spec$facet)
   child_var <- translate_spec(child_spec, emitter, child_hint, ignore_unsupported)
 
   plot_var <- new_var(emitter, hint)
@@ -759,7 +873,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
       if (is.null(prepared$data_var)) stop("A view must have a data source")
       geom <- render_geom_layer(
         prepared$mark, prepared$encoding, prepared$data_var,
-        list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram),
+        list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE),
         ignore_unsupported, prepared$data_var, prepared$extent_params
       )
       emit(emitter, geom$notes)

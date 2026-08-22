@@ -32,11 +32,32 @@ const SCHEME_SEQUENTIAL = {
   rainbow: 'interpolateRainbow',
 };
 
+// Vega-Lite's own "DateTime object" shorthand for a literal temporal
+// constant (e.g. `{"hours": 0}`), as opposed to a real field reference --
+// duplicated from marks.js's identical helper (kept local rather than
+// imported to avoid a cross-module dependency for two small functions).
+function isDateTimeObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function datumToJsExpr(datum) {
+  if (!isDateTimeObject(datum)) return formatValue(datum);
+  const {year = 2012, quarter, month = 1, date = 1, hours = 0, minutes = 0, seconds = 0, milliseconds = 0} = datum;
+  const monthIndex = quarter !== undefined ? (quarter - 1) * 3 : month - 1;
+  return `new Date(${year}, ${monthIndex}, ${date}, ${hours}, ${minutes}, ${seconds}, ${milliseconds})`;
+}
+
 // Vega-Lite's `scale.domain` is usually a plain array, but can also be one
 // of several special reference forms (`"unionWith"`, a `DateTime` object
 // domain, a `"param"`-driven domain, `"domainMin"/"domainMax"` siblings,
 // ...). Only the plain-array form is supported; anything else throws
 // rather than being silently (and incorrectly) treated as a literal array.
+// For a temporal/timeUnit'd channel, each array element may itself be a
+// DateTime-object shorthand (e.g. `[{"hours": 0}, {"hours": 24}]`) rather
+// than a literal -- formatValue() alone would serialize that as a plain JS
+// object, meaningless as a time scale's domain, so those elements go
+// through the same datum->Date conversion a `datum`-bound channel value
+// uses instead.
 function explicitDomainCode(def, ignoreUnsupported = false) {
   const domain = def.scale && def.scale.domain;
   if (domain === undefined) return null;
@@ -46,6 +67,9 @@ function explicitDomainCode(def, ignoreUnsupported = false) {
     // path when no explicit domain is given at all.
     if (ignoreUnsupported) return null;
     throw new Error(`Unsupported scale domain form: ${JSON.stringify(domain)} (only a plain array is supported)`);
+  }
+  if ((def.type === 'temporal' || def.timeUnit) && domain.some(isDateTimeObject)) {
+    return `[${domain.map(datumToJsExpr).join(', ')}]`;
   }
   return formatValue(domain);
 }
@@ -70,11 +94,27 @@ function zeroDomainFromData(dataVar, field) {
   return `[Math.min(0, d3.min(${dataVar}, ${acc})), Math.max(0, d3.max(${dataVar}, ${acc}))]`;
 }
 
+// An explicit sort array is commonly *partial* -- Vega-Lite still shows
+// every distinct value, appending whichever ones aren't named (in
+// ascending order) after the named ones, rather than dropping them. Since
+// the full set of distinct values isn't known until the data has loaded,
+// this is computed at runtime: the named values (that actually occur in
+// the data) in their given order, followed by the rest sorted ascending.
+function sortArrayDomainExpr(base, sort) {
+  const sortJson = JSON.stringify(sort);
+  return (
+    `(() => { const vals = ${base}; const named = ${sortJson}.filter(v => vals.includes(v)); ` +
+    `const rest = vals.filter(v => !${sortJson}.includes(v)).sort((a, b) => d3.ascending(a, b)); ` +
+    `return [...named, ...rest]; })()`
+  );
+}
+
 function ordinalDomainFromData(dataVar, field, sort) {
   const acc = `d => d[${JSON.stringify(field)}]`;
   const base = `Array.from(new Set(${dataVar}.map(${acc})))`;
   if (sort === 'descending') return `${base}.sort((a, b) => d3.descending(a, b))`;
   if (sort === null || sort === false) return base;
+  if (Array.isArray(sort)) return sortArrayDomainExpr(base, sort);
   return `${base}.sort((a, b) => d3.ascending(a, b))`;
 }
 
@@ -100,6 +140,7 @@ function ordinalExtentDomain(valuesExpr, sort) {
   const base = `Array.from(new Set(${valuesExpr}))`;
   if (sort === 'descending') return `${base}.sort((a, b) => d3.descending(a, b))`;
   if (sort === null || sort === false) return base;
+  if (Array.isArray(sort)) return sortArrayDomainExpr(base, sort);
   return `${base}.sort((a, b) => d3.ascending(a, b))`;
 }
 

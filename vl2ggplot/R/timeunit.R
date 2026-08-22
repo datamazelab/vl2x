@@ -38,6 +38,7 @@
   hours = function(d) sprintf('as.POSIXct(format(%s, "%s-01-01 %%H:00:00"), tz = "UTC")', d, .timeunit_ref_year),
   minutes = function(d) sprintf('as.POSIXct(format(%s, "%s-01-01 00:%%M:00"), tz = "UTC")', d, .timeunit_ref_year),
   seconds = function(d) sprintf('as.POSIXct(format(%s, "%s-01-01 00:00:%%S"), tz = "UTC")', d, .timeunit_ref_year),
+  monthdate = function(d) sprintf('as.Date(format(%s, "%s-%%m-%%d"))', d, .timeunit_ref_year),
   yearmonth = function(d) sprintf('as.Date(format(%s, "%%Y-%%m-01"))', d),
   yearmonthdate = function(d) sprintf('as.Date(%s)', d),
   yearquarter = function(d) sprintf(

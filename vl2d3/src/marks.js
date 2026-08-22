@@ -276,6 +276,20 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(temporalBarWidthDecl('xBarWidth2', 'x', dataVar, encoding.x.field));
     lines.push(temporalBarWidthDecl('yBarWidth2', 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
+  } else if (xTemporalBar && !encoding.y && !encoding.y2) {
+    // A temporal x with *no* companion axis at all (e.g. a "1D bar" with
+    // only a bare, un-aggregated temporal field -- one row per date, no
+    // value to size a bar's length by): "zero baseline to the value" (the
+    // generic 1D-value-bar fallback further below) is meaningless on a
+    // date axis (`x(0)` means the 1970 epoch, producing one enormous bar
+    // spanning from there to each date instead of a real per-date mark),
+    // so this instead draws the same full-height thin tick per distinct
+    // date the reference-band case uses elsewhere in this file.
+    lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
+    needsWidthBlock = true;
+  } else if (yTemporalBar && !encoding.x && !encoding.x2) {
+    lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
+    needsWidthBlock = true;
   } else if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
     needsWidthBlock = true;
@@ -404,6 +418,17 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     if (encoding.y && yBand) {
       lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
       lines.push(`    .attr("height", y.bandwidth())`);
+    } else if (encoding.y && yAmbiguous) {
+      // A companion axis whose band-vs-continuous shape isn't known until
+      // the data has loaded (e.g. a stacked bar chart whose category field
+      // has no explicit "type") -- checked at runtime via the same
+      // `isNominalVar` flag the scale declaration itself used.
+      lines.push(
+        `    .attr("y", d => ${y.isNominalVar} ? y(d[${JSON.stringify(encoding.y.field)}]) : Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`
+      );
+      lines.push(
+        `    .attr("height", d => ${y.isNominalVar} ? y.bandwidth() : Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`
+      );
     } else if (encoding.y) {
       lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
       lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
@@ -418,6 +443,13 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     if (encoding.x && xBand) {
       lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
       lines.push(`    .attr("width", x.bandwidth())`);
+    } else if (encoding.x && xAmbiguous) {
+      lines.push(
+        `    .attr("x", d => ${x.isNominalVar} ? x(d[${JSON.stringify(encoding.x.field)}]) : Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`
+      );
+      lines.push(
+        `    .attr("width", d => ${x.isNominalVar} ? x.bandwidth() : Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`
+      );
     } else if (encoding.x) {
       lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
       lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);

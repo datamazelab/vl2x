@@ -10,7 +10,9 @@
 )
 
 axis_kind <- function(def) {
-  if (identical(def$type, "temporal")) "date"
+  if (identical(def$type, "temporal")) {
+    if (isTRUE(def[[".posixct"]])) "datetime" else "date"
+  }
   else if (def$type %in% c("ordinal", "nominal")) "discrete"
   else "continuous"
 }
@@ -34,12 +36,26 @@ build_position_scale <- function(channel, def) {
 
   domain <- def$scale[["domain"]]
   if (!is.null(domain) && is.null(names(domain))) {
-    if (kind == "date") {
-      # A date-axis domain is still raw epoch-millisecond numbers here (the
-      # same Vega-Lite convention as inline temporal field values) --
-      # scale_*_date()'s `limits` needs real Date values instead.
+    if (kind %in% c("date", "datetime")) {
+      # A date/datetime-axis domain element is usually still a raw
+      # epoch-millisecond number here (the same Vega-Lite convention as
+      # inline temporal field values), needing scale_*_date()/
+      # scale_*_datetime()'s `limits` to be real Date/POSIXct values
+      # instead -- but it can also be a DateTime-object shorthand (e.g.
+      # `{"hours": 0}`), the same literal-constant shape a `datum`-bound
+      # channel value already handles (literal_datum_value(), encoding.R),
+      # reused here rather than re-implementing the same conversion (that
+      # helper already produces a POSIXct, not a Date, for one with any
+      # clock component -- consistent with a "datetime" axis either way).
+      epoch_expr <- if (kind == "datetime") {
+        function(v) sprintf('as.POSIXct(%s / 1000, origin = "1970-01-01", tz = "UTC")', format_value(v))
+      } else {
+        function(v) sprintf('as.Date(%s / 86400000, origin = "1970-01-01")', format_value(v))
+      }
       limits_expr <- sprintf(
-        "c(%s)", paste(vapply(domain, function(v) sprintf('as.Date(%s / 86400000, origin = "1970-01-01")', format_value(v)), character(1)), collapse = ", ")
+        "c(%s)", paste(vapply(domain, function(v) {
+          if (is.list(v)) literal_datum_value(v) else epoch_expr(v)
+        }, character(1)), collapse = ", ")
       )
       args <- c(args, sprintf("limits = %s", limits_expr))
     } else {

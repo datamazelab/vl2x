@@ -33,14 +33,6 @@ chart <- chart + ggplot2::geom_point(
 
 chart
 
-===== bar_argmax_transform.vl.json [TRANSLATE] =====
-Unsupported: bracket-indexed field reference "argmax_US_Gross['Production Budget']" is not supported
-
-
-===== bar_argmax.vl.json [TRANSLATE] =====
-Unsupported aggregate op: {"argmax":"US Gross"} (compound argmin/argmax form not supported)
-
-
 ===== bar_bullet_expr_bind.vl.json [TRANSLATE] =====
 Unsupported: bracket-indexed field reference "ranges[2]" is not supported
 
@@ -582,7 +574,13 @@ Caused by error in `setup_params()`:
 library(ggplot2)
 
 vconcat1_data <- jsonlite::fromJSON("data/flights-5k.json")
-vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.POSIXct(date / 1000, origin = "1970-01-01", tz = "UTC") else as.POSIXct(as.character(date), tryFormats = c(
+  "%Y-%m-%dT%H:%M:%S",
+  "%Y-%m-%d %H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%b %d %Y %H:%M:%S",
+  "%B %d, %Y %H:%M:%S",
+  "%B %d %Y %H:%M:%S",
   "%Y-%m-%d",
   "%Y/%m/%d",
   "%m/%d/%Y",
@@ -590,16 +588,20 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Da
   "%b %d %Y",
   "%B %d, %Y",
   "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S",
   "%Y"
-)))
+), tz = "UTC"))
 vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
 vconcat1 <- vconcat1 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 480, height = 150)
 vconcat2_data <- jsonlite::fromJSON("data/flights-5k.json")
-vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.POSIXct(date / 1000, origin = "1970-01-01", tz = "UTC") else as.POSIXct(as.character(date), tryFormats = c(
+  "%Y-%m-%dT%H:%M:%S",
+  "%Y-%m-%d %H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%b %d %Y %H:%M:%S",
+  "%B %d, %Y %H:%M:%S",
+  "%B %d %Y %H:%M:%S",
   "%Y-%m-%d",
   "%Y/%m/%d",
   "%m/%d/%Y",
@@ -607,10 +609,8 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Da
   "%b %d %Y",
   "%B %d, %Y",
   "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S",
   "%Y"
-)))
+), tz = "UTC"))
 vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
 vconcat2 <- vconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
@@ -630,7 +630,13 @@ Caused by error in `setup_params()`:
 library(ggplot2)
 
 vconcat1_data <- jsonlite::fromJSON("data/flights-5k.json")
-vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.POSIXct(date / 1000, origin = "1970-01-01", tz = "UTC") else as.POSIXct(as.character(date), tryFormats = c(
+  "%Y-%m-%dT%H:%M:%S",
+  "%Y-%m-%d %H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%b %d %Y %H:%M:%S",
+  "%B %d, %Y %H:%M:%S",
+  "%B %d %Y %H:%M:%S",
   "%Y-%m-%d",
   "%Y/%m/%d",
   "%m/%d/%Y",
@@ -638,16 +644,20 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Da
   "%b %d %Y",
   "%B %d, %Y",
   "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S",
   "%Y"
-)))
+), tz = "UTC"))
 vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
 vconcat1 <- vconcat1 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 963, height = 100)
 vconcat2_data <- jsonlite::fromJSON("data/flights-5k.json")
-vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.POSIXct(date / 1000, origin = "1970-01-01", tz = "UTC") else as.POSIXct(as.character(date), tryFormats = c(
+  "%Y-%m-%dT%H:%M:%S",
+  "%Y-%m-%d %H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%b %d %Y %H:%M:%S",
+  "%B %d, %Y %H:%M:%S",
+  "%B %d %Y %H:%M:%S",
   "%Y-%m-%d",
   "%Y/%m/%d",
   "%m/%d/%Y",
@@ -655,10 +665,8 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Da
   "%b %d %Y",
   "%B %d, %Y",
   "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S",
   "%Y"
-)))
+), tz = "UTC"))
 vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
 vconcat2 <- vconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)

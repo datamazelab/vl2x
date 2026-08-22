@@ -342,8 +342,20 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     fixed[["width"]] <- "1"
     fixed[["stat"]] <- fixed[["stat"]] %||% '"identity"'
   }
+  # The companion axis's own full-plot-height/-width fill: `-Inf`/`Inf` when
+  # this mark might share its scale with a sibling layer's real data (a
+  # layer/repeat-layer child -- ggplot2 unions Inf against whatever finite
+  # range that sibling establishes, giving a true full-height band), but a
+  # *finite* symmetric fallback when this view is the only thing setting up
+  # that scale at all (translate_unit's standalone case): every row's
+  # min/max would otherwise be the same +/-Inf, leaving ggplot2 nothing
+  # finite to compute an actual panel range from at all, and the mark
+  # silently fails to draw anything.
+  full_span <- if (isTRUE(plan$standalone)) c("-0.5", "0.5") else c("-Inf", "Inf")
+
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
-      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]])) {
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
+      !isTRUE(plan$aggregated)) {
     # A bar/rect mark with only a position (x) channel and no value (y)
     # axis at all, and no x2/y2 range either (e.g. a vertical highlight
     # band marking specific x positions, like a null-data day) -- this is
@@ -351,15 +363,14 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     # other 1-axis mark as (a bar/rect has no meaningful "categorical
     # placeholder position", only ever a real value to size against), and
     # there's no value to size a box against either -- a full plot-height
-    # band at that x position instead, via the same -Inf/Inf idiom used
-    # elsewhere in this file for a reference band with a missing companion
-    # axis. Width is derived from the smallest gap between this layer's own
-    # sorted x values (falling back to a fixed guess when there's only one),
-    # since there's no bin/band width to read off the (continuous) x scale.
-    # Excludes a genuinely quantitative x (a real 1D aggregate value, e.g.
-    # `x: {"aggregate": "sum", "field": ...}` with no groupby at all) --
-    # that's the generic fallback's "1D bar" case below, sized from a zero
-    # baseline, not a position to draw a reference band at.
+    # band at that x position instead. Width is derived from the smallest
+    # gap between this layer's own sorted x values (falling back to a
+    # fixed guess when there's only one), since there's no bin/band width
+    # to read off the (continuous) x scale. Excludes a genuinely
+    # quantitative x that was actually *computed* (a real 1D aggregate
+    # value, e.g. `x: {"aggregate": "sum", "field": ...}` with no groupby
+    # at all, `plan$aggregated`) -- that's the zero-baseline "1D value bar"
+    # case just below instead, not a position to draw a reference band at.
     x_expr <- aes_pairs[["x"]]
     half_width_expr <- sprintf(
       "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 else 0.5 })(%s)",
@@ -368,8 +379,53 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["xmin"]] <- sprintf("(%s) - (%s)", x_expr, half_width_expr)
     aes_pairs[["xmax"]] <- sprintf("(%s) + (%s)", x_expr, half_width_expr)
     aes_pairs[["x"]] <- NULL
-    fixed[["ymin"]] <- "-Inf"
-    fixed[["ymax"]] <- "Inf"
+    fixed[["ymin"]] <- full_span[1]
+    fixed[["ymax"]] <- full_span[2]
+    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+  }
+  # Mirrors the x-present/y-absent branch just above, transposed: a bare
+  # (un-aggregated) y position with no x at all -- e.g. `bar_1d_dimension_only`,
+  # a `y`-only "horizontal" bar mark with a plain (non-aggregate) field.
+  if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && is.null(aes_pairs[["x"]]) &&
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
+      !isTRUE(plan$aggregated)) {
+    y_expr <- aes_pairs[["y"]]
+    half_width_expr <- sprintf(
+      "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 else 0.5 })(%s)",
+      y_expr
+    )
+    aes_pairs[["ymin"]] <- sprintf("(%s) - (%s)", y_expr, half_width_expr)
+    aes_pairs[["ymax"]] <- sprintf("(%s) + (%s)", y_expr, half_width_expr)
+    aes_pairs[["y"]] <- NULL
+    fixed[["xmin"]] <- full_span[1]
+    fixed[["xmax"]] <- full_span[2]
+    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+  }
+  if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
+      isTRUE(plan$aggregated)) {
+    # A genuine 1D aggregate value on x with no y at all (e.g. `x:
+    # {"aggregate": "sum", ...}`, no groupby) -- Vega-Lite draws a single
+    # zero-baseline bar here (0 to the value), the same convention vl2d3
+    # uses for this shape, filling the companion axis the same
+    # standalone-aware way as the reference-band case above.
+    x_expr <- aes_pairs[["x"]]
+    aes_pairs[["xmin"]] <- sprintf("pmin(0, %s)", x_expr)
+    aes_pairs[["xmax"]] <- sprintf("pmax(0, %s)", x_expr)
+    aes_pairs[["x"]] <- NULL
+    fixed[["ymin"]] <- full_span[1]
+    fixed[["ymax"]] <- full_span[2]
+    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+  }
+  if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && is.null(aes_pairs[["x"]]) &&
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
+      isTRUE(plan$aggregated)) {
+    y_expr <- aes_pairs[["y"]]
+    aes_pairs[["ymin"]] <- sprintf("pmin(0, %s)", y_expr)
+    aes_pairs[["ymax"]] <- sprintf("pmax(0, %s)", y_expr)
+    aes_pairs[["y"]] <- NULL
+    fixed[["xmin"]] <- full_span[1]
+    fixed[["xmax"]] <- full_span[2]
     return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
   }
   if (mark_type == "text") {
@@ -426,6 +482,18 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   if (mark_type == "bar" && is.null(fixed[["orientation"]]) &&
       identical(encoding$x$type, "quantitative") && !is.null(encoding$y$type) && !identical(encoding$y$type, "quantitative")) {
     fixed[["orientation"]] <- '"y"'
+  }
+  # `stack: "normalize"` on the aggregated value axis asks for each
+  # x-category's (or y-category's, for a horizontal bar) stacked values to
+  # be rescaled to fractions summing to 1 -- ggplot2's own equivalent is
+  # `position = "fill"` (its default stacking, `position = "stack"`, is
+  # already what a plain color/fill-grouped area/bar gets with no
+  # `position` set at all, so only the normalized case needs calling out
+  # here). `stack: "center"` (a streamgraph-style baseline) has no
+  # off-the-shelf ggplot2 position and is left unhandled.
+  if (mark_type %in% c("area", "bar") &&
+      identical(encoding$x$stack %||% encoding$y$stack, "normalize")) {
+    fixed[["position"]] <- fixed[["position"]] %||% '"fill"'
   }
   fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]), ignore_unsupported, .notes)
   build_call(fn, aes_pairs, fixed, data_arg)

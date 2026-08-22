@@ -19,10 +19,12 @@
 import {renderDataLoad, renderTemporalCoercion} from './data.js';
 import {renderTransforms} from './transforms.js';
 import {prepareEncoding} from './prepare.js';
+import {planStacking, renderStackingStatements, applyStackingToEncoding} from './stack.js';
 import {resolvePositionScale, resolveColorScale, resolveSizeScale, resolveOpacityScale, resolveOffsetScale} from './scales.js';
 import {renderMark} from './marks.js';
 import {formatValue} from './literals.js';
 import {extractDateFunctionFields} from './expr.js';
+import {timeUnitExpr, isSupportedTimeUnit} from './timeunit.js';
 
 // Every function name runtime.js exports, in preference order for the
 // generated `import {...} from "./vl2d3-runtime.js"` line -- see
@@ -248,7 +250,7 @@ function flattenLayers(node, wrapper) {
 // Build the body (everything between the function signature and its
 // closing brace) of a single-view-or-layer chart function, as an array of
 // already-indented lines ending in `return svg.node();`.
-function buildUnitOrLayerBody(root, ignoreUnsupported) {
+function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   const children = flattenLayers(root, {});
 
   const lines = [];
@@ -298,8 +300,18 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
     }
 
     const dataVar = `data${i + 1}`;
-    const {statements: loadStmts} = renderDataLoad(child.data, dataVar, ignoreUnsupported);
-    loadStmts.forEach(b);
+    if (i === 0 && dataParam && !child.data) {
+      // Rows for this panel are already loaded, wrapper-transformed, and
+      // split down to this one facet value's own subset by the runtime
+      // facet orchestrator (see buildRuntimeFacetPanels()) -- no separate
+      // load of this panel's own copy needed (or, for a URL source,
+      // possible at all: the distinct facet values themselves are only
+      // knowable once that shared load has actually happened).
+      b(`let ${dataVar} = ${dataParam};`);
+    } else {
+      const {statements: loadStmts} = renderDataLoad(child.data, dataVar, ignoreUnsupported);
+      loadStmts.forEach(b);
+    }
 
     if (invalidHandlingMode(root, child.mark) === 'filter') {
       renderInvalidFilter(dataVar, collectInvalidFilterFields(encodingIn, child.transform)).forEach(b);
@@ -314,10 +326,17 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
     bracketStmts.forEach(b);
     encodingIn = encodingAfterBracket;
 
-    const {statements: prepStmts, encoding} = prepareEncoding(encodingIn, dataVar, ignoreUnsupported);
+    const {statements: prepStmts, encoding: encodingAfterPrep} = prepareEncoding(encodingIn, dataVar, ignoreUnsupported);
     prepStmts.forEach(b);
 
-    return {dataVar, encoding, originalEncoding: encodingIn, mark: child.mark, extentParams: collectExtentParams(child.transform)};
+    let encoding = encodingAfterPrep;
+    const stackPlan = planStacking(child.mark, encoding);
+    if (stackPlan) {
+      renderStackingStatements(dataVar, stackPlan).forEach(b);
+      encoding = applyStackingToEncoding(encoding, stackPlan);
+    }
+
+    return {dataVar, encoding, originalEncoding: encodingIn, mark: child.mark, stackPlan, extentParams: collectExtentParams(child.transform)};
   });
   lines.push('');
 
@@ -343,10 +362,27 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
     // resulting domain always spans every layer correctly regardless of
     // whether their field names happen to match.
     const declaringChildren = prepared.filter(p => p.encoding[channel] && p.encoding[channel].field);
-    const combinedValuesExpr =
-      declaringChildren.length > 1
-        ? `[].concat(${declaringChildren.map(p => `${p.dataVar}.map(d => d[${JSON.stringify(p.encoding[channel].field)}])`).join(', ')})`
-        : null;
+    // A stacked child's own field is the stack *top* -- for zero/normalize
+    // stacking that alone still bounds the domain correctly (the baseline
+    // never goes below 0, already covered by zeroBaseline below), but a
+    // "center" stack's baseline can be more negative than any row's own
+    // top, so that child's stack-baseline field needs unioning in too, or
+    // the low end of a streamgraph gets silently clipped.
+    const valuesExprsFor = p => {
+      const stack = p.stackPlan && p.stackPlan.posChannel === channel ? p.stackPlan : null;
+      if (stack) {
+        return [
+          `${p.dataVar}.map(d => d[${JSON.stringify(`${stack.valueField}_stack0`)}])`,
+          `${p.dataVar}.map(d => d[${JSON.stringify(`${stack.valueField}_stack1`)}])`,
+        ];
+      }
+      return [`${p.dataVar}.map(d => d[${JSON.stringify(p.encoding[channel].field)}])`];
+    };
+    const needsCombining =
+      declaringChildren.length > 1 || declaringChildren.some(p => p.stackPlan && p.stackPlan.posChannel === channel);
+    const combinedValuesExpr = needsCombining
+      ? `[].concat(${declaringChildren.flatMap(valuesExprsFor).join(', ')})`
+      : null;
     const scale = resolvePositionScale(channel, def, {
       dataVar: allDataExpr,
       rangeExpr: dims[`${channel}RangeExpr`],
@@ -472,8 +508,9 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
   return lines;
 }
 
-function buildFunction(fnName, bodyLines, prefix = '') {
-  return [`${prefix}async function ${fnName}(container, options = {}) {`, ...bodyLines, '}', ''];
+function buildFunction(fnName, bodyLines, prefix = '', extraParams = []) {
+  const params = ['container', 'options = {}', ...extraParams].join(', ');
+  return [`${prefix}async function ${fnName}(${params}) {`, ...bodyLines, '}', ''];
 }
 
 // Recursively substitute a `{"repeat": "row"|"column"|"repeat"}` value
@@ -553,6 +590,115 @@ function getCompositionChildren(root, compositionKey) {
   };
 }
 
+// Vega-Lite's `facet` operator has two equivalent shapes: a flat single
+// field (`facet: {field, ...}`, faceting a wrapped grid) or a row/column
+// mapping (`facet: {row: {field, ...}}` and/or `{column: {field, ...}}`,
+// laying panels out in that one direction) -- normalized here to a single
+// field def plus a layout direction, or null if the shape doesn't resolve
+// to a single facetable field at all (e.g. a `facet: {row, column}` 2D
+// grid, or a malformed spec) -- callers fall back to the generic (fully
+// unsupported) composition handling in that case.
+function normalizeFacetDef(facetDef) {
+  if (!facetDef) return null;
+  if (facetDef.field) return {def: facetDef, direction: 'wrap'};
+  if (facetDef.row && facetDef.row.field && !facetDef.column) return {def: facetDef.row, direction: 'column'};
+  if (facetDef.column && facetDef.column.field && !facetDef.row) return {def: facetDef.column, direction: 'row'};
+  return null;
+}
+
+// A genuine, *runtime* facet split -- unlike getCompositionChildren()'s own
+// facet handling (which needs the distinct facet values already knowable
+// at code-generation time, from an inline `values` array, and only
+// understands the flat `facet: {field}` shape), this works for any data
+// source (including a URL, fetched only once the generated function
+// actually runs) and both facet shapes, at the cost of a documented
+// simplification: every panel shares one generic text header (the raw or
+// timeUnit'd facet value) rather than Vega-Lite's own fully templated
+// header (labelExpr, format, title, ...).
+function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, prefix = '') {
+  const {def: facetDef, direction} = facetInfo;
+  const lines = [];
+
+  // The shared per-panel template: one real function, called once per
+  // distinct facet value below with that value's own pre-filtered rows --
+  // not a separate statically-generated copy per value (which would need
+  // knowing the values in advance, the very thing a URL data source rules
+  // out). Own encoding merges down from the facet wrapper the same way any
+  // other composition's children do; wrapper `transform` is deliberately
+  // NOT re-merged in here (already applied once, up front, to the shared
+  // data below -- reapplying it per panel would run it again on top of its
+  // own prior output).
+  const templateSpec = {...root.spec};
+  if (root.encoding) templateSpec.encoding = {...root.encoding, ...(templateSpec.encoding || {})};
+  const templateName = `${fnName}_facetTemplate`;
+  lines.push(...buildFunction(templateName, buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows'), '', ['__facetRows']));
+
+  const body = [];
+  const b = s => body.push('  ' + s);
+  b(
+    `// vl2d3: unsupported top-level composition "facet", splitting the shared data by facet value at ` +
+      `runtime instead of code-generation time -- each panel shows a plain text header (the raw/timeUnit'd ` +
+      `facet value), not Vega-Lite's own fully templated header (--ignore-unsupported)`
+  );
+  const {statements: loadStmts} = renderDataLoad(root.data, 'facetData', ignoreUnsupported);
+  loadStmts.forEach(b);
+
+  const wrapperTransform = root.transform || [];
+  const transformTemporalFields = collectTemporalFields({}, wrapperTransform);
+  const facetIsTemporal = Boolean(facetDef.timeUnit) || facetDef.type === 'temporal';
+  const temporalFields = [...new Set([...transformTemporalFields, ...(facetIsTemporal ? [facetDef.field] : [])])];
+  renderTemporalCoercion('facetData', temporalFields).forEach(b);
+  if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
+
+  const keyExpr = facetDef.timeUnit
+    ? timeUnitExpr(facetDef.timeUnit, `d[${JSON.stringify(facetDef.field)}]`, ignoreUnsupported)
+    : `d[${JSON.stringify(facetDef.field)}]`;
+  b(`facetData = facetData.map(d => ({...d, "__facetKey": ${keyExpr}}));`);
+  b(`const __facetGroups = Array.from(d3.group(facetData, d => d["__facetKey"]), ([key, rows]) => ({key, rows}));`);
+  // An explicit `sort: {field: ...}` orders panels by that field's value
+  // (e.g. a precomputed "display order" column) rather than the facet
+  // key's own natural order -- any row within a group carries the same
+  // value for it, so the first row is as good as any to sort by.
+  if (facetDef.sort && typeof facetDef.sort === 'object' && facetDef.sort.field) {
+    const sortField = facetDef.sort.field;
+    b(
+      `__facetGroups.sort((a, b) => d3.ascending(a.rows[0][${JSON.stringify(sortField)}], b.rows[0][${JSON.stringify(sortField)}]));`
+    );
+  } else if (facetDef.sort === 'descending') {
+    b(`__facetGroups.sort((a, b) => d3.descending(a.key, b.key));`);
+  } else {
+    b(`__facetGroups.sort((a, b) => d3.ascending(a.key, b.key));`);
+  }
+
+  const flexStyle =
+    direction === 'column' ? 'flex-direction: column;' : direction === 'row' ? 'flex-direction: row;' : 'flex-wrap: wrap;';
+  b(`const doc = container.ownerDocument;`);
+  b(`const wrap = doc.createElement("div");`);
+  b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 4px;";`);
+  b(`container.appendChild(wrap);`);
+  b(`for (const {key, rows} of __facetGroups) {`);
+  b(`  const panelWrap = doc.createElement("div");`);
+  b(`  wrap.appendChild(panelWrap);`);
+  b(`  const label = doc.createElement("div");`);
+  b(`  label.style.cssText = "font-size: 11px; font-family: sans-serif;";`);
+  // A temporal/timeUnit'd key is a real Date -- its default toString() is
+  // long and not what a reader wants as a small multiples' panel title, so
+  // it gets a plain calendar/clock format instead (a fixed, reasonable
+  // choice, not Vega-Lite's own fully templated header/labelExpr).
+  const labelExpr = facetIsTemporal
+    ? `key instanceof Date ? d3.timeFormat(${facetDef.timeUnit && String(facetDef.timeUnit).match(/hours|minutes|seconds/) ? '"%-I:%M %p"' : '"%b %-d, %Y"'})(key) : String(key)`
+    : 'String(key)';
+  b(`  label.textContent = ${labelExpr};`);
+  b(`  panelWrap.appendChild(label);`);
+  b(`  const panel = doc.createElement("div");`);
+  b(`  panelWrap.appendChild(panel);`);
+  b(`  await ${templateName}(panel, options, rows);`);
+  b(`}`);
+
+  lines.push(...buildFunction(fnName, body, prefix));
+  return lines;
+}
+
 // Build one panel's drawing function, named `fnName` -- either a plain
 // unit/layer chart, or (recursively, since a concat/vconcat/hconcat/repeat
 // child can itself be another composition, e.g. a repeat nested inside a
@@ -562,6 +708,18 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
   const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in spec);
   if (!compositionKey) {
     return buildFunction(fnName, buildUnitOrLayerBody(spec, ignoreUnsupported), prefix);
+  }
+
+  if (compositionKey === 'facet') {
+    const facetInfo = normalizeFacetDef(spec.facet);
+    // The template built below is rendered via buildUnitOrLayerBody()
+    // directly, not the general (self-recursing) buildPanelFunction() --
+    // it only knows how to inject pre-split rows into a *plain*
+    // unit-or-layer spec, so a facet-within-facet (spec.spec itself being
+    // another composition) falls through to the generic per-composition
+    // handling below instead of being misrendered as one.
+    const templateIsPlain = !UNSUPPORTED_COMPOSITIONS.some(key => key in spec.spec);
+    if (facetInfo && templateIsPlain) return buildRuntimeFacetPanels(spec, facetInfo, fnName, ignoreUnsupported, prefix);
   }
 
   const {children, direction, note} = getCompositionChildren(spec, compositionKey);

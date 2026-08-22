@@ -18,7 +18,7 @@
 
 ===== boxplot_1D_invalid.vl.json [NaN geometry: 6 shape(s), tags=line] =====
 
-===== facet_bullet.vl.json [NaN geometry: 25 shape(s), tags=rect] =====
+===== facet_bullet.vl.json [NaN geometry: 5 shape(s), tags=rect] =====
 
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 

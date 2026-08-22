@@ -157,18 +157,48 @@ render_data_load <- function(data, var_name, ignore_unsupported = FALSE) {
   "%Y"
 )
 
-render_temporal_coercion <- function(var_name, fields) {
+
+# A field a downstream `hours()`/`minutes()`/`seconds()` expression or an
+# "hours"/"minutes"/"seconds"-level timeUnit needs its time-of-day
+# preserved, not truncated away -- as.Date() (below) always discards it
+# regardless of source format, so such a field needs as.POSIXct() instead.
+# The time-inclusive formats are listed *first*: R's underlying strptime()
+# is lenient about trailing unparsed characters, so a shorter date-only
+# format (e.g. "%Y-%m-%d") would otherwise silently "succeed" against a
+# string that actually has a time part too (e.g. "2010-01-01T01:00:00"),
+# quietly dropping it -- as.POSIXct()'s own tryFormats keeps the *first*
+# format that parses every value without NA, so putting the more specific
+# formats first is what makes the plainer ones only a fallback for
+# genuinely date-only values.
+.datetime_try_formats <- c(
+  "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%a, %d %b %Y %H:%M:%S",
+  "%b %d %Y %H:%M:%S", "%B %d, %Y %H:%M:%S", "%B %d %Y %H:%M:%S",
+  "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y",
+  "%b %d %Y", "%B %d, %Y", "%B %d %Y", "%Y"
+)
+
+render_temporal_coercion <- function(var_name, fields, subday_fields = character(0)) {
   if (length(fields) == 0) return(character(0))
   formats <- format_value(as.list(.date_try_formats))
+  datetime_formats <- format_value(as.list(.datetime_try_formats))
   assigns <- vapply(fields, function(f) {
     ref <- field_ref(f)
     # Vega-Lite (like JS) always represents a temporal field's raw numeric
     # value as epoch *milliseconds*, not days -- as.Date()'s own numeric
-    # form expects days-since-origin, so this must convert first.
-    sprintf(
-      "%s = if (is.numeric(%s)) as.Date(%s / 86400000, origin = \"1970-01-01\") else as.Date(as.character(%s), tryFormats = %s)",
-      render_name(unescape_field_path(f)), ref, ref, ref, formats
-    )
+    # form expects days-since-origin, so this must convert first (and
+    # as.POSIXct()'s own numeric form already expects *seconds*, so that
+    # conversion is simpler).
+    if (f %in% subday_fields) {
+      sprintf(
+        "%s = if (is.numeric(%s)) as.POSIXct(%s / 1000, origin = \"1970-01-01\", tz = \"UTC\") else as.POSIXct(as.character(%s), tryFormats = %s, tz = \"UTC\")",
+        render_name(unescape_field_path(f)), ref, ref, ref, datetime_formats
+      )
+    } else {
+      sprintf(
+        "%s = if (is.numeric(%s)) as.Date(%s / 86400000, origin = \"1970-01-01\") else as.Date(as.character(%s), tryFormats = %s)",
+        render_name(unescape_field_path(f)), ref, ref, ref, formats
+      )
+    }
   }, character(1))
   sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))
 }
