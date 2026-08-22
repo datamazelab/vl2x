@@ -19,6 +19,29 @@
 # behavior): a chart that renders something is only better than one that
 # refuses when the caller has actually asked for that tradeoff.
 
+# Resolve top-level `datasets: {name: [...rows]}` reusable named datasets --
+# any `data: list(name = "...", ...)` reference anywhere in the tree (the
+# root view or any layer/concat child) is replaced with that dataset's rows
+# as if they'd been inlined directly (`data: list(values = list(...rows), ...rest)`).
+resolve_dataset_refs <- function(node, datasets) {
+  if (!is.list(node)) return(node)
+  if (!is.null(node$data) && is.list(node$data) && !is.null(node$data$name) && !is.null(datasets[[node$data$name]])) {
+    rest <- node$data
+    rest$name <- NULL
+    rest$values <- datasets[[node$data$name]]
+    node$data <- rest
+  }
+  for (key in c("layer", "hconcat", "vconcat", "concat")) {
+    if (!is.null(node[[key]])) {
+      node[[key]] <- lapply(node[[key]], resolve_dataset_refs, datasets = datasets)
+    }
+  }
+  if (!is.null(node$spec)) {
+    node$spec <- resolve_dataset_refs(node$spec, datasets)
+  }
+  node
+}
+
 new_emitter <- function() {
   e <- new.env()
   e$lines <- character(0)
@@ -63,6 +86,75 @@ collect_temporal_fields <- function(encoding, transform_list) {
     if (is.character(t$filter) && length(t$filter) == 1) extract_date_function_fields(t$filter) else character(0)
   }))
   unique(c(from_encoding, from_tu_transform[!is.na(from_tu_transform)], from_calc, from_filter))
+}
+
+# Fields whose encoding channel is explicitly `type: "quantitative"` but
+# whose loaded column may have ended up as R `character` -- an inline
+# "values" dataset with heterogeneous per-row types for the same field
+# (e.g. a "melted"/long-format dataset where non-numeric label rows like
+# "Participant ID" share a column with genuinely numeric rating rows)
+# forces the whole data.frame column to character at load time (R, unlike
+# JS, has no per-row typing), so a later `filter()` that removes the label
+# rows still leaves a character column behind unless explicitly coerced
+# back to numeric.
+transform_produced_fields <- function(transform_list) {
+  out <- character(0)
+  # `pivot`'s own output column names are the *distinct runtime values* of
+  # its key field -- genuinely unknowable at translation time, unlike every
+  # other transform below (whose output names are static, spec-declared
+  # strings) -- so any pivot anywhere in the pipeline makes the whole
+  # "which fields are safe to coerce" question unanswerable, and the
+  # caller treats `dynamic = TRUE` as "don't touch anything".
+  has_dynamic <- FALSE
+  for (t in transform_list) {
+    if (!is.null(t$calculate) || !is.null(t$timeUnit)) out <- c(out, t$as)
+    if (!is.null(t$bin)) {
+      out <- c(out, if (length(t$as) == 2) unlist(t$as) else c(t$as, paste0(t$as, "_end")))
+    }
+    if (!is.null(t$aggregate) && is.list(t$aggregate)) {
+      out <- c(out, vapply(t$aggregate, function(a) a$as %||% "", character(1)))
+    }
+    if (!is.null(t$window) && is.list(t$window)) {
+      out <- c(out, vapply(t$window, function(w) w$as %||% "", character(1)))
+    }
+    if (!is.null(t$joinaggregate) && is.list(t$joinaggregate)) {
+      out <- c(out, vapply(t$joinaggregate, function(a) a$as %||% "", character(1)))
+    }
+    if (!is.null(t$fold)) {
+      as_names <- if (!is.null(t$as)) t$as else list("key", "value")
+      out <- c(out, unlist(as_names))
+    }
+    if (!is.null(t$density)) {
+      as_names <- if (!is.null(t$as)) t$as else list("value", "density")
+      out <- c(out, unlist(as_names))
+    }
+    if (!is.null(t$pivot)) has_dynamic <- TRUE
+  }
+  list(fields = unique(out[nzchar(out)]), dynamic = has_dynamic)
+}
+
+collect_quantitative_fields <- function(encoding, transform_list = list()) {
+  produced <- transform_produced_fields(transform_list)
+  if (isTRUE(produced$dynamic)) return(character(0))
+  fields <- character(0)
+  for (def in encoding) {
+    if (is.list(def) && !is.null(def$field) && identical(def$type, "quantitative")) {
+      fields <- c(fields, def$field)
+    }
+  }
+  setdiff(unique(fields), produced$fields)
+}
+
+render_quantitative_coercion <- function(var_name, fields) {
+  if (length(fields) == 0) return(character(0))
+  assigns <- vapply(fields, function(f) {
+    ref <- field_ref(f)
+    sprintf(
+      "%s = if (is.character(%s)) suppressWarnings(as.numeric(%s)) else %s",
+      render_name(unescape_field_path(f)), ref, ref, ref
+    )
+  }, character(1))
+  sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))
 }
 
 extract_date_function_fields <- function(expr) {
@@ -218,6 +310,9 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     temporal_fields <- collect_temporal_fields(encoding_effective, node$transform %||% list())
     coercion <- render_temporal_coercion(work_var, temporal_fields)
     if (length(coercion)) emit(emitter, coercion)
+
+    quantitative_coercion <- render_quantitative_coercion(work_var, collect_quantitative_fields(encoding_effective, node$transform %||% list()))
+    if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
 
     if (!is.null(node$transform)) emit(emitter, render_transforms(node$transform, work_var, ignore_unsupported))
 
@@ -481,6 +576,8 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     temporal_fields <- collect_temporal_fields(wrapper_encoding, spec$transform %||% list())
     coercion <- render_temporal_coercion(wrapper_data_var, temporal_fields)
     if (length(coercion)) emit(emitter, coercion)
+    quantitative_coercion <- render_quantitative_coercion(wrapper_data_var, collect_quantitative_fields(wrapper_encoding, spec$transform %||% list()))
+    if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
     if (!is.null(spec$transform)) emit(emitter, render_transforms(spec$transform, wrapper_data_var, ignore_unsupported))
   }
   # An `extent` transform on the wrapper (not any individual layer child --
@@ -728,6 +825,11 @@ translate_multi <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 #' @return A single string: a complete, standalone R script.
 #' @export
 vegalite_to_ggplot <- function(spec, chart_var = "chart", ignore_unsupported = FALSE) {
+  if (!is.null(spec$datasets)) {
+    spec <- resolve_dataset_refs(spec, spec$datasets)
+    spec$datasets <- NULL
+  }
+
   emitter <- new_emitter()
   final_var <- translate_spec(spec, emitter, chart_var, ignore_unsupported)
 

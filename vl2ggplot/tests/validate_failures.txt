@@ -1,3 +1,23 @@
+===== boxplot_1D_invalid.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `if (...) NULL`:
+! missing value where TRUE/FALSE needed
+library(ggplot2)
+
+chart_data <- data.frame(
+  a = c("null", 33, 33, "null", "null", "null"),
+  b = c(28, 55, 43, 91, 81, 53),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, a = if (is.character(a)) suppressWarnings(as.numeric(a)) else a, b = if (is.character(b)) suppressWarnings(as.numeric(b)) else b)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_boxplot(mapping = ggplot2::aes(x = a, y = b))
+
+
+chart
+
 ===== histogram_log.vl.json [EXEC] =====
 Problem while setting up geom.
 ℹ Error occurred in the 1st layer.
@@ -38,6 +58,7 @@ chart_data <- data.frame(
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
+chart_data <- dplyr::mutate(chart_data, residency = if (is.character(residency)) suppressWarnings(as.numeric(residency)) else residency)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_rect(
   mapping = ggplot2::aes(xmin = factor(startTime), xmax = endTime, ymax = residency, ymin = 0)
@@ -68,7 +89,8 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
@@ -84,7 +106,8 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
@@ -114,7 +137,8 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
@@ -130,7 +154,8 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
@@ -199,98 +224,11 @@ layer2_data <- dplyr::group_by(layer2_data, `Major Genre`, `Major Genre`)
 layer2_data <- dplyr::summarise(layer2_data, count = dplyr::n(), .groups = "drop")
 chart <- chart + ggplot2::geom_text(
   data = layer2_data,
-  mapping = ggplot2::aes(y = factor(`Major Genre`), label = `Major Genre`, group = count, x = "")
+  mapping = ggplot2::aes(y = factor(`Major Genre`), label = `Major Genre`, group = count),
+  hjust = "left",
+  x = Inf
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 200, height = list(step = 16))
-
-
-chart
-
-===== layer_falkensee.vl.json [EXEC] =====
-ℹ In argument: `start = if (...) NULL`.
-Caused by error in `charToDate()`:
-! character string is not in a standard unambiguous format
-library(ggplot2)
-
-layer_data <- data.frame(
-  year = c("1875", "1890", "1910", "1925", "1933", "1939", "1946", "1950", "1964", "1971", "1981", "1985", "1989", "1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014"),
-  population = c(1309, 1558, 4512, 8180, 15915, 24824, 28275, 29189, 29881, 26007, 24029, 23340, 22307, 22087, 22139, 22105, 22242, 22801, 24273, 25640, 27393, 29505, 32124, 33791, 35297, 36179, 36829, 37493, 38376, 39008, 39366, 39821, 40179, 40511, 40465, 40905, 41258, 41777),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- ggplot2::ggplot(layer_data)
-layer1_data <- data.frame(
-  start = c("1933", "1948"),
-  end = c("1945", "1989"),
-  event = c("Nazi Rule", "GDR (East Germany)"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-layer1_data <- dplyr::mutate(layer1_data, start = if (is.numeric(start)) as.Date(start / 86400000, origin = "1970-01-01") else as.Date(as.character(start), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)), end = if (is.numeric(end)) as.Date(end / 86400000, origin = "1970-01-01") else as.Date(as.character(end), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-layer1_data <- dplyr::mutate(layer1_data, year_start = as.Date(format(start, "%Y-01-01")), year_end = as.Date(format(end, "%Y-01-01")))
-chart <- chart + ggplot2::geom_rect(
-  data = layer1_data,
-  mapping = ggplot2::aes(fill = factor(event), xmin = year_start, xmax = year_end),
-  ymin = -Inf,
-  ymax = Inf
-)
-layer2_data <- layer_data
-layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
-chart <- chart + ggplot2::geom_line(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = year_year, y = population, group = 1),
-  colour = "#333"
-)
-layer3_data <- layer_data
-layer3_data <- dplyr::mutate(layer3_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-layer3_data <- dplyr::mutate(layer3_data, year_year = as.Date(format(year, "%Y-01-01")))
-chart <- chart + ggplot2::geom_point(
-  data = layer3_data,
-  mapping = ggplot2::aes(x = year_year, y = population),
-  colour = "#333"
-)
-# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
 
 
 chart
@@ -310,8 +248,10 @@ layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
+layer1_data <- dplyr::mutate(layer1_data, price = if (is.character(price)) suppressWarnings(as.numeric(price)) else price)
 chart <- chart + ggplot2::geom_line(
   data = layer1_data,
   mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
@@ -323,9 +263,9 @@ chart <- chart + ggplot2::geom_vline(xintercept = list(year = 2006), size = 2)
 chart
 
 ===== wheat_wages.vl.json [EXEC] =====
-<text>:46:83: unexpected input
-45: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
-46: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
+<text>:52:83: unexpected input
+51: layer6_data <- dplyr::mutate(layer6_data, start = if (is.character(start)) suppressWarnings(as.numeric(start)) else start)
+52: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
                                                                                       ^
 library(ggplot2)
 
@@ -333,6 +273,7 @@ layer_data <- jsonlite::fromJSON("data/wheat.json")
 layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, wheat = if (is.character(wheat)) suppressWarnings(as.numeric(wheat)) else wheat, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_rect(
   data = layer1_data,
   mapping = ggplot2::aes(xmin = year, xmax = year_end, ymax = wheat, ymin = 0),
@@ -344,6 +285,7 @@ layer2_data <- data.frame(
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
+layer2_data <- dplyr::mutate(layer2_data, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_vline(
   data = layer2_data,
   mapping = ggplot2::aes(xintercept = year),
@@ -352,6 +294,7 @@ chart <- chart + ggplot2::geom_vline(
   linewidth = 0.6
 )
 layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, wages = if (is.character(wages)) suppressWarnings(as.numeric(wages)) else wages, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_area(
   data = layer3_data,
   mapping = ggplot2::aes(y = wages, x = year, group = 1),
@@ -359,6 +302,7 @@ chart <- chart + ggplot2::geom_area(
   alpha = 0.7
 )
 layer4_data <- layer_data
+layer4_data <- dplyr::mutate(layer4_data, wages = if (is.character(wages)) suppressWarnings(as.numeric(wages)) else wages, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_line(
   data = layer4_data,
   mapping = ggplot2::aes(y = wages, x = year, group = 1),
@@ -366,12 +310,14 @@ chart <- chart + ggplot2::geom_line(
   alpha = 0.7
 )
 layer5_data <- layer_data
+layer5_data <- dplyr::mutate(layer5_data, wages = if (is.character(wages)) suppressWarnings(as.numeric(wages)) else wages, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_line(
   data = layer5_data,
   mapping = ggplot2::aes(y = wages, x = year, group = 1),
   colour = "#EE8182"
 )
 layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+layer6_data <- dplyr::mutate(layer6_data, start = if (is.character(start)) suppressWarnings(as.numeric(start)) else start)
 layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
 layer6_data <- dplyr::mutate(layer6_data, y = 95)
 chart <- chart + ggplot2::geom_rect(

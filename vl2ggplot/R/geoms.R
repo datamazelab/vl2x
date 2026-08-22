@@ -93,6 +93,9 @@ mark_fixed_params <- function(mark_props, mark_type, ignore_unsupported = FALSE,
     }
     fixed[["label"]] <- render_string(label)
   }
+  if (mark_type == "text" && !is.null(mark_props[["align"]])) {
+    fixed[["hjust"]] <- fixed[["hjust"]] %||% render_string(as.character(mark_props[["align"]]))
+  }
   fixed
 }
 
@@ -369,6 +372,27 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     fixed[["ymax"]] <- "Inf"
     return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
   }
+  if (mark_type == "text") {
+    # A `text` mark's x/y is usually an encoding channel, but Vega-Lite also
+    # allows a literal pixel offset directly on the mark definition -- used
+    # in practice for margin labels sitting just outside the plot area
+    # (e.g. row labels to the left of a shared axis). A fake categorical
+    # `""` position (the generic 1D-strip fallback just below) would force
+    # a discrete scale that breaks as soon as a sibling layer shares that
+    # axis with real continuous/temporal data, so this pins the label to
+    # the actual plot edge instead -- side picked from `align` (Vega-Lite's
+    # own default is "left", meaning "extends rightward from the anchor",
+    # so the anchor sits at the left edge... but a fixed mark-level x with
+    # no encoding is virtually always an axis-margin label, and `align:
+    # "right"` specifically means the text hangs off *before* its anchor,
+    # i.e. a label meant to sit to the left of the plot).
+    if (is.null(aes_pairs[["x"]]) && !is.null(mark_props[["x"]]) && is.numeric(mark_props[["x"]])) {
+      fixed[["x"]] <- if (identical(mark_props[["align"]], "right")) "-Inf" else "Inf"
+    }
+    if (is.null(aes_pairs[["y"]]) && !is.null(mark_props[["y"]]) && is.numeric(mark_props[["y"]])) {
+      fixed[["y"]] <- if (identical(mark_props[["baseline"]], "top")) "-Inf" else "Inf"
+    }
+  }
   if (mark_type %in% c("point", "circle", "square", "tick", "bar", "rect", "text") && !isTRUE(plan$use_histogram) && !identical(fixed[["stat"]], '"count"')) {
     # A 1D strip/dot plot (only one of x/y given) centers on the missing
     # axis rather than requiring both -- mirroring vl2d3's same fallback.
@@ -381,12 +405,12 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     # (groupby) axis, same as an unaggregated mark would. This must run
     # *before* geom_function_name() decides geom_bar-vs-geom_col below,
     # since that decision depends on whether "y" ends up present.
-    if (is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]])) {
+    if (is.null(aes_pairs[["x"]]) && is.null(fixed[["x"]]) && is.null(aes_pairs[["y"]]) && is.null(fixed[["y"]])) {
       fixed[["x"]] <- '""'
       fixed[["y"]] <- '""'
-    } else if (is.null(aes_pairs[["x"]])) {
+    } else if (is.null(aes_pairs[["x"]]) && is.null(fixed[["x"]])) {
       aes_pairs[["x"]] <- '""'
-    } else if (is.null(aes_pairs[["y"]])) {
+    } else if (is.null(aes_pairs[["y"]]) && is.null(fixed[["y"]])) {
       aes_pairs[["y"]] <- '""'
     }
   }

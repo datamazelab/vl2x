@@ -1,7 +1,8 @@
 ===== airport_connections.vl.json [EXEC] =====
-ℹ In argument: `vl_truthy(state != "PR" & state != "VI")`.
+ℹ In argument: `longitude = if (is.character(longitude))
+  suppressWarnings(as.numeric(longitude)) else longitude`.
 Caused by error:
-! object 'state' not found
+! object 'longitude' not found
 library(ggplot2)
 library(vl2ggplot)
 
@@ -12,6 +13,7 @@ layer1_data <- data.frame()
 chart <- chart + ggplot2::geom_point(data = layer1_data, fill = "#ddd", colour = "#fff", linewidth = 1)
 # vl2ggplot: unsupported geographic encoding ("latitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer2_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer2_data <- dplyr::mutate(layer2_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer2_data <- dplyr::filter(layer2_data, TRUE)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
@@ -20,6 +22,7 @@ layer2_data <- dplyr::filter(layer2_data, TRUE)
 chart <- chart + ggplot2::geom_blank()
 # vl2ggplot: unsupported geographic encoding ("latitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer3_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer3_data <- dplyr::mutate(layer3_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 layer3_data <- dplyr::group_by(layer3_data, origin)
 layer3_data <- dplyr::summarise(layer3_data, routes = dplyr::n(), .groups = "drop")
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
@@ -32,6 +35,10 @@ chart <- chart + ggplot2::geom_point(
 
 
 chart
+
+===== bar_argmax_transform.vl.json [TRANSLATE] =====
+Unsupported: bracket-indexed field reference "argmax_US_Gross['Production Budget']" is not supported
+
 
 ===== bar_argmax.vl.json [TRANSLATE] =====
 Unsupported aggregate op: {"argmax":"US Gross"} (compound argmin/argmax form not supported)
@@ -87,9 +94,29 @@ chart
 Unsupported: nested field reference "record.low" (dot-path into a sub-object) is not supported
 
 
+===== boxplot_1D_invalid.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `if (...) NULL`:
+! missing value where TRUE/FALSE needed
+library(ggplot2)
+
+chart_data <- data.frame(
+  a = c("null", 33, 33, "null", "null", "null"),
+  b = c(28, 55, 43, 91, 81, 53),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, a = if (is.character(a)) suppressWarnings(as.numeric(a)) else a, b = if (is.character(b)) suppressWarnings(as.numeric(b)) else b)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_boxplot(mapping = ggplot2::aes(x = a, y = b))
+
+
+chart
+
 ===== boxplot_preaggregated_with_height.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 4th layer.
+ℹ In argument: `outliers = if (is.character(outliers))
+  suppressWarnings(as.numeric(outliers)) else outliers`.
 Caused by error:
 ! object 'outliers' not found
 library(ggplot2)
@@ -107,23 +134,27 @@ layer_data <- data.frame(
 )
 chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Species)))
 layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, lower = if (is.character(lower)) suppressWarnings(as.numeric(lower)) else lower)
 chart <- chart + ggplot2::geom_segment(
   data = layer1_data,
   mapping = ggplot2::aes(y = factor(Species), x = lower, xend = upper, yend = factor(Species))
 )
 layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, q1 = if (is.character(q1)) suppressWarnings(as.numeric(q1)) else q1)
 chart <- chart + ggplot2::geom_linerange(
   data = layer2_data,
   mapping = ggplot2::aes(y = factor(Species), xmin = q1, xmax = q3, colour = factor(Species)),
   linewidth = 10
 )
 layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, median = if (is.character(median)) suppressWarnings(as.numeric(median)) else median)
 chart <- chart + ggplot2::geom_point(
   data = layer3_data,
   mapping = ggplot2::aes(y = factor(Species), x = median),
   colour = "white"
 )
 layer4_data <- layer_data
+layer4_data <- dplyr::mutate(layer4_data, outliers = if (is.character(outliers)) suppressWarnings(as.numeric(outliers)) else outliers)
 # vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
 chart <- chart + ggplot2::geom_point(
   data = layer4_data,
@@ -136,8 +167,8 @@ chart <- chart + ggplot2::labs(title = "Body Mass of Penguin Species (g)")
 chart
 
 ===== boxplot_preaggregated.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 4th layer.
+ℹ In argument: `outliers = if (is.character(outliers))
+  suppressWarnings(as.numeric(outliers)) else outliers`.
 Caused by error:
 ! object 'outliers' not found
 library(ggplot2)
@@ -155,17 +186,20 @@ layer_data <- data.frame(
 )
 chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Species)))
 layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, lower = if (is.character(lower)) suppressWarnings(as.numeric(lower)) else lower)
 chart <- chart + ggplot2::geom_segment(
   data = layer1_data,
   mapping = ggplot2::aes(y = factor(Species), x = lower, xend = upper, yend = factor(Species))
 )
 layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, q1 = if (is.character(q1)) suppressWarnings(as.numeric(q1)) else q1)
 chart <- chart + ggplot2::geom_linerange(
   data = layer2_data,
   mapping = ggplot2::aes(y = factor(Species), xmin = q1, xmax = q3, colour = factor(Species)),
   linewidth = 10
 )
 layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, median = if (is.character(median)) suppressWarnings(as.numeric(median)) else median)
 chart <- chart + ggplot2::geom_point(
   data = layer3_data,
   mapping = ggplot2::aes(y = factor(Species), x = median),
@@ -173,6 +207,7 @@ chart <- chart + ggplot2::geom_point(
   size = 14
 )
 layer4_data <- layer_data
+layer4_data <- dplyr::mutate(layer4_data, outliers = if (is.character(outliers)) suppressWarnings(as.numeric(outliers)) else outliers)
 # vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
 chart <- chart + ggplot2::geom_point(
   data = layer4_data,
@@ -194,6 +229,7 @@ chart_data <- data.frame(
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
+chart_data <- dplyr::mutate(chart_data, foo = if (is.character(foo)) suppressWarnings(as.numeric(foo)) else foo)
 # vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_point(
@@ -208,14 +244,15 @@ Unsupported: bracket-indexed field reference "ranges[2]" is not supported
 
 
 ===== geo_choropleth.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 1st layer.
+ℹ In argument: `rate = if (is.character(rate))
+  suppressWarnings(as.numeric(rate)) else rate`.
 Caused by error:
 ! object 'rate' not found
 library(ggplot2)
 
 # vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
 chart_data <- data.frame()
+chart_data <- dplyr::mutate(chart_data, rate = if (is.character(rate)) suppressWarnings(as.numeric(rate)) else rate)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart <- ggplot2::ggplot(chart_data)
 # vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
@@ -234,6 +271,7 @@ layer_data <- read.csv("data/airports.csv", stringsAsFactors = FALSE, check.name
 chart <- ggplot2::ggplot(layer_data)
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 chart <- chart + ggplot2::geom_point(
   data = layer1_data,
   mapping = ggplot2::aes(x = longitude, y = latitude),
@@ -242,6 +280,7 @@ chart <- chart + ggplot2::geom_point(
 )
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 chart <- chart + ggplot2::geom_point(
   data = layer2_data,
   mapping = ggplot2::aes(y = latitude, x = ""),
@@ -250,6 +289,7 @@ chart <- chart + ggplot2::geom_point(
 )
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude)
 chart <- chart + ggplot2::geom_point(
   data = layer3_data,
   mapping = ggplot2::aes(x = longitude, y = ""),
@@ -274,6 +314,7 @@ layer1_data <- data.frame()
 chart <- chart + ggplot2::geom_point(data = layer1_data, colour = "#eee", linewidth = 2)
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer2_data <- jsonlite::fromJSON("data/londonCentroids.json")
+layer2_data <- dplyr::mutate(layer2_data, cx = if (is.character(cx)) suppressWarnings(as.numeric(cx)) else cx, cy = if (is.character(cy)) suppressWarnings(as.numeric(cy)) else cy)
 layer2_data <- dplyr::mutate(layer2_data, bLabel = ifelse(indexof (name,' ') > 0, substring(name,0,indexof(name, ' ')), name))
 chart <- chart + ggplot2::geom_text(
   data = layer2_data,
@@ -325,8 +366,8 @@ chart <- chart + ggplot2::scale_colour_manual(
 chart
 
 ===== geo_line.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 3rd layer.
+ℹ In argument: `longitude = if (is.character(longitude))
+  suppressWarnings(as.numeric(longitude)) else longitude`.
 Caused by error:
 ! object 'longitude' not found
 library(ggplot2)
@@ -338,6 +379,7 @@ layer1_data <- data.frame()
 chart <- chart + ggplot2::geom_point(data = layer1_data, fill = "#eee", colour = "white")
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 layer2_data <- read.csv("data/airports.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer2_data <- dplyr::mutate(layer2_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 chart <- chart + ggplot2::geom_point(
   data = layer2_data,
   mapping = ggplot2::aes(x = longitude, y = latitude),
@@ -351,6 +393,7 @@ layer3_data <- data.frame(
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
+layer3_data <- dplyr::mutate(layer3_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart <- chart + ggplot2::geom_line(
   data = layer3_data,
@@ -371,6 +414,7 @@ library(ggplot2)
 chart_plots <- list()
 # vl2ggplot: unsupported repeat row/column mapping, rendering each panel independently (no shared/aligned scales across panels) (ignore_unsupported)
 chart_rep1_data <- read.csv("data/population_engineers_hurricanes.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart_rep1_data <- dplyr::mutate(chart_rep1_data, population = if (is.character(population)) suppressWarnings(as.numeric(population)) else population)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart_rep1 <- ggplot2::ggplot(chart_rep1_data)
 # vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
@@ -378,6 +422,7 @@ chart_rep1 <- chart_rep1 + ggplot2::geom_point(mapping = ggplot2::aes(shape = ge
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
 chart_plots[[1]] <- chart_rep1
 chart_rep2_data <- read.csv("data/population_engineers_hurricanes.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart_rep2_data <- dplyr::mutate(chart_rep2_data, engineers = if (is.character(engineers)) suppressWarnings(as.numeric(engineers)) else engineers)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart_rep2 <- ggplot2::ggplot(chart_rep2_data)
 # vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
@@ -385,6 +430,7 @@ chart_rep2 <- chart_rep2 + ggplot2::geom_point(mapping = ggplot2::aes(shape = ge
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
 chart_plots[[2]] <- chart_rep2
 chart_rep3_data <- read.csv("data/population_engineers_hurricanes.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart_rep3_data <- dplyr::mutate(chart_rep3_data, hurricanes = if (is.character(hurricanes)) suppressWarnings(as.numeric(hurricanes)) else hurricanes)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart_rep3 <- ggplot2::ggplot(chart_rep3_data)
 # vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
@@ -392,6 +438,40 @@ chart_rep3 <- chart_rep3 + ggplot2::geom_point(mapping = ggplot2::aes(shape = ge
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
 chart_plots[[3]] <- chart_rep3
 chart <- patchwork::wrap_plots(chart_plots, ncol = 1)
+
+
+chart
+
+===== geo_rule.vl.json [EXEC] =====
+ℹ In argument: `origin_longitude = if (is.character(origin_longitude))
+  suppressWarnings(as.numeric(origin_longitude)) else origin_longitude`.
+Caused by error:
+! object 'origin_longitude' not found
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+layer1_data <- data.frame()
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(data = layer1_data, fill = "lightgray", colour = "white")
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer2_data <- read.csv("data/airports.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer2_data <- dplyr::mutate(layer2_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
+chart <- chart + ggplot2::geom_point(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = longitude, y = latitude),
+  size = 5,
+  colour = "gray"
+)
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer3_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer3_data <- dplyr::mutate(layer3_data, origin_longitude = if (is.character(origin_longitude)) suppressWarnings(as.numeric(origin_longitude)) else origin_longitude, origin_latitude = if (is.character(origin_latitude)) suppressWarnings(as.numeric(origin_latitude)) else origin_latitude)
+layer3_data <- dplyr::filter(layer3_data, origin == "SEA")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: "rule" mark has neither x nor y encoding, drawing nothing (ignore_unsupported)
+chart <- chart + ggplot2::geom_blank()
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 500)
 
 
 chart
@@ -404,6 +484,7 @@ Caused by error:
 library(ggplot2)
 
 chart_data <- jsonlite::fromJSON("data/income.json")
+chart_data <- dplyr::mutate(chart_data, pct = if (is.character(pct)) suppressWarnings(as.numeric(pct)) else pct)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart <- ggplot2::ggplot(chart_data)
 # vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
@@ -454,6 +535,7 @@ chart_data <- data.frame(
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
+chart_data <- dplyr::mutate(chart_data, residency = if (is.character(residency)) suppressWarnings(as.numeric(residency)) else residency)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_rect(
   mapping = ggplot2::aes(xmin = factor(startTime), xmax = endTime, ymax = residency, ymin = 0)
@@ -466,9 +548,9 @@ chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)"
 chart
 
 ===== interactive_airport_crossfilter.vl.json [EXEC] =====
-<text>:34:88: unexpected symbol
-33: vconcat2_rep12_data <- vconcat2_rep1_data
-34: vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, vl_truthy(data('brush_store').length
+<text>:35:88: unexpected symbol
+34: vconcat2_rep12_data <- vconcat2_rep1_data
+35: vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, vl_truthy(data('brush_store').length
                                                                                            ^
 library(ggplot2)
 library(vl2ggplot)
@@ -480,6 +562,7 @@ vconcat11_data <- data.frame()
 vconcat1 <- vconcat1 + ggplot2::geom_point(data = vconcat11_data, fill = "lightgray", colour = "white")
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
 vconcat12_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+vconcat12_data <- dplyr::mutate(vconcat12_data, longitude = if (is.character(longitude)) suppressWarnings(as.numeric(longitude)) else longitude, latitude = if (is.character(latitude)) suppressWarnings(as.numeric(latitude)) else latitude)
 vconcat12_data <- dplyr::group_by(vconcat12_data, origin)
 vconcat12_data <- dplyr::summarise(vconcat12_data, routes = dplyr::n(), .groups = "drop")
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
@@ -555,7 +638,8 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
@@ -571,7 +655,8 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
@@ -601,7 +686,8 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
@@ -617,7 +703,8 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Da
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
@@ -640,6 +727,7 @@ Caused by error:
 library(ggplot2)
 
 chart_data <- read.csv("data/species.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart_data <- dplyr::mutate(chart_data, habitat_yearround_pct = if (is.character(habitat_yearround_pct)) suppressWarnings(as.numeric(habitat_yearround_pct)) else habitat_yearround_pct)
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart <- ggplot2::ggplot(chart_data)
 # vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
@@ -668,8 +756,8 @@ chart <- chart + ggplot2::geom_text(
   data = layer1_data,
   mapping = ggplot2::aes(label = year),
   alpha = 0.06,
-  x = "",
-  y = ""
+  x = Inf,
+  y = Inf
 )
 layer2_data <- jsonlite::fromJSON("data/gapminder.json")
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
@@ -753,7 +841,8 @@ layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer3_data <- dplyr::filter(layer3_data, TRUE)
@@ -766,13 +855,21 @@ chart <- chart + ggplot2::geom_vline(
 layer4_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer4_data <- dplyr::filter(layer4_data, TRUE)
-chart <- chart + ggplot2::geom_text(data = layer4_data, colour = "white", linewidth = 2, x = "", y = "")
+chart <- chart + ggplot2::geom_text(
+  data = layer4_data,
+  colour = "white",
+  linewidth = 2,
+  hjust = "left",
+  x = "",
+  y = ""
+)
 layer5_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer5_data <- dplyr::filter(layer5_data, TRUE)
 chart <- chart + ggplot2::geom_text(
   data = layer5_data,
   mapping = ggplot2::aes(colour = factor(symbol)),
+  hjust = "left",
   x = "",
   y = ""
 )
@@ -799,7 +896,8 @@ layer_data <- dplyr::mutate(layer_data, date = if (is.numeric(date)) as.Date(dat
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = date))
 layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
@@ -812,7 +910,8 @@ layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 chart <- chart + ggplot2::geom_line(data = layer1_data, mapping = ggplot2::aes(x = date, group = 1))
 layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
@@ -825,7 +924,8 @@ layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer2_data <- dplyr::filter(layer2_data, TRUE)
@@ -840,7 +940,8 @@ layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 layer3_data <- vl_pivot(layer3_data, "symbol", "price", groupby = c("date"))
 chart <- chart + ggplot2::geom_vline(
@@ -870,7 +971,8 @@ layer_data <- dplyr::mutate(layer_data, date = if (is.numeric(date)) as.Date(dat
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = date))
 layer1_data <- layer_data
@@ -883,8 +985,10 @@ layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
+layer1_data <- dplyr::mutate(layer1_data, price = if (is.character(price)) suppressWarnings(as.numeric(price)) else price)
 chart <- chart + ggplot2::geom_line(
   data = layer1_data,
   mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
@@ -899,8 +1003,10 @@ layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
+layer2_data <- dplyr::mutate(layer2_data, price = if (is.character(price)) suppressWarnings(as.numeric(price)) else price)
 chart <- chart + ggplot2::geom_point(
   data = layer2_data,
   mapping = ggplot2::aes(x = date, y = price),
@@ -916,7 +1022,8 @@ layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer3_data <- dplyr::filter(layer3_data, (vl_truthy(index.date)) & (TRUE))
@@ -931,13 +1038,14 @@ layer4_data <- dplyr::mutate(layer4_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
 layer4_data <- dplyr::filter(layer4_data, (vl_truthy(index.date)) & (TRUE))
 chart <- chart + ggplot2::geom_text(
   data = layer4_data,
-  mapping = ggplot2::aes(x = date, label = date, y = ""),
+  mapping = ggplot2::aes(x = date, label = date),
   y = 10
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 600, height = 300)
@@ -1003,143 +1111,11 @@ layer2_data <- dplyr::group_by(layer2_data, `Major Genre`, `Major Genre`)
 layer2_data <- dplyr::summarise(layer2_data, count = dplyr::n(), .groups = "drop")
 chart <- chart + ggplot2::geom_text(
   data = layer2_data,
-  mapping = ggplot2::aes(y = factor(`Major Genre`), label = `Major Genre`, group = count, x = "")
+  mapping = ggplot2::aes(y = factor(`Major Genre`), label = `Major Genre`, group = count),
+  hjust = "left",
+  x = Inf
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 200, height = list(step = 16))
-
-
-chart
-
-===== layer_falkensee.vl.json [EXEC] =====
-ℹ In argument: `start = if (...) NULL`.
-Caused by error in `charToDate()`:
-! character string is not in a standard unambiguous format
-library(ggplot2)
-
-layer_data <- data.frame(
-  year = c("1875", "1890", "1910", "1925", "1933", "1939", "1946", "1950", "1964", "1971", "1981", "1985", "1989", "1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014"),
-  population = c(1309, 1558, 4512, 8180, 15915, 24824, 28275, 29189, 29881, 26007, 24029, 23340, 22307, 22087, 22139, 22105, 22242, 22801, 24273, 25640, 27393, 29505, 32124, 33791, 35297, 36179, 36829, 37493, 38376, 39008, 39366, 39821, 40179, 40511, 40465, 40905, 41258, 41777),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- ggplot2::ggplot(layer_data)
-layer1_data <- data.frame(
-  start = c("1933", "1948"),
-  end = c("1945", "1989"),
-  event = c("Nazi Rule", "GDR (East Germany)"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-layer1_data <- dplyr::mutate(layer1_data, start = if (is.numeric(start)) as.Date(start / 86400000, origin = "1970-01-01") else as.Date(as.character(start), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)), end = if (is.numeric(end)) as.Date(end / 86400000, origin = "1970-01-01") else as.Date(as.character(end), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-layer1_data <- dplyr::mutate(layer1_data, year_start = as.Date(format(start, "%Y-01-01")), year_end = as.Date(format(end, "%Y-01-01")))
-chart <- chart + ggplot2::geom_rect(
-  data = layer1_data,
-  mapping = ggplot2::aes(fill = factor(event), xmin = year_start, xmax = year_end),
-  ymin = -Inf,
-  ymax = Inf
-)
-layer2_data <- layer_data
-layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
-chart <- chart + ggplot2::geom_line(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = year_year, y = population, group = 1),
-  colour = "#333"
-)
-layer3_data <- layer_data
-layer3_data <- dplyr::mutate(layer3_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-layer3_data <- dplyr::mutate(layer3_data, year_year = as.Date(format(year, "%Y-01-01")))
-chart <- chart + ggplot2::geom_point(
-  data = layer3_data,
-  mapping = ggplot2::aes(x = year_year, y = population),
-  colour = "#333"
-)
-# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
-
-
-chart
-
-===== layer_likert.vl.json [EXEC] =====
-ℹ In argument: `vl_truthy(name != "Toolbar_First")`.
-Caused by error:
-! object 'name' not found
-library(ggplot2)
-library(vl2ggplot)
-
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-layer_data <- data.frame()
-chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(name)))
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-layer1_data <- data.frame()
-layer1_data <- dplyr::filter(layer1_data, vl_truthy(name != 'Toolbar_First'))
-layer1_data <- dplyr::filter(layer1_data, vl_truthy(name != 'Tablet_First'))
-layer1_data <- dplyr::filter(layer1_data, vl_truthy(name != 'Participant ID'))
-layer1_data <- dplyr::group_by(layer1_data, name, value)
-layer1_data <- dplyr::summarise(layer1_data, count = dplyr::n(), .groups = "drop")
-chart <- chart + ggplot2::geom_point(
-  data = layer1_data,
-  mapping = ggplot2::aes(y = factor(name), x = value, size = count),
-  colour = "#6EB4FD"
-)
-layer2_data <- layer_data
-chart <- chart + ggplot2::geom_point(
-  data = layer2_data,
-  mapping = ggplot2::aes(y = factor(name), x = median),
-  colour = "black"
-)
-layer3_data <- layer_data
-chart <- chart + ggplot2::geom_text(
-  data = layer3_data,
-  mapping = ggplot2::aes(y = factor(name), label = lo, x = "")
-)
-layer4_data <- layer_data
-chart <- chart + ggplot2::geom_text(
-  data = layer4_data,
-  mapping = ggplot2::aes(y = factor(name), label = hi, x = "")
-)
-chart <- chart + ggplot2::scale_x_continuous(limits = c(0, 6))
-chart <- chart + ggplot2::labs(title = "Questionnaire Ratings")
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 250, height = 175)
 
 
 chart
@@ -1163,8 +1139,10 @@ layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(d
   "%B %d, %Y",
   "%B %d %Y",
   "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
 )))
+layer1_data <- dplyr::mutate(layer1_data, price = if (is.character(price)) suppressWarnings(as.numeric(price)) else price)
 chart <- chart + ggplot2::geom_line(
   data = layer1_data,
   mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
@@ -1179,42 +1157,6 @@ chart
 Unsupported aggregate op: {"exponential":0.5} (compound argmin/argmax form not supported)
 
 
-===== layer_line_window.vl.json [EXEC] =====
-ℹ In argument: `fps = 1000/data`.
-Caused by error in `1000 / data`:
-! non-numeric argument to binary operator
-library(ggplot2)
-
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-layer_data <- data.frame()
-chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = row, y = fps, colour = factor(system)))
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-layer1_data <- data.frame()
-layer1_data <- dplyr::mutate(layer1_data, row = dplyr::row_number())
-layer1_data <- dplyr::ungroup(layer1_data)
-layer1_data <- dplyr::mutate(layer1_data, fps = 1000/data)
-layer1_data <- dplyr::mutate(layer1_data, system = 'Falcon')
-chart <- chart + ggplot2::geom_line(
-  data = layer1_data,
-  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system), group = factor(system)),
-  size = 1
-)
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-layer2_data <- data.frame()
-layer2_data <- dplyr::mutate(layer2_data, row = dplyr::row_number())
-layer2_data <- dplyr::ungroup(layer2_data)
-layer2_data <- dplyr::mutate(layer2_data, fps = 1000/data)
-layer2_data <- dplyr::mutate(layer2_data, system = 'Square Crossfilter (3M)')
-chart <- chart + ggplot2::geom_line(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system), group = factor(system)),
-  size = 1
-)
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 200)
-
-
-chart
-
 ===== layer_point_line_regression.vl.json [EXEC] =====
 ℹ In argument: `R2 = paste0("R²: ", format(rSquared, ".2f"))`.
 Caused by error:
@@ -1224,11 +1166,13 @@ library(ggplot2)
 layer_data <- jsonlite::fromJSON("data/movies.json")
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, `Rotten Tomatoes Rating` = if (is.character(`Rotten Tomatoes Rating`)) suppressWarnings(as.numeric(`Rotten Tomatoes Rating`)) else `Rotten Tomatoes Rating`, `IMDB Rating` = if (is.character(`IMDB Rating`)) suppressWarnings(as.numeric(`IMDB Rating`)) else `IMDB Rating`)
 chart <- chart + ggplot2::geom_point(
   data = layer1_data,
   mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`)
 )
 layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, `Rotten Tomatoes Rating` = if (is.character(`Rotten Tomatoes Rating`)) suppressWarnings(as.numeric(`Rotten Tomatoes Rating`)) else `Rotten Tomatoes Rating`, `IMDB Rating` = if (is.character(`IMDB Rating`)) suppressWarnings(as.numeric(`IMDB Rating`)) else `IMDB Rating`)
 # vl2ggplot: skipped unsupported transform type "regression" (ignore_unsupported)
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
@@ -1240,10 +1184,10 @@ layer3_data <- layer_data
 layer3_data <- dplyr::mutate(layer3_data, R2 = paste0('R²: ', format(rSquared, '.2f')))
 chart <- chart + ggplot2::geom_text(
   data = layer3_data,
-  mapping = ggplot2::aes(label = factor(R2)),
+  mapping = ggplot2::aes(label = factor(R2), x = ""),
   colour = "firebrick",
-  x = "",
-  y = ""
+  hjust = "right",
+  y = Inf
 )
 
 
@@ -1275,12 +1219,14 @@ Caused by error in `quantileUniform()`:
 library(ggplot2)
 
 hconcat1_data <- jsonlite::fromJSON("data/normal-2d.json")
+hconcat1_data <- dplyr::mutate(hconcat1_data, v = if (is.character(v)) suppressWarnings(as.numeric(v)) else v)
 # vl2ggplot: skipped unsupported transform type "quantile" (ignore_unsupported)
 hconcat1_data <- dplyr::mutate(hconcat1_data, unif = quantileUniform(p))
 hconcat1_data <- dplyr::mutate(hconcat1_data, norm = quantileNormal(p))
 hconcat1 <- ggplot2::ggplot(hconcat1_data)
 hconcat1 <- hconcat1 + ggplot2::geom_point(mapping = ggplot2::aes(x = unif, y = v))
 hconcat2_data <- jsonlite::fromJSON("data/normal-2d.json")
+hconcat2_data <- dplyr::mutate(hconcat2_data, v = if (is.character(v)) suppressWarnings(as.numeric(v)) else v)
 # vl2ggplot: skipped unsupported transform type "quantile" (ignore_unsupported)
 hconcat2_data <- dplyr::mutate(hconcat2_data, unif = quantileUniform(p))
 hconcat2_data <- dplyr::mutate(hconcat2_data, norm = quantileNormal(p))
@@ -1316,6 +1262,7 @@ vconcat1_data <- dplyr::mutate(vconcat1_data, yc = (y+y2)/2)
 vconcat1 <- ggplot2::ggplot(vconcat1_data)
 vconcat1 <- vconcat1 + ggplot2::geom_text(
   mapping = ggplot2::aes(x = xc, colour = Origin, label = Origin, y = ""),
+  hjust = "center",
   stat = "summary",
   fun = "min",
   orientation = "y"
@@ -1332,6 +1279,7 @@ vconcat2_data <- dplyr::mutate(vconcat2_data, xc = (x+x2)/2)
 vconcat2_data <- dplyr::mutate(vconcat2_data, yc = (y+y2)/2)
 vconcat2 <- ggplot2::ggplot(vconcat2_data)
 vconcat21_data <- vconcat2_data
+vconcat21_data <- dplyr::mutate(vconcat21_data, x = if (is.character(x)) suppressWarnings(as.numeric(x)) else x, y = if (is.character(y)) suppressWarnings(as.numeric(y)) else y, Cylinders = if (is.character(Cylinders)) suppressWarnings(as.numeric(Cylinders)) else Cylinders)
 vconcat2 <- vconcat2 + ggplot2::geom_rect(
   data = vconcat21_data,
   mapping = ggplot2::aes(
@@ -1344,6 +1292,7 @@ vconcat2 <- vconcat2 + ggplot2::geom_rect(
 )
 )
 vconcat22_data <- vconcat2_data
+vconcat22_data <- dplyr::mutate(vconcat22_data, xc = if (is.character(xc)) suppressWarnings(as.numeric(xc)) else xc, yc = if (is.character(yc)) suppressWarnings(as.numeric(yc)) else yc)
 vconcat2 <- vconcat2 + ggplot2::geom_text(
   data = vconcat22_data,
   mapping = ggplot2::aes(x = xc, y = yc, label = factor(Cylinders))
@@ -1354,13 +1303,14 @@ chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
 chart
 
 ===== rect_mosaic_simple.vl.json [EXEC] =====
-ℹ In argument: `x = min(stack_count_Origin1, na.rm = TRUE)`.
-ℹ In group 1: `Origin = "Europe"`.
+ℹ In argument: `y = if (is.character(y)) suppressWarnings(as.numeric(y))
+  else y`.
 Caused by error:
-! object 'stack_count_Origin1' not found
+! object 'y' not found
 library(ggplot2)
 
 chart_data <- jsonlite::fromJSON("data/cars.json")
+chart_data <- dplyr::mutate(chart_data, y = if (is.character(y)) suppressWarnings(as.numeric(y)) else y, Cylinders = if (is.character(Cylinders)) suppressWarnings(as.numeric(Cylinders)) else Cylinders)
 chart_data <- dplyr::group_by(chart_data, Origin, Cylinders)
 chart_data <- dplyr::summarise(chart_data, `count_*` = dplyr::n(), .groups = "drop")
 # vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
@@ -1384,14 +1334,15 @@ chart <- chart + ggplot2::geom_rect(
 chart
 
 ===== stacked_bar_population_transform.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 1st layer.
+ℹ In argument: `v1 = if (is.character(v1))
+  suppressWarnings(as.numeric(v1)) else v1`.
 Caused by error:
 ! object 'v1' not found
 library(ggplot2)
 library(vl2ggplot)
 
 chart_data <- jsonlite::fromJSON("data/population.json")
+chart_data <- dplyr::mutate(chart_data, v1 = if (is.character(v1)) suppressWarnings(as.numeric(v1)) else v1)
 chart_data <- dplyr::filter(chart_data, vl_truthy(year == 2000))
 chart_data <- dplyr::mutate(chart_data, gender = ifelse(sex == 2, 'Female', 'Male'))
 # vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
@@ -1406,7 +1357,7 @@ chart <- chart + ggplot2::scale_fill_manual(values = c("#675193", "#ca8861"))
 chart
 
 ===== test_aggregate_nested.vl.json [TRANSLATE] =====
-Unsupported: nested field reference "properties.variety" (dot-path into a sub-object) is not supported
+Unsupported: nested field reference "properties.yield" (dot-path into a sub-object) is not supported
 
 
 ===== test_subobject_missing.vl.json [TRANSLATE] =====
@@ -1418,76 +1369,17 @@ Unsupported: nested field reference "source.reco" (dot-path into a sub-object) i
 
 
 ===== test_subobject.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 1st layer.
+ℹ In argument: `source.reco = if (is.character(source.reco))
+  suppressWarnings(as.numeric(source.reco)) else source.reco`.
 Caused by error:
 ! object 'source.reco' not found
 library(ggplot2)
 
 # vl2ggplot: unsupported data "format.property" (extracting a nested array from a larger JSON object), using an empty data.frame instead (ignore_unsupported)
 chart_data <- data.frame()
+chart_data <- dplyr::mutate(chart_data, source.reco = if (is.character(source.reco)) suppressWarnings(as.numeric(source.reco)) else source.reco, source.yes = if (is.character(source.yes)) suppressWarnings(as.numeric(source.yes)) else source.yes)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(x = source.reco, y = source.yes))
-
-
-chart
-
-===== time_parse_local.vl.json [EXEC] =====
-ℹ In argument: `date = if (...) NULL`.
-Caused by error in `charToDate()`:
-! character string is not in a standard unambiguous format
-library(ggplot2)
-
-chart_data <- data.frame(
-  date = c("10 Oct 2011 22:48:00", "11 Oct 2022 23:00:00"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart_data <- dplyr::mutate(chart_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: unsupported timeUnit "hoursminutes", left untruncated (ignore_unsupported)
-chart_data <- dplyr::mutate(chart_data, hoursminutes_date = date)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(y = factor(hoursminutes_date), x = ""))
-
-
-chart
-
-===== time_parse_utc_format.vl.json [EXEC] =====
-ℹ In argument: `date = if (...) NULL`.
-Caused by error in `charToDate()`:
-! character string is not in a standard unambiguous format
-library(ggplot2)
-
-chart_data <- data.frame(
-  date = c("10 Oct 2011 22:48:00", "11 Oct 2022 23:00:00"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart_data <- dplyr::mutate(chart_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: unsupported timeUnit "hoursminutes", left untruncated (ignore_unsupported)
-chart_data <- dplyr::mutate(chart_data, hoursminutes_date = date)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(y = factor(hoursminutes_date), x = ""))
 
 
 chart
@@ -1497,9 +1389,9 @@ Unsupported: nested field reference "lc.time" (dot-path into a sub-object) is no
 
 
 ===== wheat_wages.vl.json [EXEC] =====
-<text>:46:83: unexpected input
-45: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
-46: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
+<text>:52:83: unexpected input
+51: layer6_data <- dplyr::mutate(layer6_data, start = if (is.character(start)) suppressWarnings(as.numeric(start)) else start)
+52: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
                                                                                       ^
 library(ggplot2)
 
@@ -1507,6 +1399,7 @@ layer_data <- jsonlite::fromJSON("data/wheat.json")
 layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, wheat = if (is.character(wheat)) suppressWarnings(as.numeric(wheat)) else wheat, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_rect(
   data = layer1_data,
   mapping = ggplot2::aes(xmin = year, xmax = year_end, ymax = wheat, ymin = 0),
@@ -1518,6 +1411,7 @@ layer2_data <- data.frame(
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
+layer2_data <- dplyr::mutate(layer2_data, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_vline(
   data = layer2_data,
   mapping = ggplot2::aes(xintercept = year),
@@ -1526,6 +1420,7 @@ chart <- chart + ggplot2::geom_vline(
   linewidth = 0.6
 )
 layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, wages = if (is.character(wages)) suppressWarnings(as.numeric(wages)) else wages, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_area(
   data = layer3_data,
   mapping = ggplot2::aes(y = wages, x = year, group = 1),
@@ -1533,6 +1428,7 @@ chart <- chart + ggplot2::geom_area(
   alpha = 0.7
 )
 layer4_data <- layer_data
+layer4_data <- dplyr::mutate(layer4_data, wages = if (is.character(wages)) suppressWarnings(as.numeric(wages)) else wages, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_line(
   data = layer4_data,
   mapping = ggplot2::aes(y = wages, x = year, group = 1),
@@ -1540,12 +1436,14 @@ chart <- chart + ggplot2::geom_line(
   alpha = 0.7
 )
 layer5_data <- layer_data
+layer5_data <- dplyr::mutate(layer5_data, wages = if (is.character(wages)) suppressWarnings(as.numeric(wages)) else wages, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
 chart <- chart + ggplot2::geom_line(
   data = layer5_data,
   mapping = ggplot2::aes(y = wages, x = year, group = 1),
   colour = "#EE8182"
 )
 layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+layer6_data <- dplyr::mutate(layer6_data, start = if (is.character(start)) suppressWarnings(as.numeric(start)) else start)
 layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
 layer6_data <- dplyr::mutate(layer6_data, y = 95)
 chart <- chart + ggplot2::geom_rect(
