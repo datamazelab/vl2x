@@ -148,18 +148,18 @@ error_bounds <- function(encoding, axis, ignore_unsupported = FALSE, .notes = NU
 # `plan` (from transforms.R's plan_layer_data()) may add extra fixed params
 # (e.g. stat = "count"/"summary") and note whether this layer needs
 # geom_histogram instead of the plain mark geom.
-render_geom_layer <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE) {
+render_geom_layer <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE, extent_data_var = NULL, extent_params = list()) {
   notes_env <- new.env()
-  code <- render_geom_layer_code(mark, encoding, data_arg, plan, ignore_unsupported, notes_env)
+  code <- render_geom_layer_code(mark, encoding, data_arg, plan, ignore_unsupported, notes_env, extent_data_var, extent_params)
   notes <- notes_env$notes
   list(code = code, notes = if (is.null(notes)) character(0) else paste0("# vl2ggplot: ", notes))
 }
 
-render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE, .notes = NULL) {
+render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list()) {
   mark_type <- if (is.character(mark)) mark else mark$type
   mark_props <- if (is.character(mark)) list() else mark[names(mark) != "type"]
 
-  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes)
+  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes, extent_data_var, extent_params)
   fixed <- merge_named(mark_fixed_params(mark_props, mark_type, ignore_unsupported, .notes), channels$fixed)
   if (!is.null(plan$extra_fixed)) fixed <- merge_named(fixed, plan$extra_fixed)
 
@@ -255,6 +255,17 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       fixed[["ymax"]] <- "Inf"
       return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
     }
+    if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && identical(encoding$y$type, "quantitative")) {
+      # A real quantitative y value alongside a binned x range (e.g. a
+      # pre-binned histogram given as explicit bin_start/bin_end + count
+      # columns) -- a proper zero-baseline-anchored box, not the Gantt-
+      # style "thick line at a fixed height" case below (which only makes
+      # sense when the companion axis is categorical, not a real value).
+      aes_pairs[["ymax"]] <- aes_pairs[["y"]]
+      aes_pairs[["ymin"]] <- "0"
+      aes_pairs[["y"]] <- NULL
+      return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    }
     if (is.null(aes_pairs[["y"]])) aes_pairs[["y"]] <- '""'
     if (mark_type %in% c("bar", "rect")) {
       # The companion axis (y) is typically categorical here (e.g. a Gantt
@@ -274,6 +285,36 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
     fixed[["width"]] <- "1"
     fixed[["stat"]] <- fixed[["stat"]] %||% '"identity"'
+  }
+  if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]])) {
+    # A bar/rect mark with only a position (x) channel and no value (y)
+    # axis at all, and no x2/y2 range either (e.g. a vertical highlight
+    # band marking specific x positions, like a null-data day) -- this is
+    # not the "1D dot plot" the generic fallback just below treats every
+    # other 1-axis mark as (a bar/rect has no meaningful "categorical
+    # placeholder position", only ever a real value to size against), and
+    # there's no value to size a box against either -- a full plot-height
+    # band at that x position instead, via the same -Inf/Inf idiom used
+    # elsewhere in this file for a reference band with a missing companion
+    # axis. Width is derived from the smallest gap between this layer's own
+    # sorted x values (falling back to a fixed guess when there's only one),
+    # since there's no bin/band width to read off the (continuous) x scale.
+    # Excludes a genuinely quantitative x (a real 1D aggregate value, e.g.
+    # `x: {"aggregate": "sum", "field": ...}` with no groupby at all) --
+    # that's the generic fallback's "1D bar" case below, sized from a zero
+    # baseline, not a position to draw a reference band at.
+    x_expr <- aes_pairs[["x"]]
+    half_width_expr <- sprintf(
+      "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 else 0.5 })(%s)",
+      x_expr
+    )
+    aes_pairs[["xmin"]] <- sprintf("(%s) - (%s)", x_expr, half_width_expr)
+    aes_pairs[["xmax"]] <- sprintf("(%s) + (%s)", x_expr, half_width_expr)
+    aes_pairs[["x"]] <- NULL
+    fixed[["ymin"]] <- "-Inf"
+    fixed[["ymax"]] <- "Inf"
+    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
   }
   if (mark_type %in% c("point", "circle", "square", "tick", "bar", "rect", "text") && !isTRUE(plan$use_histogram) && !identical(fixed[["stat"]], '"count"')) {
     # A 1D strip/dot plot (only one of x/y given) centers on the missing
@@ -295,6 +336,19 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     } else if (is.null(aes_pairs[["y"]])) {
       aes_pairs[["y"]] <- '""'
     }
+  }
+  # geom_col()/geom_bar()'s default orientation ("x": x is the
+  # category/position axis, y is the value drawn from a zero baseline) is
+  # normally inferred correctly from which aesthetic ggplot2 sees as
+  # discrete at build time -- but a *continuous* position axis (a temporal
+  # y with a quantitative x, e.g. a horizontal bar chart binned/bucketed by
+  # date) never looks discrete to that inference, so it silently guesses
+  # vertical bars instead. Detected directly from Vega-Lite's own encoding
+  # types (temporal/ordinal/nominal is a position axis; quantitative is the
+  # value axis) rather than relying on ggplot2 to guess right.
+  if (mark_type == "bar" && is.null(fixed[["orientation"]]) &&
+      identical(encoding$x$type, "quantitative") && !is.null(encoding$y$type) && !identical(encoding$y$type, "quantitative")) {
+    fixed[["orientation"]] <- '"y"'
   }
   fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]), ignore_unsupported, .notes)
   build_call(fn, aes_pairs, fixed, data_arg)
@@ -334,7 +388,13 @@ render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg, ignore_unsup
       aes_pairs[["x"]] <- NULL
       return(build_call("ggplot2::geom_vline", aes_pairs, fixed, data_arg))
     }
-    return(build_call("ggplot2::geom_vline", list(xintercept = aes_pairs[["x"]]), fixed, data_arg = NULL, as_aes = FALSE))
+    # A constant (value/datum, no field) channel is built into `fixed`, not
+    # `aes_pairs` (see build_layer_channels()) -- read it from there, and
+    # drop it out of `fixed` again so it isn't *also* passed through as a
+    # meaningless literal "x" geom argument.
+    xintercept <- fixed[["x"]]
+    fixed[["x"]] <- NULL
+    return(build_call("ggplot2::geom_vline", list(xintercept = xintercept), fixed, data_arg = NULL, as_aes = FALSE))
   }
   if (has_y && !has_x) {
     if (!is.null(encoding$y$field)) {
@@ -342,7 +402,9 @@ render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg, ignore_unsup
       aes_pairs[["y"]] <- NULL
       return(build_call("ggplot2::geom_hline", aes_pairs, fixed, data_arg))
     }
-    return(build_call("ggplot2::geom_hline", list(yintercept = aes_pairs[["y"]]), fixed, data_arg = NULL, as_aes = FALSE))
+    yintercept <- fixed[["y"]]
+    fixed[["y"]] <- NULL
+    return(build_call("ggplot2::geom_hline", list(yintercept = yintercept), fixed, data_arg = NULL, as_aes = FALSE))
   }
   if (ignore_unsupported) {
     .push_note(.notes, '"rule" mark has neither x nor y encoding, drawing nothing (ignore_unsupported)')

@@ -113,13 +113,31 @@ render_data_load <- function(data, var_name, ignore_unsupported = FALSE) {
     return(c(note, sprintf("%s <- %s", var_name, loader)))
   }
 
+  if (!is.null(data$sequence)) {
+    # A `sequence` data generator produces its own rows outright (no
+    # parsing involved) -- one row per step from `start` (inclusive) to
+    # `stop` (exclusive), each holding just the sequence value under `as`
+    # (Vega-Lite's own default field name, "data", when `as` is omitted).
+    # base R's seq() has no built-in exclusive-stop form (unlike d3.range()),
+    # so the naive inclusive sequence is filtered down afterward.
+    start <- data$sequence$start
+    stop <- data$sequence$stop
+    step <- if (!is.null(data$sequence$step)) data$sequence$step else 1
+    as_name <- if (!is.null(data$sequence$as)) data$sequence$as else "data"
+    seq_expr <- sprintf("seq(%s, %s, by = %s)", format_value(start), format_value(stop), format_value(step))
+    return(sprintf(
+      "%s <- data.frame(%s = Filter(function(.v) .v < %s, %s))",
+      var_name, render_name(as_name), format_value(stop), seq_expr
+    ))
+  }
+
   if (ignore_unsupported) {
     return(c(
       '# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)',
       sprintf("%s <- data.frame()", var_name)
     ))
   }
-  stop('Unsupported data source: expected inline "values" or a "url"')
+  stop('Unsupported data source: expected inline "values", a "url", or a "sequence" generator')
 }
 
 # Fields that are encoded as temporal need coercion from raw

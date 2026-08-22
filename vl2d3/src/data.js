@@ -35,10 +35,21 @@ export function renderDataLoad(data, dataVar, ignoreUnsupported = false) {
       isAsync: true,
     };
   }
+  if (data && data.sequence && typeof data.sequence === 'object') {
+    // A `sequence` data generator produces its own rows outright (no
+    // fetch/parse involved) -- one row per step from `start` (inclusive) to
+    // `stop` (exclusive), each holding just the sequence value under `as`
+    // (Vega-Lite's own default field name, "data", when `as` is omitted).
+    const {start, stop, step = 1, as = 'data'} = data.sequence;
+    return {
+      statements: [`let ${dataVar} = d3.range(${formatValue(start)}, ${formatValue(stop)}, ${formatValue(step)}).map(v => ({${JSON.stringify(as)}: v}));`],
+      isAsync: false,
+    };
+  }
   if (ignoreUnsupported) {
-    // Nothing to load (no `values`, no `url`) -- an empty dataset still
-    // lets the rest of the chart (axes, other layers) render instead of
-    // aborting entirely.
+    // Nothing to load (no `values`, no `url`, no `sequence`) -- an empty
+    // dataset still lets the rest of the chart (axes, other layers) render
+    // instead of aborting entirely.
     return {
       statements: [
         `// vl2d3: unsupported data source (expected inline "values" or a "url"), using an empty dataset (--ignore-unsupported)`,
@@ -47,7 +58,7 @@ export function renderDataLoad(data, dataVar, ignoreUnsupported = false) {
       isAsync: false,
     };
   }
-  throw new Error('Unsupported data source: expected inline "values" or a "url"');
+  throw new Error('Unsupported data source: expected inline "values", a "url", or a "sequence" generator');
 }
 
 function guessFormatFromUrl(url) {

@@ -364,7 +364,7 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   plot_var <- new_var(emitter, hint)
   emit(emitter, sprintf("%s <- ggplot2::ggplot(%s)", plot_var, prepared$data_var))
 
-  geom <- render_geom_layer(prepared$mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram), ignore_unsupported)
+  geom <- render_geom_layer(prepared$mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram), ignore_unsupported, prepared$data_var, prepared$extent_params)
   emit(emitter, geom$notes)
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
@@ -483,6 +483,13 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     if (length(coercion)) emit(emitter, coercion)
     if (!is.null(spec$transform)) emit(emitter, render_transforms(spec$transform, wrapper_data_var, ignore_unsupported))
   }
+  # An `extent` transform on the wrapper (not any individual layer child --
+  # this project's own layer translation, unlike D3's mergeDown(), applies
+  # the wrapper's transform once against wrapper_data_var rather than
+  # cascading a copy into each child) needs collecting here so each child's
+  # own value-channel expr (e.g. a rule mark referencing `b_extent[0]`) can
+  # still resolve it.
+  wrapper_extent_params <- collect_extent_params(spec$transform %||% list())
 
   base_call <- if (!is.null(wrapper_data_var)) {
     if (!is.null(base_aes_call)) sprintf("ggplot2::ggplot(%s, %s)", wrapper_data_var, base_aes_call) else sprintf("ggplot2::ggplot(%s)", wrapper_data_var)
@@ -505,7 +512,9 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     geom <- render_geom_layer(
       prepared$mark, prepared$encoding, data_arg,
       list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram),
-      ignore_unsupported
+      ignore_unsupported,
+      prepared$data_var %||% wrapper_data_var,
+      merge_named(wrapper_extent_params, prepared$extent_params)
     )
     emit(emitter, geom$notes)
     emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
@@ -631,7 +640,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
       geom <- render_geom_layer(
         prepared$mark, prepared$encoding, prepared$data_var,
         list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram),
-        ignore_unsupported
+        ignore_unsupported, prepared$data_var, prepared$extent_params
       )
       emit(emitter, geom$notes)
       emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))

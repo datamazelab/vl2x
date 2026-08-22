@@ -38,8 +38,25 @@ Vega-Lite's:
 
 So this project is real translation work — closer in spirit to `vl2d3` than
 to `vl2altair`/`vl2vlapi` — but because the *target* grammar is so much
-richer than D3, its practical coverage of the same 633-spec corpus (410/633
-OK) sits much closer to its mechanical siblings than to `vl2d3`'s 291/633.
+richer than D3, its practical coverage of the same 633-spec corpus (503/633
+OK) sits much closer to its mechanical siblings than to `vl2d3`'s 330/633.
+
+## Shared runtime helpers (`R/runtime.R`)
+
+Most generated code only needs `library(ggplot2)`/`dplyr` — but a transform
+substantial enough that re-deriving its logic inline in every generated
+script would be error-prone (`pivot`'s per-group column-spreading with
+duplicate-cell aggregation; the JS-truthy semantics a bare-expression
+filter like `"datum.field"` relies on, which `dplyr::filter()`'s
+strict-logical requirement doesn't share) is instead a real, independently-
+readable exported package function (`vl_pivot()`, `vl_truthy()`), called by
+name from the generated script. Unlike `vl2d3`'s equivalent (`runtime.js`,
+a plain file copied alongside each generated output since there's no
+install step for generated JS to depend on), a generated R script already
+runs somewhere `vl2ggplot` is installed — that's how `vegalite_to_ggplot()`
+produced it — so the mechanism is just `library(vl2ggplot)` in the header,
+added automatically (and only) when the generated body actually calls one
+of these.
 
 ## The aggregate/bin/timeUnit dual path (`transforms.R`)
 
@@ -235,6 +252,57 @@ mistake that reading the generator in isolation wouldn't catch:
   specifically) is what a user sees, rather than an unrelated internal
   crash.
 
+- **`geom_line()`'s default grouping silently fragmented a multi-series line
+  chart into one single-point "line" per row.** ggplot2 groups a line by
+  the *interaction of every discrete aesthetic in the plot* by default —
+  including `x`/`y` themselves, if they happen to be discrete (e.g. an
+  ordinal axis). Vega-Lite's own semantics group a line only by its
+  `color`/`detail`/`shape` encoding, connecting across the sorted x-domain
+  regardless of whether that axis is itself discrete. A rank-over-time
+  chart (ordinal x *and* ordinal y, one series per `color`) had every
+  distinct `(x, y, colour)` combination become its own single-point group —
+  correct data, correct colours, but nothing visibly connected, since nothing
+  in the translator ever set an explicit `group` aesthetic to override
+  ggplot2's default. `build_layer_channels()` in `encoding.R` now always sets
+  `group` to the colour/fill/shape aesthetic explicitly for `line`/`trail`/
+  `area` marks, which is a no-op when x/y are already continuous (ggplot2
+  computes the same grouping either way) and the actual fix when they aren't.
+- **A mark-level literal color config was captured into the wrong bucket
+  and never used.** A channel's constant `value`/`datum` (no `field`) is
+  correctly kept out of `aes_pairs` and instead built into `fixed` (a
+  literal geom argument, not a per-row mapping) — but `render_rule_layer()`
+  looked for a value-only x/y channel's resolved expression back in
+  `aes_pairs` anyway, which was always empty for that shape. The result was
+  a always-empty `xintercept =` (an R parse error, not silently wrong
+  output) whenever a rule mark used a bare constant position (~40 corpus
+  specs have *some* mark-level literal color/fill/stroke property, several
+  of which combine with this exact rule-mark shape). Fixed by reading from
+  `fixed` for that case, matching where `build_layer_channels()` actually
+  puts it.
+- **A `timeUnit`-bucketed filter compared the wrong shape.** `{"field":
+  "date", "timeUnit": "year", "equal": 2006}` is Vega-Lite's standard
+  filter-by-year idiom — comparing just the extracted *year number* to
+  `2006`, not the field's own `year`-truncated *Date* to it (a Date vs. a
+  bare number is never meaningfully equal, and R silently evaluates it to
+  `FALSE` for every row rather than erroring, filtering out the entire
+  dataset with no error at all). `timeunit_component_expr()` in
+  `timeunit.R` now extracts the bare component number
+  (year/month/date/hours/minutes/seconds/quarter) for exactly this case,
+  used only when the filter's comparison value isn't a `DateTime` object.
+- **An escaped field name (`"a\\.b"`, a literal dot in a flat column name)
+  produced an R *parse* error, not just a lookup miss.** R's own
+  backtick-quoted-name syntax (`` `a\.b` ``) parses backslash escapes the
+  same way a string literal does — `\.` isn't a recognized escape sequence,
+  so a name built from an un-unescaped field string is invalid R syntax,
+  not merely a reference to a nonexistent column. `field_ref()` in `expr.R`
+  now undoes the escaping once it's confirmed every remaining dot is a
+  genuinely-escaped literal one (as opposed to an unsupported nested-path
+  dot); a couple of other call sites that read a channel's `$field`
+  directly rather than through `field_ref()` (`out_field_name()`'s derived
+  names, used for a `timeUnit`-bucketed groupby column) needed the same
+  `unescape_field_path()` applied explicitly, since they never went through
+  `field_ref()` in the first place.
+
 ## Corpus validation methodology
 
 Like `vl2d3` (and unlike `vl2altair`/`vl2vlapi`'s near-100% pass/fail), a
@@ -249,25 +317,22 @@ buckets every spec into one of three outcomes:
 3. **Failed** — anything else. By construction, every failure in this bucket
    is either a real bug or an undocumented gap worth documenting.
 
-At the time of writing: **410/633 OK, 219/633 skipped, 4/633 failed**. The
-four residual failures each combine multiple unusual features at once —
-diminishing returns to chase further:
+At the time of writing: **503/633 OK, 122/633 skipped, 8/633 failed**. A
+second, stricter harness, `tests/validate_rendering.R`, runs the full corpus
+a second time under `ignore_unsupported = TRUE` and captures the *complete*
+error message for anything that still fails (`render_ggplot.R`'s own status
+tracking keeps only ggplot2's first, often-truncated line) — **580/633
+execute cleanly** under it. The 8 residual strict failures each combine
+several unusual features at once — diminishing returns to chase further for
+a v1 — including a log-scaled histogram whose pre-binned `x`/`x2` range
+collides with the Gantt-chart `geom_linerange` workaround, a `rule` mark
+whose position channels are all simultaneously interactive-`param`-bound
+values (no static resolution path for the bound parameters), and an
+`{extent: {param: ...}}` *bin option* referencing a brush-selection param
+(distinct from the top-level `extent` *transform*, which is supported —
+this is `bin`'s own, still-interactivity-dependent `extent`).
 
-- a log-scaled histogram whose pre-binned `x`/`x2` range collides with the
-  Gantt-chart `geom_linerange` workaround *and* an inline count-aggregate on
-  the same layer,
-- a non-linear (string-labeled, `"∞"`-containing) histogram using an ordinal
-  `"point"`-scale axis paired with a numeric `x2` range,
-- a `rule` mark whose `x`/`x2`/`y`/`y2` are all simultaneously
-  interactive-`param`-bound values (forming a 2D box with no static
-  resolution path for the bound parameters), and
-- a `text` mark whose `aggregate` is declared on the `text`/label channel
-  itself rather than on `x`/`y`, which needs `stat_summary(..., geom =
-  "text", aes(label = after_stat(y)))` — a materially different code shape
-  than the "aggregate on a position channel" case everything else in
-  `transforms.R` is built around.
-
-Every bug described above was found through this harness — none were caught
-by reading the generator code or by the hand-written unit suite
-(`tests/testthat/test-translator.R`), which is why the harness exists as a
-separate, much larger validation step.
+Every bug described above was found through one of these two harnesses —
+none were caught by reading the generator code or by the hand-written unit
+suite (`tests/testthat/test-translator.R`), which is why they exist as
+separate, much larger validation steps.

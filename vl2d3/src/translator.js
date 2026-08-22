@@ -321,7 +321,14 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
   }
   for (const [channel, resolver] of [['color', resolveColorScale], ['size', resolveSizeScale], ['opacity', resolveOpacityScale]]) {
     const def = prepared.map(p => p.encoding[channel]).find(Boolean);
-    if (!def || 'value' in def) continue;
+    // `"scale": null` is Vega-Lite's own "use the raw field value directly
+    // as the visual channel value, no mapping at all" escape hatch (e.g. a
+    // `color` field that already holds real CSS color strings). Building no
+    // scale at all here (leaving `scales[channel]` unset) makes
+    // accessor()/fillExpr() in marks.js fall back to their own existing
+    // "no scale resolved for this channel" case -- a bare field reference --
+    // which is exactly this behavior, with no separate code path needed.
+    if (!def || 'value' in def || def.scale === null) continue;
     const scale = resolver(def, {dataVar: allDataExpr, ignoreUnsupported});
     b(scale.decl);
     scales[channel] = scale;

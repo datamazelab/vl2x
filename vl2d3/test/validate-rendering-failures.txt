@@ -4,6 +4,8 @@
 
 ===== area_ranged_offset_quantitative.vl.json [NaN geometry: 2 shape(s), tags=path] =====
 
+===== bar_bullet_expr_bind.vl.json [NaN geometry: 5 shape(s), tags=rect] =====
+
 ===== bar_custom_time_domain.vl.json [NaN geometry: 3 shape(s), tags=rect] =====
 
 ===== bar_diverging_stack_transform.vl.json [NaN geometry: 40 shape(s), tags=rect] =====
@@ -18,11 +20,15 @@
 
 ===== boxplot_1D_invalid.vl.json [NaN geometry: 6 shape(s), tags=line] =====
 
+===== facet_bullet.vl.json [NaN geometry: 25 shape(s), tags=rect] =====
+
 ===== histogram_log.vl.json [NaN geometry: 7 shape(s), tags=rect] =====
 
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
 ===== histogram_rel_freq.vl.json [NaN geometry: 20 shape(s), tags=rect] =====
+
+===== interactive_histogram_full_height_hover.vl.json [NaN geometry: 213 shape(s), tags=rect] =====
 
 ===== layer_bar_line_union.vl.json [NaN geometry: 1 shape(s), tags=path] =====
 
@@ -136,7 +142,7 @@ export default async function chart(container, options = {}) {
 
   // vl2d3: unsupported mark type "geoshape", drawing as "point" instead (--ignore-unsupported)
   svg.append("g")
-    .attr("fill", "steelblue")
+    .attr("fill", "lightgray")
     .attr("fill-opacity", 0.8)
     .selectAll("circle")
     .data(data1)
@@ -174,7 +180,7 @@ export default async function chart(container, options = {}) {
 
   // vl2d3: unsupported mark type "geoshape", drawing as "point" instead (--ignore-unsupported)
   svg.append("g")
-    .attr("fill", "steelblue")
+    .attr("fill", "aliceblue")
     .attr("fill-opacity", 0.8)
     .selectAll("circle")
     .data(data1)

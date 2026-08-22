@@ -60,6 +60,16 @@ build_position_scale <- function(channel, def) {
 }
 
 build_color_scale <- function(aes_name, def) {
+  # `"scale": null` is Vega-Lite's own "use the raw field value directly as
+  # the visual channel value, no mapping at all" escape hatch (e.g. a
+  # `color` field that already holds real CSS color strings) -- distinct
+  # from the (far more common) case of no `scale` key at all, which still
+  # wants ggplot2's own default discrete/continuous palette. Checking
+  # `is.null(def$scale)` alone can't tell those apart (both are NULL), so
+  # this also requires the key to actually be present.
+  if ("scale" %in% names(def) && is.null(def$scale)) {
+    return(format_call(sprintf("ggplot2::scale_%s_identity", aes_name), character(0)))
+  }
   kind <- axis_kind(def)
   scheme <- def$scale$scheme
   domain <- def$scale[["domain"]]

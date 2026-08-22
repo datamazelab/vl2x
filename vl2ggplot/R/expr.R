@@ -7,11 +7,10 @@
 # backtick-quoted) bare column reference, map the small set of
 # JS/Vega-only operators and functions onto their R equivalents, and pass
 # everything else through verbatim. Vega-specific functions with no simple
-# R equivalent (`datetime()`, `toDate()`, the `vlSelectionTest` family,
-# string helpers like `isValid`/`length`, ...) are NOT translated -- they
-# pass through as literal text, which will raise a clear R error
-# ("could not find function ...") at generated-code run time rather than
-# silently producing wrong output.
+# R equivalent (`datetime()`, `toDate()`, the `vlSelectionTest` family, ...)
+# are NOT translated -- they pass through as literal text, which will raise
+# a clear R error ("could not find function ...") at generated-code run
+# time rather than silently producing wrong output.
 
 .identifier_re <- "[A-Za-z_.][A-Za-z0-9_.]*"
 
@@ -19,8 +18,15 @@
 # these few differ from their Vega/JS spelling. toNumber/toBoolean/toString
 # are 1-argument type coercions with an exact base-R equivalent (unlike
 # e.g. toDate(), which has none and is deliberately left untranslated).
+# `round` is deliberately absent here -- R's own `round(x, digits)` already
+# has the exact same 2-argument (value, decimal places) signature and
+# semantics Vega's does, so a bare, untranslated `round(...)` already just
+# works. `length`, unlike JS/Vega's array-or-string length, only ever
+# reports an R *vector's* length (always 1 for a single string) -- `nchar`
+# is the correct rename for the string-field usage this project's
+# generated code actually exercises.
 .math_rename <- c(
-  ceil = "ceiling", pow = NA, random = NA,
+  ceil = "ceiling", pow = NA, random = NA, length = "nchar",
   toNumber = "as.numeric", toBoolean = "as.logical", toString = "as.character"
 )
 
@@ -58,7 +64,13 @@ field_ref <- function(field) {
     stop(sprintf('Unsupported: nested field reference "%s" (dot-path into a sub-object) is not supported', field))
   }
   field <- unescape_field_path(field)
-  if (grepl(paste0("^", .identifier_re, "$"), field)) field else paste0("`", field, "`")
+  # is_valid_r_name() (not a hand-rolled character-pattern check here) --
+  # a field can easily collide with an R reserved word (`next`, `break`,
+  # `if`, ...), which is a syntactically valid *identifier* shape but still
+  # requires backtick-quoting to use as a bare name; a plain "does it match
+  # the identifier character pattern" check would otherwise emit it
+  # unquoted, an R parse error at generated-code run time.
+  if (is_valid_r_name(field)) field else paste0("`", field, "`")
 }
 
 # Undo a Vega-Lite field NAME's own backslash-escaping (most commonly of a
@@ -84,6 +96,27 @@ replace_tokens <- function(text, pattern, replace_fn, perl = FALSE) {
   replacements <- vapply(matches, replace_fn, character(1), USE.NAMES = FALSE)
   regmatches(text, m) <- list(replacements)
   text
+}
+
+# `datum.field === null` (or `==`/`!==`/`!=`) has no direct R translation --
+# R's `==`/`!=` against NA always evaluates to NA itself, never TRUE/FALSE
+# (unlike JS, where `x === null` is a real boolean test), so a straight
+# operator-and-literal-null translation (the blanket "null" -> "NA" rename
+# in translate_expr() below) would silently produce a condition that never
+# selects either ifelse() branch. Rewritten into is.na()/!is.na() while the
+# `datum...` reference is still simple, literal source text -- this must
+# run before the datum->field-reference substitution, which could turn the
+# left-hand side into something with backticks/brackets that's harder to
+# safely re-wrap.
+.null_comparison_re <- "((?:datum(?:\\.[A-Za-z_][A-Za-z0-9_]*|\\[['\"][^'\"]*['\"]\\])+))\\s*(===|==|!==|!=)\\s*null\\b"
+
+rewrite_null_comparisons <- function(s) {
+  replace_tokens(s, .null_comparison_re, function(m) {
+    parts <- regmatches(m, regexec(.null_comparison_re, m, perl = TRUE))[[1]]
+    expr <- parts[2]
+    op <- parts[3]
+    if (op %in% c("===", "==")) sprintf("is.na(%s)", expr) else sprintf("!is.na(%s)", expr)
+  }, perl = TRUE)
 }
 
 # R has no ternary operator, so `cond ? a : b` is rewritten to
@@ -272,6 +305,19 @@ rewrite_if_calls <- function(s) {
   paste0(substr(s, 1, call$open - 3), replacement, substr(s, call$close + 1, nchar(s)))
 }
 
+# `isValid(x)` -- Vega's own "not null/undefined/NaN" check, for any value
+# type -- has no single base-R function to rename to, but expands exactly
+# into `!is.na(x)` (R's own NA already covers both a genuinely missing value
+# and a NaN, which `is.na()` treats the same way).
+rewrite_is_valid_calls <- function(s) {
+  call <- .find_call(s, "isValid")
+  if (is.null(call)) return(s)
+  inner <- trimws(substr(s, call$open + 1, call$close - 1))
+  replacement <- sprintf("!is.na(%s)", inner)
+  rewritten <- paste0(substr(s, 1, call$open - 8), replacement, substr(s, call$close + 1, nchar(s)))
+  rewrite_is_valid_calls(rewritten)
+}
+
 # JS/Vega's `%` is modulo (like R's `%%`, which R itself spells with two
 # percent signs); a bare `%` is otherwise never valid R syntax.
 rewrite_modulo <- function(s) {
@@ -313,8 +359,10 @@ rewrite_modulo <- function(s) {
 
 translate_expr <- function(expr) {
   if (!is.character(expr)) return(expr)
-  out <- translate_ternary(expr)
+  out <- rewrite_null_comparisons(expr)
+  out <- translate_ternary(out)
   out <- rewrite_if_calls(out)
+  out <- rewrite_is_valid_calls(out)
 
   # datum['field'] / datum["field"] -> bare/backtick-quoted field reference.
   out <- replace_tokens(out, "datum\\[(['\"])([^'\"]*)\\1\\]", function(m) {

@@ -89,6 +89,31 @@ in `marks.js`) makes every mark renderer place a row-dependent fill/stroke
 on the joined-element selection (`d => fill`) instead of the enclosing `<g>`,
 and only use the `<g>`-level constant form when the value is truly constant.
 
+## Shared runtime helpers vs. inlining
+
+Most transforms (`filter`, `calculate`, `aggregate`, `bin`, `fold`, ...)
+compile to a short, self-explanatory inline statement — there's no real
+maintenance cost to re-deriving that logic at every call site, and doing so
+keeps the generated code fully self-contained (nothing to import beyond
+`d3` itself). `pivot` (fold's inverse: spreading rows into columns, with
+duplicate-cell aggregation and a possibly-limited, stably-ordered column
+set) is the first transform substantial enough that the calculus flips: its
+naive inline expansion is a genuine multi-step algorithm, not a one-liner,
+and re-deriving it inline on every call site would be easy to get subtly
+wrong in a way unit tests on one or two specs wouldn't catch.
+
+`src/runtime.js` holds exactly these — real, independently-readable
+exported functions, imported by name only when a spec's translated
+transform actually needs one (see `RUNTIME_EXPORTS` in `translator.js`).
+The tradeoff this accepts: the generated code is no longer *fully*
+self-contained (a real file dependency, not just a bare-specifier `d3`
+import resolved by a bundler/CDN import map) — mitigated by treating
+`runtime.js` as something a plain copy of accompanies the generated file
+wherever it's written, the same way `d3.js`/`ggplot.R` already sit next to
+`index.html` in each showcase example directory, rather than trying to
+publish it as an installable package a generated file could reference by
+name.
+
 ## Other bugs corpus validation caught
 
 A representative sample, because each says something about where static
@@ -130,6 +155,45 @@ reading of the generator would have missed the problem:
   with the unhelpful `_ is not iterable`. Only a plain-array domain is
   supported now; anything else throws a clear, named error instead
   (`explicitDomainCode()` in `scales.js`).
+- **A mark-level literal color config was never read at all.** Every mark
+  renderer computed its own hardcoded fallback color (`"steelblue"`,
+  `"black"`) whenever `encoding.color` was absent, completely ignoring a
+  mark-level `"mark": {"type": "rule", "stroke": "firebrick"}`-style
+  property (present on ~40 corpus specs) — every one of those rendered in
+  the wrong color with no error at all, since a hardcoded fallback is
+  always "valid" output. `markColorFallback()` in `marks.js` now checks the
+  mark's own `stroke`/`fill`/generic `color` property before falling back
+  to the hardcoded default.
+- **A `bar` mark with two quantitative (non-band) position channels drew
+  points, not bars.** A Q-Q-style bar chart (both `x` and `y` quantitative,
+  no ordinal/band axis, no `x2`/`y2` range) fell all the way through
+  `renderBar()`'s orientation dispatch to the same "draw a point per row"
+  fallback used for genuinely unsupported shapes — but Vega-Lite renders
+  real bars here, a fixed-width (`config.bar.continuousBandSize`, 5px)
+  column per row from the y-zero baseline. Now a first-class case, not an
+  approximation.
+- **A `timeUnit`-bucketed filter compared the wrong shape.** `{"field":
+  "date", "timeUnit": "year", "equal": 2006}` is Vega-Lite's standard
+  filter-by-year idiom — comparing just the extracted *year number* to
+  `2006`, not the field's own `year`-truncated *Date* to it (a Date vs. a
+  bare number is never meaningfully equal). The initial `timeUnit`-aware
+  filter support bucketed the field into a Date unconditionally regardless
+  of the comparison value's shape, silently filtering out every row
+  whenever the value was a plain scalar rather than a `DateTime` object.
+  `timeUnitComponentExpr()` in `timeunit.js` now extracts the bare
+  component number (year/month/date/hours/minutes/seconds/quarter) for
+  exactly this case, used only when the comparison value isn't a
+  `DateTime` object.
+- **An escaped field name (`"a\\.b"`, a literal dot in a flat column name)
+  was never actually unescaped.** Vega-Lite's own field-path convention
+  uses a leading backslash to mean "this dot isn't a nested-path separator"
+  — every accessor in this codebase reads `field` directly as a literal
+  object-property key, so the escaping needs undoing *somewhere* before
+  that happens; nothing did, so `d[JSON.stringify(field)]` looked up a
+  property that only existed with a literal backslash still in its name
+  (never present in the real, loaded data). `unescapeEncodingFields()` in
+  `translator.js` does this once, up front, for every channel's `field`,
+  before any accessor call site ever sees it.
 - **Mark properties bound to an expression.** A property like
   `"strokeWidth": {"expr": "strokeWidth"}` (binding it to a `param`) isn't a
   literal — splicing it directly into a template literal produced the text
@@ -166,8 +230,18 @@ URL(url, options.baseURL ?? import.meta.url)` rather than just handing the
 relative string straight to `d3.json`/`d3.csv` (which requires an absolute
 URL outside a browser document context).
 
-At the time of writing: 291/633 OK, 339/633 skipped, 3/633 failed (see the
-README's *Known limitations* for what those three combine). Every bug
-described above was found through this harness — none were caught by
+At the time of writing: 330/633 OK, 301/633 skipped, 2/633 failed (see the
+README's *Known limitations* for what those two combine). A companion
+harness, `test/validate-rendering.js`, runs the full corpus a second time
+under `--ignore-unsupported` and additionally inspects the *rendered SVG
+geometry* of every drawn shape (not just whether translation+execution
+threw) — the gap it closes: a D3 selection given a `NaN` coordinate (e.g.
+an accessor reading a field some silently-skipped upstream transform never
+produced) doesn't throw at all, it just draws an invalid shape a browser
+quietly refuses to display, which showed up as a false "OK" against the
+plain execute-without-throwing bar. At the time of writing: 587/633 render
+with real, finite geometry, 22/633 have at least one `NaN`-geometry shape,
+5/633 execute but draw nothing, 19/633 fail outright. Every bug described
+above was found through one of these two harnesses — none were caught by
 reading the generator code or by the hand-written unit suite, which is the
-whole reason the harness exists.
+whole reason they exist.

@@ -87,38 +87,6 @@ chart
 Unsupported: nested field reference "record.low" (dot-path into a sub-object) is not supported
 
 
-===== bar_simple_extent.vl.json [EXEC] =====
-Problem while setting up geom.
-ℹ Error occurred in the 2nd layer.
-Caused by error in `compute_geom_1()`:
-! `geom_vline()` requires the following missing aesthetics: xintercept.
-library(ggplot2)
-
-layer_data <- data.frame(
-  a = c("A", "B", "C", "D", "E", "F", "G", "H", "I"),
-  b = c(28, 55, 43, 91, 81, 53, 19, 87, 52),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-# vl2ggplot: skipped unsupported transform type "extent" (ignore_unsupported)
-chart <- ggplot2::ggplot(layer_data)
-layer1_data <- layer_data
-chart <- chart + ggplot2::geom_col(data = layer1_data, mapping = ggplot2::aes(y = factor(a), x = b))
-chart <- chart + ggplot2::geom_vline(
-  xintercept = ,
-  colour = "firebrick",
-  x = list(expr = "scale('x', b_extent[0])")
-)
-chart <- chart + ggplot2::geom_vline(
-  xintercept = ,
-  colour = "#ca8861",
-  x = list(expr = "scale('x', b_extent[1])")
-)
-chart <- chart + ggplot2::labs(title = "A Simple Bar Chart with Lines at Extents")
-
-
-chart
-
 ===== boxplot_preaggregated_with_height.vl.json [EXEC] =====
 Problem while computing aesthetics.
 ℹ Error occurred in the 4th layer.
@@ -489,9 +457,8 @@ chart_data <- data.frame(
   check.names = FALSE
 )
 chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_linerange(
-  mapping = ggplot2::aes(y = residency, xmin = factor(startTime), xmax = endTime),
-  linewidth = 10
+chart <- chart + ggplot2::geom_rect(
+  mapping = ggplot2::aes(xmin = factor(startTime), xmax = endTime, ymax = residency, ymin = 0)
 )
 chart <- chart + ggplot2::scale_y_continuous(limits = c(0, 100))
 chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)")
@@ -538,7 +505,7 @@ vconcat2_rep1 <- vconcat2_rep1 + ggplot2::geom_histogram(
   bins = 20
 )
 vconcat2_rep12_data <- vconcat2_rep1_data
-vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, vl_truthy(data('brush_store').length & isValid(brush)))
+vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, vl_truthy(data('brush_store').length & !is.na(brush)))
 vconcat2_rep1 <- vconcat2_rep1 + ggplot2::geom_histogram(
   data = vconcat2_rep12_data,
   mapping = ggplot2::aes(x = distance),
@@ -557,7 +524,7 @@ vconcat2_rep2 <- vconcat2_rep2 + ggplot2::geom_histogram(
   bins = 20
 )
 vconcat2_rep22_data <- vconcat2_rep2_data
-vconcat2_rep22_data <- dplyr::filter(vconcat2_rep22_data, vl_truthy(data('brush_store').length & isValid(brush)))
+vconcat2_rep22_data <- dplyr::filter(vconcat2_rep22_data, vl_truthy(data('brush_store').length & !is.na(brush)))
 vconcat2_rep2 <- vconcat2_rep2 + ggplot2::geom_histogram(
   data = vconcat2_rep22_data,
   mapping = ggplot2::aes(x = delay),
@@ -1183,6 +1150,34 @@ chart
 Unsupported aggregate op: {"argmin":"scaled_date"} (compound argmin/argmax form not supported)
 
 
+===== layer_line_datum_rule_datetime.vl.json [EXEC] =====
+`transform_date()` works with objects of class <Date> only
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
+)
+layer2_data <- data.frame(stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: unsupported gradient fill/stroke definition, using "steelblue" instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_vline(xintercept = list(year = 2006), colour = "steelblue", size = 2)
+
+
+chart
+
 ===== layer_line_exponential.vl.json [TRANSLATE] =====
 Unsupported aggregate op: {"exponential":0.5} (compound argmin/argmax form not supported)
 
@@ -1392,42 +1387,6 @@ chart <- chart + ggplot2::geom_rect(
 
 chart
 
-===== sequence_line_fold.vl.json [EXEC] =====
-ℹ In argument: `sin(x) = sin(x)`.
-Caused by error:
-! object 'x' not found
-library(ggplot2)
-
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-chart_data <- data.frame()
-chart_data <- dplyr::mutate(chart_data, `sin(x)` = sin(x))
-chart_data <- dplyr::mutate(chart_data, `cos(x)` = cos(x))
-chart_data <- do.call(rbind, lapply(c("sin(x)", "cos(x)"), function(.f) { .d <- chart_data; .d[["key"]] <- .f; .d[["value"]] <- .d[[.f]]; .d }))
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_line(
-  mapping = ggplot2::aes(x = x, y = value, colour = factor(key), group = factor(key))
-)
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 150)
-
-
-chart
-
-===== sequence_line.vl.json [EXEC] =====
-ℹ In argument: `sin(x) = sin(x)`.
-Caused by error:
-! object 'x' not found
-library(ggplot2)
-
-# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
-chart_data <- data.frame()
-chart_data <- dplyr::mutate(chart_data, `sin(x)` = sin(x))
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_line(mapping = ggplot2::aes(x = x, y = `sin(x)`))
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 150)
-
-
-chart
-
 ===== stacked_bar_population_transform.vl.json [EXEC] =====
 Problem while computing aesthetics.
 ℹ Error occurred in the 1st layer.
@@ -1446,192 +1405,6 @@ chart <- chart + ggplot2::geom_linerange(
 )
 chart <- chart + ggplot2::scale_fill_manual(values = c("#675193", "#ca8861"))
 # NOTE: width are set when saving/displaying, e.g. ggsave(..., width = list(step = 17))
-
-
-chart
-
-===== ternary.vl.json [EXEC] =====
-ℹ In argument: `tooltip_high = paste0(...)`.
-Caused by error in `isValid()`:
-! could not find function "isValid"
-library(ggplot2)
-library(vl2ggplot)
-
-chart <- ggplot2::ggplot()
-layer1_data <- data.frame(
-  x = c(0.25, 0.75, 0.5),
-  y = c(0.433, 0.433, 0),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer1_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#c8edf1a2",
-  colour = "#c8edf1a2",
-  linewidth = 0.2
-)
-layer2_data <- data.frame(
-  x = c(0, 0.25, 0.5),
-  y = c(0, 0.433, 0),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#f7b7b7",
-  colour = "#f7b7b7",
-  linewidth = 0.2
-)
-layer3_data <- data.frame(
-  x = c(0, 0.1, 0.2),
-  y = c(0, 0.1732, 0),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer3_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#ff7a7a",
-  colour = "#ff7a7a",
-  linewidth = 0.2
-)
-layer4_data <- data.frame(
-  x = c(1, 0.75, 0.5),
-  y = c(0, 0.433, 0),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer4_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#d1ffdb",
-  colour = "#d1ffdb",
-  linewidth = 0.2
-)
-layer5_data <- data.frame(
-  x = c(1, 0.9, 0.8),
-  y = c(0, 0.1732, 0),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer5_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#7cff98",
-  colour = "#7cff98",
-  linewidth = 0.2
-)
-layer6_data <- data.frame(
-  x = c(0.5, 0.25, 0.75),
-  y = c(0.866, 0.433, 0.433),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer6_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#ffd26f",
-  colour = "#ffd26f",
-  linewidth = 0.2
-)
-layer7_data <- data.frame(
-  x = c(0.5, 0.4, 0.6),
-  y = c(0.866, 0.6928, 0.6928),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_line(
-  data = layer7_data,
-  mapping = ggplot2::aes(x = x, y = y),
-  fill = "#fff0cf",
-  colour = "#fff0cf",
-  linewidth = 0.2
-)
-layer8_data <- data.frame(
-  x = c(-0.05, 1.05, 0.5),
-  y = c(-0.05, -0.05, 0.888),
-  label = c("High 100%", "Low 100%", "Medium 100%"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- chart + ggplot2::geom_text(
-  data = layer8_data,
-  mapping = ggplot2::aes(x = x, y = y, label = factor(label)),
-  colour = "#000000"
-)
-layer9_data <- data.frame(
-  x = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45),
-  y = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794),
-  x2 = c(0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55),
-  y2 = c(0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794, 0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794, 0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-# vl2ggplot: "rule" mark has neither x nor y encoding, drawing nothing (ignore_unsupported)
-chart <- chart + ggplot2::geom_blank()
-layer10_data <- data.frame(
-  City = c("Luminar", "Crystalport", "Stellaheim", "Mistral Heights", "Verdancia", "Aurelian City", "Solaris Bay", "Sandspire", "Azureon", "Goldcrest"),
-  High = c(5, 35, 115, 30, 120, 28, 32, 12, 40, 18),
-  Medium = c(50, 60, 40, 45, 35, 48, 458, 30, 50, 28),
-  Low = c(30, 20, 70, 252, 2, 32, 55, 55, 15, 35),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-layer10_data <- dplyr::mutate(layer10_data, TotalLevel = High + Medium + Low)
-layer10_data <- dplyr::mutate(layer10_data, high_percent = High/TotalLevel)
-layer10_data <- dplyr::mutate(layer10_data, medium_percent = Medium/TotalLevel)
-layer10_data <- dplyr::mutate(layer10_data, low_percent = Low/TotalLevel)
-layer10_data <- dplyr::mutate(layer10_data, x = 0.5 * (2 * low_percent + medium_percent))
-layer10_data <- dplyr::mutate(layer10_data, y = 0.866 * medium_percent)
-layer10_data <- dplyr::mutate(layer10_data, tooltip_high = paste0(as.character(ifelse(isValid(High), High, 0)), ' (', as.character(round((ifelse(isValid(high_percent), high_percent, 0)) * 100, 1)), '%)'))
-layer10_data <- dplyr::mutate(layer10_data, tooltip_medium = paste0(as.character(ifelse(isValid(Medium), Medium, 0)), ' (', as.character(round((ifelse(isValid(medium_percent), medium_percent, 0)) * 100, 1)), '%)'))
-layer10_data <- dplyr::mutate(layer10_data, tooltip_low = paste0(as.character(ifelse(isValid(Low), Low, 0)), ' (', as.character(round((ifelse(isValid(low_percent), low_percent, 0)) * 100, 1)), '%)'))
-layer10_data <- dplyr::filter(layer10_data, vl_truthy(City != NA))
-layer10_data <- dplyr::mutate(layer10_data, leng = length(City))
-layer10_data <- dplyr::mutate(layer10_data, Xleng = (x*100 - length(City))/100)
-layer10_data <- dplyr::mutate(layer10_data, Xleng2 = (x*100 + length(City))/100)
-layer10_data <- dplyr::mutate(layer10_data, color = ifelse(high_percent > 0.8, '#FF0F0F', ifelse(medium_percent > 0.8, '#FFC333', ifelse(low_percent > 0.8, '#32F95D', ifelse(high_percent > 0.5 & medium_percent > low_percent, '#ff3c18', ifelse(high_percent > 0.5 & medium_percent < low_percent, '#cb4922', ifelse(medium_percent > 0.5 & high_percent > low_percent, '#ff962a', ifelse(medium_percent > 0.5 & high_percent < low_percent, '#cbd03d', ifelse(low_percent > 0.5 & medium_percent < high_percent, '#65be49', ifelse(low_percent > 0.5 & medium_percent > high_percent, '#65eb52', '#43c1ce'))))))))))
-layer10_data <- dplyr::mutate(layer10_data, dy_val = ifelse(medium_percent > 0.9, 15, -15))
-chart <- chart + ggplot2::geom_point(
-  data = layer10_data,
-  mapping = ggplot2::aes(x = x, y = y, fill = factor(color), size = TotalLevel),
-  colour = "#000000",
-  alpha = 1,
-  stroke = 1.5
-)
-layer11_data <- data.frame(
-  City = c("Luminar", "Crystalport", "Stellaheim", "Mistral Heights", "Verdancia", "Aurelian City", "Solaris Bay", "Sandspire", "Azureon", "Goldcrest"),
-  High = c(5, 35, 115, 30, 120, 28, 32, 12, 40, 18),
-  Medium = c(50, 60, 40, 45, 35, 48, 458, 30, 50, 28),
-  Low = c(30, 20, 70, 252, 2, 32, 55, 55, 15, 35),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-layer11_data <- dplyr::mutate(layer11_data, TotalLevel = High + Medium + Low)
-layer11_data <- dplyr::mutate(layer11_data, high_percent = High/TotalLevel)
-layer11_data <- dplyr::mutate(layer11_data, medium_percent = Medium/TotalLevel)
-layer11_data <- dplyr::mutate(layer11_data, low_percent = Low/TotalLevel)
-layer11_data <- dplyr::mutate(layer11_data, x = 0.5 * (2 * low_percent + medium_percent))
-layer11_data <- dplyr::mutate(layer11_data, y = 0.866 * medium_percent)
-layer11_data <- dplyr::mutate(layer11_data, tooltip_high = paste0(as.character(ifelse(isValid(High), High, 0)), ' (', as.character(round((ifelse(isValid(high_percent), high_percent, 0)) * 100, 1)), '%)'))
-layer11_data <- dplyr::mutate(layer11_data, tooltip_medium = paste0(as.character(ifelse(isValid(Medium), Medium, 0)), ' (', as.character(round((ifelse(isValid(medium_percent), medium_percent, 0)) * 100, 1)), '%)'))
-layer11_data <- dplyr::mutate(layer11_data, tooltip_low = paste0(as.character(ifelse(isValid(Low), Low, 0)), ' (', as.character(round((ifelse(isValid(low_percent), low_percent, 0)) * 100, 1)), '%)'))
-layer11_data <- dplyr::filter(layer11_data, vl_truthy(City != NA))
-layer11_data <- dplyr::mutate(layer11_data, leng = length(City))
-layer11_data <- dplyr::mutate(layer11_data, Xleng = (x*100 - length(City))/100)
-layer11_data <- dplyr::mutate(layer11_data, Xleng2 = (x*100 + length(City))/100)
-layer11_data <- dplyr::mutate(layer11_data, color = ifelse(high_percent > 0.8, '#FF0F0F', ifelse(medium_percent > 0.8, '#FFC333', ifelse(low_percent > 0.8, '#32F95D', ifelse(high_percent > 0.5 & medium_percent > low_percent, '#ff3c18', ifelse(high_percent > 0.5 & medium_percent < low_percent, '#cb4922', ifelse(medium_percent > 0.5 & high_percent > low_percent, '#ff962a', ifelse(medium_percent > 0.5 & high_percent < low_percent, '#cbd03d', ifelse(low_percent > 0.5 & medium_percent < high_percent, '#65be49', ifelse(low_percent > 0.5 & medium_percent > high_percent, '#65eb52', '#43c1ce'))))))))))
-layer11_data <- dplyr::mutate(layer11_data, dy_val = ifelse(medium_percent > 0.9, 15, -15))
-chart <- chart + ggplot2::geom_text(
-  data = layer11_data,
-  mapping = ggplot2::aes(x = x, y = y, label = factor(City)),
-  colour = "#000000"
-)
-chart <- chart + ggplot2::scale_size(range = c(50, 500))
-chart <- chart + ggplot2::labs(title = "Population Distribution by Socioeconomic Level in Fictional Cities")
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 625, height = 541.25)
 
 
 chart
@@ -1728,9 +1501,9 @@ Unsupported: nested field reference "lc.time" (dot-path into a sub-object) is no
 
 
 ===== wheat_wages.vl.json [EXEC] =====
-<text>:47:83: unexpected input
-46: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
-47: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
+<text>:46:83: unexpected input
+45: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+46: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
                                                                                       ^
 library(ggplot2)
 
@@ -1738,12 +1511,11 @@ layer_data <- jsonlite::fromJSON("data/wheat.json")
 layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
-chart <- chart + ggplot2::geom_linerange(
+chart <- chart + ggplot2::geom_rect(
   data = layer1_data,
-  mapping = ggplot2::aes(y = wheat, xmin = year, xmax = year_end),
+  mapping = ggplot2::aes(xmin = year, xmax = year_end, ymax = wheat, ymin = 0),
   fill = "#aaa",
-  colour = "#999",
-  linewidth = 10
+  colour = "#999"
 )
 layer2_data <- data.frame(
   year = c("1600", "1650", "1700", "1750", "1800"),

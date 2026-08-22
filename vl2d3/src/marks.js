@@ -245,22 +245,22 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   const xOffsetAmbiguous = xAmbiguous && encoding.xOffset && scales.xOffset && scales.xOffset.conditional;
   const yOffsetAmbiguous = yAmbiguous && encoding.yOffset && scales.yOffset && scales.yOffset.conditional;
   let needsWidthBlock = false;
-  if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal') {
+  if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
     needsWidthBlock = true;
-  } else if (yTemporalBar && !xBand && encoding.x && encoding.x.type !== 'temporal') {
+  } else if (yTemporalBar && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
-  } else if (xOffsetAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal') {
+  } else if (xOffsetAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(ambiguousBarWidthDecl(xBarWidthVar, x, dataVar, encoding.x.field));
     needsWidthBlock = true;
-  } else if (yOffsetAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal') {
+  } else if (yOffsetAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(ambiguousBarWidthDecl(yBarWidthVar, y, dataVar, encoding.y.field));
     needsWidthBlock = true;
-  } else if (xAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal') {
+  } else if (xAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(ambiguousBarWidthDecl(xBarWidthVar, x, dataVar, encoding.x.field));
     needsWidthBlock = true;
-  } else if (yAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal') {
+  } else if (yAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(ambiguousBarWidthDecl(yBarWidthVar, y, dataVar, encoding.y.field));
     needsWidthBlock = true;
   }
@@ -271,17 +271,17 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   lines.push(`  .join("rect")`);
   if (rowDependent) lines.push(`    .attr("fill", d => ${fill})`);
 
-  if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal') {
+  if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (yTemporalBar && !xBand && encoding.x && encoding.x.type !== 'temporal') {
+  } else if (yTemporalBar && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`);
     lines.push(`    .attr("height", ${yBarWidthVar})`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-  } else if (xOffsetAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal') {
+  } else if (xOffsetAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     // Same dodge as the plain-band branch below, except the outer scale's
     // band-ness (and so whether `xOffset` ended up a real scale or `null`)
     // isn't known until runtime -- fall back to the same centered-bar
@@ -290,22 +290,22 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", xOffset ? xOffset.bandwidth() : ${xBarWidthVar})`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (yOffsetAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal') {
+  } else if (yOffsetAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(`    .attr("y", d => yOffset ? y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(d[${JSON.stringify(encoding.yOffset.field)}]) : y(d[${JSON.stringify(encoding.y.field)}]) - (${y.isNominalVar} ? 0 : ${yBarWidthVar} / 2))`);
     lines.push(`    .attr("height", yOffset ? yOffset.bandwidth() : ${yBarWidthVar})`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-  } else if (xAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal') {
+  } else if (xAmbiguous && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - (${x.isNominalVar} ? 0 : ${xBarWidthVar} / 2))`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (yAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal') {
+  } else if (yAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - (${y.isNominalVar} ? 0 : ${yBarWidthVar} / 2))`);
     lines.push(`    .attr("height", ${yBarWidthVar})`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-  } else if (xBand && !yBand && encoding.y && encoding.xOffset && scales.xOffset) {
+  } else if (xBand && !yBand && encoding.y && !encoding.y2 && encoding.xOffset && scales.xOffset) {
     // Dodged/grouped bars: an inner band scale (see scales.js's
     // resolveOffsetScale) slices the outer category band into one
     // sub-position per distinct offset-group value, so each group's bar
@@ -314,22 +314,22 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", xOffset.bandwidth())`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (yBand && !xBand && encoding.x && encoding.yOffset && scales.yOffset) {
+  } else if (yBand && !xBand && encoding.x && !encoding.x2 && encoding.yOffset && scales.yOffset) {
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(d[${JSON.stringify(encoding.yOffset.field)}]))`);
     lines.push(`    .attr("height", yOffset.bandwidth())`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-  } else if (xBand && !yBand && encoding.y) {
+  } else if (xBand && !yBand && encoding.y && !encoding.y2) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
     lines.push(`    .attr("width", x.bandwidth())`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (yBand && !xBand && encoding.x) {
+  } else if (yBand && !xBand && encoding.x && !encoding.x2) {
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
     lines.push(`    .attr("height", y.bandwidth())`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-  } else if ((xBand && !yBand) || (yBand && !xBand)) {
+  } else if (!encoding.x2 && !encoding.y2 && ((xBand && !yBand) || (yBand && !xBand))) {
     // A band axis but no companion value axis at all (no x2/y2, no
     // aggregate, nothing to size a bar's length by) -- one point per row
     // along the band axis is still a rendered chart, even without a bar
@@ -352,7 +352,14 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // This layer child may have no y of its own at all (e.g. a shared
     // reference band spanning the full plot height) -- fall back to the
     // plot's own top/bottom extent rather than assuming `encoding.y` exists.
-    if (encoding.y) {
+    // A *band* y (e.g. a horizontal boxplot-from-primitives' shared
+    // categorical y, inherited from the layer wrapper) has no zero baseline
+    // to speak of -- position/size the box directly against its own band
+    // instead of calling y(0) (meaningless for a non-numeric domain).
+    if (encoding.y && yBand) {
+      lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+      lines.push(`    .attr("height", y.bandwidth())`);
+    } else if (encoding.y) {
       lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
       lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
     } else {
@@ -363,7 +370,10 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
     // Same fallback as above, for a shared reference band with no x of its own.
-    if (encoding.x) {
+    if (encoding.x && xBand) {
+      lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+      lines.push(`    .attr("width", x.bandwidth())`);
+    } else if (encoding.x) {
       lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
       lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
     } else {
@@ -382,18 +392,31 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", 5)`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
+  } else if (encoding.x && !encoding.y) {
+    // A single quantitative position channel and nothing else at all (a
+    // "1D bar" -- e.g. a lone dataset-wide aggregate with no groupby) --
+    // Vega-Lite still draws a real bar: zero baseline to the value, along
+    // the one axis it has, centered on the other (nothing to position it
+    // against there).
+    lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("y", ${dims.centerYExpr} - 10)`);
+    lines.push(`    .attr("height", 20)`);
+  } else if (encoding.y && !encoding.x) {
+    lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
+    lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
+    lines.push(`    .attr("x", ${dims.centerXExpr} - 10)`);
+    lines.push(`    .attr("width", 20)`);
   } else if (ignoreUnsupported) {
-    // Not even both x and y are present (e.g. only one position channel
-    // and nothing else to size a box against) -- a point per row at least
-    // shows where the data is, rather than nothing.
+    // Neither x nor y at all (e.g. a band axis with no value channel and
+    // no x2/y2) -- a point per row at least shows where the data is,
+    // rather than nothing.
     return (
       `// vl2d3: unsupported bar orientation (band axis with no value channel), drawing a point per row instead (--ignore-unsupported)\n` +
       renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported)
     );
   } else {
-    throw new Error(
-      'Unsupported bar orientation: expected both an x and a y position channel, or a quantitative range via x2/y2'
-    );
+    throw new Error('Unsupported bar orientation: expected at least one x or y position channel');
   }
   appendTitle(lines, '    ', encoding);
   if (needsWidthBlock) {

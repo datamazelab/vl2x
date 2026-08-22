@@ -44,7 +44,40 @@ color_channel_aes <- function(mark_type) if (mark_type %in% .fill_marks) "fill" 
 # layer's encoding (excluding x2/y2, handled separately by geoms.R). Returns
 # list(aes = list(name = expr_string), fixed = list(name = expr_string),
 # sort_field = field name or NULL).
-build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
+# A channel's constant `value` is normally a plain literal, but can instead
+# be `{"expr": "..."}`. The common real-world shape for that expr is
+# `scale('x'/'y', <inner>)` -- Vega's own idiom for converting a
+# *data-space* value into the pixel space a raw mark position property
+# expects (needed there because a value channel bypasses the normal
+# field->scale encoding pipeline entirely). ggplot2's geom_vline()/
+# geom_hline() (the only marks a bare value channel like this actually
+# reaches) already expect a *data-space* value -- they apply the plot's own
+# scale automatically -- so `scale(...)`'s own job is a no-op here; only
+# `<inner>` is needed. `<inner>` commonly indexes into an `extent`
+# transform's param array (`b_extent[0]`, 0-based) -- resolved directly at
+# each reference via `extent_params` (name -> source field) rather than
+# through a separately pre-declared runtime variable, sidestepping any
+# redeclaration clash across sibling layer children (each of which
+# independently re-runs its own copy of the same top-level transform), and
+# reindexed to R's 1-based `range()[...]`.
+resolve_value_channel_expr <- function(value, extent_data_var, extent_params, ignore_unsupported, .notes) {
+  if (!is.list(value) || is.null(value$expr)) return(format_value(value))
+  m <- regmatches(value$expr, regexec("^scale\\(\\s*['\"]([xy])['\"]\\s*,\\s*(.+)\\)$", trimws(value$expr)))[[1]]
+  if (length(m) == 0) return(translate_expr(value$expr)) # not the scale(...) idiom -- best-effort generic translation
+  inner <- m[3]
+  if (!is.null(extent_data_var)) {
+    for (pname in names(extent_params)) {
+      pattern <- sprintf("\\b%s\\[(\\d+)\\]", pname)
+      inner <- replace_tokens(inner, pattern, function(tok) {
+        idx <- as.integer(sub(pattern, "\\1", tok, perl = TRUE))
+        sprintf("range(%s[[%s]], na.rm = TRUE)[%d]", extent_data_var, render_string(extent_params[[pname]]), idx + 1)
+      }, perl = TRUE)
+    }
+  }
+  inner # already valid R once the extent-param substitution above is applied
+}
+
+build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list()) {
   aes_pairs <- list()
   fixed <- list()
   sort_field <- NULL
@@ -63,9 +96,19 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
     if (is.na(aes_name)) next
 
     if (!is.null(def$field)) {
-      aes_pairs[[aes_name]] <- discrete_field_ref(def)
+      # A disabled scale (see build_color_scale()'s matching check) pairs
+      # with scale_*_identity(), which reads the aes value as the literal
+      # color itself -- factor()-wrapping it first (discrete_field_ref()'s
+      # usual behavior for a nominal/ordinal field) is unnecessary and
+      # risks the literal value being read back off the factor's levels
+      # rather than the value itself.
+      aes_pairs[[aes_name]] <- if (channel == "color" && "scale" %in% names(def) && is.null(def$scale)) {
+        field_ref(def$field)
+      } else {
+        discrete_field_ref(def)
+      }
     } else if (!is.null(def$value)) {
-      fixed[[aes_name]] <- format_value(def$value)
+      fixed[[aes_name]] <- resolve_value_channel_expr(def$value, extent_data_var, extent_params, ignore_unsupported, .notes)
     } else if (!is.null(def$datum)) {
       fixed[[aes_name]] <- literal_datum_value(def$datum, ignore_unsupported, .notes)
     }

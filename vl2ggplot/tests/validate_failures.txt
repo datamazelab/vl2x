@@ -39,9 +39,8 @@ chart_data <- data.frame(
   check.names = FALSE
 )
 chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_linerange(
-  mapping = ggplot2::aes(y = residency, xmin = factor(startTime), xmax = endTime),
-  linewidth = 10
+chart <- chart + ggplot2::geom_rect(
+  mapping = ggplot2::aes(xmin = factor(startTime), xmax = endTime, ymax = residency, ymin = 0)
 )
 chart <- chart + ggplot2::scale_y_continuous(limits = c(0, 100))
 chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)")
@@ -297,9 +296,9 @@ chart <- chart + ggplot2::geom_point(
 chart
 
 ===== wheat_wages.vl.json [EXEC] =====
-<text>:47:83: unexpected input
-46: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
-47: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
+<text>:46:83: unexpected input
+45: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+46: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
                                                                                       ^
 library(ggplot2)
 
@@ -307,12 +306,11 @@ layer_data <- jsonlite::fromJSON("data/wheat.json")
 layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
-chart <- chart + ggplot2::geom_linerange(
+chart <- chart + ggplot2::geom_rect(
   data = layer1_data,
-  mapping = ggplot2::aes(y = wheat, xmin = year, xmax = year_end),
+  mapping = ggplot2::aes(xmin = year, xmax = year_end, ymax = wheat, ymin = 0),
   fill = "#aaa",
-  colour = "#999",
-  linewidth = 10
+  colour = "#999"
 )
 layer2_data <- data.frame(
   year = c("1600", "1650", "1700", "1750", "1800"),

@@ -151,18 +151,41 @@ the full list of fallbacks.
 | 1D strip/dot/bar plots (only one of x/y given) | ✅ — constant `""`/fixed-param fallback |
 | Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ — routed through native `stat_count`/`stat_summary`/`stat_summary_bin`/`geom_histogram` where possible, explicit `dplyr::group_by()`+`summarise()` otherwise (0–2 groupby fields) |
 | Mark-level `extent` / `xError`/`yError`/`xError2`/`yError2` channels (error bars/bands) | ✅ — arithmetic bounds from Error channels, or an implicit mean±stderr/stdev/ci/iqr `dplyr` summary when no explicit channel is given |
-| Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit` | ✅ |
-| Top-level `transform`: `window`, `joinaggregate`, `lookup`, `impute`, `pivot`, `fold`, `flatten`, `quantile`, `regression`, `loess`, `density`, `sample`, `stack`, `sort`, `extent` | ❌ |
+| `xOffset`/`yOffset` (dodged/grouped position) | ✅ → `position = "dodge2"` |
+| Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `window`, `joinaggregate`, `density`, `fold`, `pivot` | ✅ |
+| Top-level `transform`: `extent` | ✅ — resolved directly at the point of use (a rule mark's `value: {"expr": "scale('x', param[0])"}`), not as a data-pipeline step |
+| Aggregate ops: the common statistical ones, plus `argmin`/`argmax` | ✅ — `argmin`/`argmax` return the whole matching row (a list-column); a later bracket-indexed reference into it (`argmax_field['Other Field']`) is flattened into a plain column before any aes()/geom code sees it |
+| Top-level `transform`: `lookup`, `impute`, `flatten`, `quantile`, `regression`, `loess`, `sample`, `stack`, `sort` | ❌ |
 | `x`/`y` scales: linear, date, discrete (with `sort`/`reverse`), log/pow/sqrt (via ggplot2's `trans`) | ✅ |
 | `color`/`size`/`opacity` scales: explicit `range`, `domain`, viridis/ColorBrewer `scheme` | ✅ — `quantile`/`quantize`/`threshold` (discretizing) scale types ❌ |
-| `xOffset`/`yOffset` (dodged/grouped position) | ❌ no `position = "dodge"` equivalent generated |
 | Geographic encoding (`longitude`/`latitude`) or `projection`-driven marks | ❌ no map projection support |
 | `params`/`selection` (interactivity) | ❌ a static plot has nothing to bind to; a `condition`'s default branch is not specially handled either |
 | Vega expression strings (`filter`/`calculate`) | ⚠️ best-effort: `datum` → bare column reference, ternary and `if(cond, a, b)` → `ifelse()`, string concatenation (`+`) → `paste0()`, `%` → `%%`, common `Math.*` functions, date-component extraction; anything else passes through as literal text and fails loudly at generated-code run time |
-| Nested/dot-path (`"a.b"`) and bracket-indexed (`"a[0]"`) field references | ❌ clear "Unsupported" error rather than silently referencing the wrong column |
+| Nested/dot-path (`"a.b"`, unescaped) field references | ❌ clear "Unsupported" error rather than silently referencing the wrong column; an *escaped* literal dot (`"a\\.b"`) is unescaped and works |
+| Bracket-indexed field references (`"a[0]"`) | ❌, except the `argmin`/`argmax` compound-result shape above |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning behind
 each of these boundaries, and how the aggregate/error-extent planning works.
+
+## Shared runtime helpers
+
+Most generated code only needs `library(ggplot2)` (plus `dplyr` for data
+transforms) — but a transform whose logic is substantial enough that
+re-deriving it inline in every generated script would be error-prone and
+hard to keep consistent (`pivot`'s per-group column-spreading with
+duplicate-cell aggregation; the JS-truthy semantics a bare-expression
+filter like `"datum.field"` relies on, which `dplyr::filter()` doesn't
+share) is instead implemented once, as a real exported package function, in
+`R/runtime.R` (`vl_pivot()`, `vl_truthy()`). The generated script for a spec
+that actually needs one adds `library(vl2ggplot)` to its header
+automatically (and only when needed) — see `vegalite_to_ggplot()`'s
+conditional header logic in `R/translator.R`.
+
+Unlike `vl2d3`'s equivalent (a plain file with no install step), this
+"runtime" is just the `vl2ggplot` package itself — a generated script
+already assumes it's running somewhere `vl2ggplot` is installed (that's how
+its own `vegalite_to_ggplot()` produced it in the first place), so no
+separate distribution mechanism is needed.
 
 ## Known limitations
 
@@ -177,18 +200,22 @@ pass/fail:
   not to implement yet (an `"Unsupported: ..."` error). Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **410/633 OK, 219/633 skipped (documented boundaries
-above), 4/633 failed** against the corpus's real-world example specs (see
+At the time of writing: **503/633 OK, 122/633 skipped (documented boundaries
+above), 8/633 failed** against the corpus's real-world example specs (see
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full methodology and
-what those 4 residual failures combine).
+what those 8 residual failures combine). A second, stricter harness
+(`tests/validate_rendering.R`) additionally captures the *full* error
+message (not just ggplot2's own truncated status text) for anything that
+fails under `ignore_unsupported = TRUE`: **580/633 execute cleanly**.
 
-Two design choices worth calling out explicitly:
+One design choice worth calling out explicitly:
 
-- **No auto-stacking, no dodging.** Like `vl2d3`, `vl2ggplot` does not
-  implement Vega-Lite's automatic bar/area stacking or `xOffset`/`yOffset`
-  dodged grouping — ggplot2 has its own `position` system for this
-  (`position_stack()`/`position_dodge()`), but mapping Vega-Lite's stacking
-  rules onto it correctly is a project-sized feature on its own.
+- **No auto-stacking.** `vl2ggplot` does not implement Vega-Lite's
+  automatic bar/area stacking by `color`/`detail` — ggplot2 has its own
+  `position_stack()` for this, but mapping Vega-Lite's stacking rules onto
+  it correctly is a project-sized feature on its own. (Dodged/grouped
+  positioning via `xOffset`/`yOffset` *is* implemented, via
+  `position = "dodge2"`.)
 - **`extent`/error-channel handling is a documented simplification.**
   Vega-Lite's default confidence-interval extent uses a bootstrap; this
   project's `ci` extent uses a normal-theory approximation
@@ -227,6 +254,10 @@ excluded.
 R/
     literals.R      JSON value -> R literal source pretty-printer
                      (atomic c(...) vs. list(...), name/string quoting)
+    runtime.R        shared helpers a spec's generated code calls by name
+                      (vl_truthy(), vl_pivot()) when a transform is complex
+                      enough that re-deriving it inline every time would be
+                      error-prone -- see "Shared runtime helpers" below
     timeunit.R       timeUnit name -> Date/POSIXct-truncation expression mapping
     aggops.R         aggregate op -> dplyr::summarise()/stat_summary(fun=)
                       expression mapping

@@ -9,10 +9,9 @@
 // equivalent, and pass everything else through verbatim. This covers the
 // vast majority of real-world filter/calculate expressions. Anything else
 // (`datetime()`, `toDate()`, the `vlSelectionTest` family, custom signal
-// references, string functions like `toString`/`isValid`/`length`, ...)
-// passes through as literal (invalid-in-plain-JS) text, which will throw a
-// clear ReferenceError at chart-render time rather than silently producing
-// wrong output.
+// references, ...) passes through as literal (invalid-in-plain-JS) text,
+// which will throw a clear ReferenceError at chart-render time rather than
+// silently producing wrong output.
 
 import {isSupportedTimeUnit, timeUnitExpr, timeUnitComponentExpr} from './timeunit.js';
 
@@ -20,8 +19,12 @@ const IDENTIFIER_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 
 // Vega expression functions that are plain global functions there but live
 // under `Math.` in JS.
+// `round` is deliberately excluded -- it has its own dedicated rewrite
+// below (rewriteRoundCalls()), since Vega's 2-argument form (digit-rounding)
+// has no Math.round() equivalent at all; renaming it here first would only
+// have to be undone.
 const MATH_FUNCS = new Set([
-  'abs', 'ceil', 'floor', 'round', 'sqrt', 'pow', 'log', 'exp', 'min', 'max',
+  'abs', 'ceil', 'floor', 'sqrt', 'pow', 'log', 'exp', 'min', 'max',
   'random', 'sign', 'cbrt', 'hypot', 'log2', 'log10', 'atan2', 'atan', 'cos',
   'sin', 'tan', 'trunc',
 ]);
@@ -45,11 +48,11 @@ const DATE_FUNCS = {
 // below allow for it.
 const DATE_FUNC_RE = new RegExp(`\\b(${Object.keys(DATE_FUNCS).join('|')})\\s*\\(([^()]+)\\)`, 'g');
 
-// Find the outermost `if(` call in `s` (the identifier "if" immediately
+// Find the outermost `name(` call in `s` (the identifier `name` immediately
 // followed by "(", not part of a longer identifier), returning the
 // character positions of its own "(" and matching ")", or null if absent.
-function findIfCall(s) {
-  const m = /(^|[^A-Za-z0-9_$])if\(/.exec(s);
+function findCall(s, name) {
+  const m = new RegExp(`(^|[^A-Za-z0-9_$])${name}\\(`).exec(s);
   if (!m) return null;
   const open = m.index + m[0].length - 1;
   let depth = 0;
@@ -109,7 +112,7 @@ function splitTopLevel(s) {
 // each extracted argument since the else-branch commonly nests another
 // `if(...)` call (a multi-way categorical mapping).
 function rewriteIfCalls(s) {
-  const call = findIfCall(s);
+  const call = findCall(s, 'if');
   if (!call) return s;
   const inner = s.slice(call.open + 1, call.close);
   const parts = splitTopLevel(inner);
@@ -121,6 +124,62 @@ function rewriteIfCalls(s) {
   // added together: `if(a,1,0) + if(b,1,0)`) still remain in the tail of
   // the string after this replacement -- keep scanning until none are left.
   return rewriteIfCalls(rewritten);
+}
+
+// `isValid(x)` -- Vega's own "not null/undefined/NaN" check, for any value
+// type -- has no single built-in JS equivalent to rename to, but expands
+// exactly into one: unlike rewriteIfCalls()'s 3-argument, ternary-shaped
+// rewrite, this is a straight 1-argument wrap, so `x` appears twice in the
+// output (harmless to re-evaluate for the plain field/property reads this
+// is normally called on).
+function rewriteIsValidCalls(s) {
+  const call = findCall(s, 'isValid');
+  if (!call) return s;
+  const inner = s.slice(call.open + 1, call.close).trim();
+  const replacement = `(${inner} != null && !Number.isNaN(${inner}))`;
+  const rewritten = s.slice(0, call.open - 'isValid'.length) + replacement + s.slice(call.close + 1);
+  return rewriteIsValidCalls(rewritten);
+}
+
+// `length(x)` -- Vega's string/array length function -- is a property
+// access in JS, not a function call, so this can't be a simple identifier
+// rename either.
+function rewriteLengthCalls(s) {
+  const call = findCall(s, 'length');
+  if (!call) return s;
+  const inner = s.slice(call.open + 1, call.close).trim();
+  const replacement = `(${inner}).length`;
+  const rewritten = s.slice(0, call.open - 'length'.length) + replacement + s.slice(call.close + 1);
+  return rewriteLengthCalls(rewritten);
+}
+
+// `round` is excluded from MATH_FUNCS (see its own comment there) and
+// handled entirely here instead, for both its 1-argument form (a bare
+// `Math.round` rename) and Vega's 2-argument form -- the number of decimal
+// places (`round(3.14159, 2)` -> `3.14`), which `Math.round` has no
+// equivalent for at all (it only ever rounds to a whole number). Uses `**`
+// rather than `Math.pow` for the power-of-ten scaling specifically so the
+// replacement text doesn't itself contain another MATH_FUNCS-recognized
+// bare identifier for the later generic rename pass to (mis)fire on again.
+function rewriteRoundCalls(s) {
+  const call = findCall(s, 'round');
+  if (!call) return s;
+  const inner = s.slice(call.open + 1, call.close);
+  const parts = splitTopLevel(inner);
+  const replacement =
+    parts.length === 2
+      ? (() => {
+          const [val, digits] = parts.map(p => rewriteRoundCalls(p.trim()));
+          return `(Math.round((${val}) * 10 ** (${digits})) / 10 ** (${digits}))`;
+        })()
+      : `Math.round(${rewriteRoundCalls(inner.trim())})`;
+  // Recurse into only the tail *after* this call (for sibling round() calls
+  // further along), not the whole rewritten string -- the replacement text
+  // above itself contains the literal substring "round(" (as part of
+  // "Math.round("), which findCall() would otherwise re-match forever.
+  const before = s.slice(0, call.open - 'round'.length);
+  const after = s.slice(call.close + 1);
+  return before + replacement + rewriteRoundCalls(after);
 }
 
 // Vega expression type-coercion functions that are plain JS globals, just
@@ -158,6 +217,7 @@ function dateTimeObjectExpr(v) {
 export function translateExpr(expr, rowVar = 'd') {
   if (typeof expr !== 'string') return expr;
   let out = expr.replace(DATE_FUNC_RE, (_, fn, arg) => `(${arg}).${DATE_FUNCS[fn]}()`);
+  out = rewriteRoundCalls(out); // must run before the generic MATH_FUNCS rename below (needs to see round's original, un-renamed 2-argument form)
   out = out.replace(IDENTIFIER_RE, (token, offset, str) => {
     if (token === 'datum') return rowVar;
     const isCall = /^\s*\(/.test(str.slice(offset + token.length));
@@ -166,6 +226,8 @@ export function translateExpr(expr, rowVar = 'd') {
     if (isCall && RENAME_FUNCS[token]) return RENAME_FUNCS[token];
     return token;
   });
+  out = rewriteIsValidCalls(out);
+  out = rewriteLengthCalls(out);
   out = rewriteIfCalls(out);
   return out;
 }
