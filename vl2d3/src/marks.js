@@ -569,6 +569,31 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
 // independently re-runs its own copy of the same top-level transform).
 const SCALE_CALL_RE = /^scale\(\s*['"]([xy])['"]\s*,\s*(.+)\)$/;
 
+// Vega-Lite's own "DateTime object" shorthand for a literal temporal
+// constant (e.g. `{"datum": {"year": 2006}}`, as opposed to a real field
+// reference) -- unlike a plain scalar `datum`, this needs converting into
+// an actual JS Date before it can be handed to a temporal scale.
+function isDateTimeObject(datum) {
+  return datum && typeof datum === 'object' && !Array.isArray(datum);
+}
+
+function datumToJsExpr(datum) {
+  if (!isDateTimeObject(datum)) return formatValue(datum);
+  const {year = 2012, quarter, month = 1, date = 1, hours = 0, minutes = 0, seconds = 0, milliseconds = 0} = datum;
+  const monthIndex = quarter !== undefined ? (quarter - 1) * 3 : month - 1;
+  return `new Date(${year}, ${monthIndex}, ${date}, ${hours}, ${minutes}, ${seconds}, ${milliseconds})`;
+}
+
+// `datum` binds a channel to a literal *data-space* constant that still
+// goes through the normal field->scale pipeline (unlike `value`, which is
+// a literal *visual/pixel-space* constant that bypasses scaling entirely)
+// -- so resolving it is just "run this literal through the axis's own
+// scale function", the same idiom `resolveValueChannelExpr`'s `scale(...)`
+// signal form already uses for expr-bound constants.
+function resolveDatumChannelExpr(def, axisChannel) {
+  return `${axisChannel}(${datumToJsExpr(def.datum)})`;
+}
+
 function resolveValueChannelExpr(def, dataVar, extentParams, ignoreUnsupported) {
   if (def.value === null || def.value === undefined) {
     if (ignoreUnsupported) return '0 /* vl2d3: unsupported value-channel shape (no field/value), using 0 (--ignore-unsupported) */';
@@ -612,6 +637,10 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     if (encoding.x.field) {
       lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
       lines.push(`    .attr("x2", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+    } else if (encoding.x.datum !== undefined) {
+      const constExpr = resolveDatumChannelExpr(encoding.x, 'x');
+      lines.push(`    .attr("x1", ${constExpr})`);
+      lines.push(`    .attr("x2", ${constExpr})`);
     } else {
       const constExpr = resolveValueChannelExpr(encoding.x, dataVar, extentParams, ignoreUnsupported);
       lines.push(`    .attr("x1", ${constExpr})`);
@@ -623,6 +652,10 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     if (encoding.y.field) {
       lines.push(`    .attr("y1", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
       lines.push(`    .attr("y2", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+    } else if (encoding.y.datum !== undefined) {
+      const constExpr = resolveDatumChannelExpr(encoding.y, 'y');
+      lines.push(`    .attr("y1", ${constExpr})`);
+      lines.push(`    .attr("y2", ${constExpr})`);
     } else {
       const constExpr = resolveValueChannelExpr(encoding.y, dataVar, extentParams, ignoreUnsupported);
       lines.push(`    .attr("y1", ${constExpr})`);
@@ -695,13 +728,22 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
 }
 
 function renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
-  if (!encoding.text) {
+  // A `text` mark's label is usually an encoding channel, but Vega-Lite
+  // also allows a literal constant directly on the mark definition (a
+  // string, or an array of strings meaning multiple lines) -- no encoding
+  // at all in that case.
+  if (!encoding.text && markProps.text === undefined) {
     if (ignoreUnsupported) return SKIP_COMMENT('"text" mark has no text encoding');
     throw new Error('"text" mark requires a text encoding');
   }
+  if (!encoding.text && !ignoreUnsupported) {
+    throw new Error('Unsupported: a "text" mark with a literal mark-level "text" (not an encoding) is not yet supported by vl2d3');
+  }
   const cx = encoding.x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
   const cy = encoding.y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
-  const textField = rawField(encoding.text) || formatValue(encoding.text.value);
+  const textField = encoding.text
+    ? rawField(encoding.text) || formatValue(encoding.text.value)
+    : formatValue(Array.isArray(markProps.text) ? markProps.text.join('\n') : markProps.text);
   const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];

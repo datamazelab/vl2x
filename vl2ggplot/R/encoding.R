@@ -157,7 +157,29 @@ literal_datum_value <- function(datum, ignore_unsupported = FALSE, .notes = NULL
     }
     stop("Unsupported: a datum bound to a param/signal expression has no static value")
   }
+  if (is_datetime_object(datum)) return(datetime_object_to_r_date(datum))
   format_value(datum)
+}
+
+# Vega-Lite's own "DateTime object" shorthand for a literal temporal
+# constant (as opposed to a plain scalar/string datum) -- e.g. `{"datum":
+# {"year": 2006}}`. `format_value()`'s generic list handling would render
+# this as a plain R `list(year = 2006)`, which a Date-scaled geom_vline/
+# geom_hline can't use (`transform_date() works with objects of class
+# <Date> only`) -- this builds a real `as.Date(...)` call instead.
+is_datetime_object <- function(x) {
+  is.list(x) && is.null(x$expr) &&
+    any(c("year", "quarter", "month", "date", "day", "hours", "minutes", "seconds", "milliseconds") %in% names(x))
+}
+
+datetime_object_to_r_date <- function(datum) {
+  year <- datum$year %||% 2012
+  month <- if (!is.null(datum$quarter)) (datum$quarter - 1) * 3 + 1 else (datum$month %||% 1)
+  day <- datum$date %||% 1
+  sprintf(
+    'as.Date(sprintf("%%04d-%%02d-%%02d", %s, %s, %s))',
+    format_value(year), format_value(month), format_value(day)
+  )
 }
 
 # A channel definition can reference a `field`, a literal `value`, or (more

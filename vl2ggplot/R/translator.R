@@ -128,7 +128,21 @@ transform_produced_fields <- function(transform_list) {
       as_names <- if (!is.null(t$as)) t$as else list("value", "density")
       out <- c(out, unlist(as_names))
     }
-    if (!is.null(t$pivot)) has_dynamic <- TRUE
+    if (!is.null(t$stack)) {
+      as_names <- if (!is.null(t$as)) t$as else list("y0", "y1")
+      out <- c(out, unlist(as_names))
+    }
+    # `pivot` and any transform type this project doesn't implement at all
+    # (lookup/regression/quantile/impute/flatten/...) either produce field
+    # names that are genuinely unknowable at translation time, or are
+    # skipped outright under ignore_unsupported -- in both cases, this
+    # can't tell whether an encoding field is a real raw column or one of
+    # these, so it's safest to leave every quantitative field alone rather
+    # than risk coercing a not-yet-existing (or never-existing) one.
+    if (!is.null(t$pivot) || !is.null(t$lookup) || !is.null(t$regression) ||
+        !is.null(t$quantile) || !is.null(t$impute) || !is.null(t$flatten)) {
+      has_dynamic <- TRUE
+    }
   }
   list(fields = unique(out[nzchar(out)]), dynamic = has_dynamic)
 }
@@ -387,8 +401,17 @@ collect_extent_params <- function(transform_list) {
 # usually maps to the *same* field as xOffset/yOffset, per Vega-Lite
 # convention, but not necessarily -- e.g. a grouped chart with a distinct
 # color legend on some other channel).
+#
+# An explicit `width` is required here (not just cosmetic): GeomBar/GeomCol
+# have their own default width (0.9) that dodge2 can measure and divide up
+# fine without it, but a width-less geom (GeomPoint -- exactly the "circle"
+# mark in a bar+circle combo chart) has no xmin/xmax for dodge2 to measure
+# at all, so *every* group collapses onto the same, undodged x position
+# (silently, apart from a "Width not defined" warning) unless a width is
+# supplied explicitly. 0.9 matches geom_bar()'s own default, so a sibling
+# bar layer's dodge spacing is unaffected by this.
 dodge_extra_fixed <- function(extra_fixed) {
-  extra_fixed[["position"]] <- extra_fixed[["position"]] %||% '"dodge2"'
+  extra_fixed[["position"]] <- extra_fixed[["position"]] %||% "ggplot2::position_dodge2(width = 0.9)"
   extra_fixed
 }
 
@@ -591,7 +614,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   base_call <- if (!is.null(wrapper_data_var)) {
     if (!is.null(base_aes_call)) sprintf("ggplot2::ggplot(%s, %s)", wrapper_data_var, base_aes_call) else sprintf("ggplot2::ggplot(%s)", wrapper_data_var)
   } else {
-    if (!is.null(base_aes_call)) sprintf("ggplot2::ggplot() + ggplot2::aes(%s)", base_aes_call) else "ggplot2::ggplot()"
+    if (!is.null(base_aes_call)) sprintf("ggplot2::ggplot() + %s", base_aes_call) else "ggplot2::ggplot()"
   }
   emit(emitter, sprintf("%s <- %s", plot_var, base_call))
 
