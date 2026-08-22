@@ -36,30 +36,60 @@ simple_color_value <- function(value, ignore_unsupported = FALSE, .notes = NULL)
   format_value(value)
 }
 
+# A mark-level scalar property (size/opacity/strokeWidth) can be
+# `{"expr": "..."}` instead of a plain literal -- almost always a *literal*
+# constant wrapped that way (e.g. `{"expr": "20"}`, seen in the wild) rather
+# than a genuine signal/param reference (which has no static value at all).
+# translate_expr() on the expr text is a no-op for the literal case (a bare
+# number translates to itself); the result is used as-is only when it's
+# still a plain number afterward -- a leftover bare identifier (a real
+# signal/param reference, e.g. `{"expr": "height / 2"}`) means there was
+# nothing static to resolve, so this falls back the same way a gradient
+# fill/stroke definition does (a reasonable constant, with a note, under
+# ignore_unsupported; a clear error otherwise).
+mark_scalar_value <- function(value, default_literal, ignore_unsupported = FALSE, .notes = NULL) {
+  if (is.list(value) && !is.null(value[["expr"]])) {
+    translated <- translate_expr(value[["expr"]])
+    if (grepl("^-?[0-9.]+$", translated)) return(translated)
+    if (ignore_unsupported) {
+      .push_note(.notes, sprintf(
+        'unsupported mark property bound to a non-literal expression/signal ("%s"), using %s instead (ignore_unsupported)',
+        value[["expr"]], default_literal
+      ))
+      return(default_literal)
+    }
+    stop(sprintf('Unsupported: mark property is bound to an expression/signal ("%s") with no static value', value[["expr"]]))
+  }
+  format_value(value)
+}
+
 mark_fixed_params <- function(mark_props, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
   fixed <- list()
-  if (!is.null(mark_props$color)) fixed[[color_channel_aes(mark_type)]] <- simple_color_value(mark_props$color, ignore_unsupported, .notes)
-  if (!is.null(mark_props$fill)) fixed[["fill"]] <- simple_color_value(mark_props$fill, ignore_unsupported, .notes)
-  if (!is.null(mark_props$stroke)) fixed[["colour"]] <- simple_color_value(mark_props$stroke, ignore_unsupported, .notes)
-  if (!is.null(mark_props$opacity)) fixed[["alpha"]] <- format_value(mark_props$opacity)
-  if (!is.null(mark_props$strokeWidth)) {
+  # `[[` (exact match), not `$` (which silently *partial*-matches a list
+  # name -- e.g. mark_props$fill on a mark with only "filled" set, never
+  # "fill" itself, would return the "filled" boolean instead of NULL).
+  if (!is.null(mark_props[["color"]])) fixed[[color_channel_aes(mark_type)]] <- simple_color_value(mark_props[["color"]], ignore_unsupported, .notes)
+  if (!is.null(mark_props[["fill"]])) fixed[["fill"]] <- simple_color_value(mark_props[["fill"]], ignore_unsupported, .notes)
+  if (!is.null(mark_props[["stroke"]])) fixed[["colour"]] <- simple_color_value(mark_props[["stroke"]], ignore_unsupported, .notes)
+  if (!is.null(mark_props[["opacity"]])) fixed[["alpha"]] <- mark_scalar_value(mark_props[["opacity"]], "1", ignore_unsupported, .notes)
+  if (!is.null(mark_props[["strokeWidth"]])) {
     # geom_point()'s border-thickness aesthetic is "stroke", not
     # "linewidth" (that's for a line/area/bar's own line thickness, which
     # is what every other mark type here maps onto a geom that has).
     stroke_width_aes <- if (mark_type %in% c("point", "circle", "square", "tick")) "stroke" else "linewidth"
-    fixed[[stroke_width_aes]] <- format_value(mark_props$strokeWidth)
+    fixed[[stroke_width_aes]] <- mark_scalar_value(mark_props[["strokeWidth"]], "1", ignore_unsupported, .notes)
   }
-  if (!is.null(mark_props$size) && !(mark_type %in% c("bar", "area", "line"))) {
-    fixed[["size"]] <- format_value(mark_props$size)
+  if (!is.null(mark_props[["size"]]) && !(mark_type %in% c("bar", "area", "line"))) {
+    fixed[["size"]] <- mark_scalar_value(mark_props[["size"]], "1.5", ignore_unsupported, .notes)
   }
   # A `text` mark's label is usually an encoding channel, but Vega-Lite also
   # allows a literal constant directly on the mark definition (a string, or
   # an array of strings meaning multiple lines).
-  if (mark_type == "text" && !is.null(mark_props$text)) {
-    label <- if (is.list(mark_props$text)) {
-      paste(vapply(mark_props$text, as.character, character(1)), collapse = "\n")
+  if (mark_type == "text" && !is.null(mark_props[["text"]])) {
+    label <- if (is.list(mark_props[["text"]])) {
+      paste(vapply(mark_props[["text"]], as.character, character(1)), collapse = "\n")
     } else {
-      as.character(mark_props$text)
+      as.character(mark_props[["text"]])
     }
     fixed[["label"]] <- render_string(label)
   }
@@ -119,6 +149,24 @@ render_kwargs <- function(named_list) {
 #     the upper bound, it's the offset to it).
 #   - `x2`/`y2` alone: `x`/`y` and `x2`/`y2` are themselves the two bounds.
 # Returns NULL if this axis has none of these (a plain single-value axis).
+# A `bar`/`rect` mark's `color` channel normally routes to the "fill"
+# aesthetic (color_channel_aes(), matching its usual real geom -- geom_col/
+# geom_tile, both fillable boxes). But the Gantt-chart-style fallback for a
+# ranged bar/rect against a categorical companion axis actually draws with
+# geom_linerange() instead (a *line*, not a box, since geom_rect can't size
+# against a discrete axis) -- which has no "fill" aesthetic at all, only
+# "colour". Applied right before build_call() at each such fallback site,
+# after build_layer_channels() has already committed to "fill" based on the
+# Vega-Lite mark type alone (it has no way to know a *specific* layer will
+# end up downgraded to a line-family geom).
+rename_fill_to_colour <- function(aes_pairs) {
+  if (!is.null(aes_pairs[["fill"]])) {
+    aes_pairs[["colour"]] <- aes_pairs[["fill"]]
+    aes_pairs[["fill"]] <- NULL
+  }
+  aes_pairs
+}
+
 error_bounds <- function(encoding, axis, ignore_unsupported = FALSE, .notes = NULL) {
   err_key <- paste0(axis, "Error")
   err2_key <- paste0(axis, "Error2")
@@ -179,7 +227,12 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # border) resolves it the same way Vega-Lite itself keeps a circle's
   # fill and stroke independent -- the encoding maps to "fill" (interior)
   # instead, while the mark's own `stroke` keeps meaning "colour" (border).
-  if (mark_type %in% c("point", "circle", "square", "tick") && !is.null(mark_props$stroke) && !is.null(aes_pairs[["colour"]])) {
+  # `"filled": true` is Vega-Lite's own explicit request for exactly this
+  # (a point/circle/square drawn with a fillable shape instead of its
+  # default outline-only one) -- the same switch a mark-level `stroke`
+  # forces implicitly below by necessity.
+  if (mark_type %in% c("point", "circle", "square", "tick") &&
+      (isTRUE(mark_props[["filled"]]) || !is.null(mark_props[["stroke"]])) && !is.null(aes_pairs[["colour"]])) {
     aes_pairs[["fill"]] <- aes_pairs[["colour"]]
     aes_pairs[["colour"]] <- NULL
     fixed[["shape"]] <- fixed[["shape"]] %||% "21"
@@ -220,7 +273,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     }
     if (mark_type %in% c("bar", "rect")) {
       if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
-      return(build_call("ggplot2::geom_linerange", aes_pairs, fixed, data_arg))
+      return(build_call("ggplot2::geom_linerange", rename_fill_to_colour(aes_pairs), fixed, data_arg))
     }
     if (mark_type %in% c("area", "errorband")) {
       # geom_area only takes a single y (with an implicit ymin = 0); a real
@@ -273,7 +326,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       # geom_linerange with a widened linewidth is the standard ggplot2
       # workaround for a horizontal "thick bar" at a discrete position.
       fixed[["linewidth"]] <- fixed[["linewidth"]] %||% "10"
-      return(build_call("ggplot2::geom_linerange", aes_pairs, fixed, data_arg))
+      return(build_call("ggplot2::geom_linerange", rename_fill_to_colour(aes_pairs), fixed, data_arg))
     }
     return(build_call("ggplot2::geom_errorbar", aes_pairs, fixed, data_arg))
   }

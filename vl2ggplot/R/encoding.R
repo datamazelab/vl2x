@@ -129,6 +129,15 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
       aes_pairs[["group"]] <- grouping_exprs
     } else if (length(grouping_exprs) > 1) {
       aes_pairs[["group"]] <- sprintf("interaction(%s)", paste(grouping_exprs, collapse = ", "))
+    } else {
+      # No color/detail/shape channel at all -- a genuinely single-series
+      # line/area, which still needs group forced to one constant value
+      # whenever x or y is discrete (same fragmentation ggplot2's default
+      # grouping causes above, just without a colour channel to have
+      # otherwise supplied it). Harmless when x/y are both already
+      # continuous too (ggplot2's default grouping already treats
+      # everything as one group in that case, so this changes nothing).
+      aes_pairs[["group"]] <- "1"
     }
   }
 
