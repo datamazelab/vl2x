@@ -44,15 +44,11 @@
 
 ===== boxplot_tooltip_not_aggregate.vl.json [NaN geometry: 2 shape(s), tags=line] =====
 
-===== concat_marginal_histograms.vl.json [NaN geometry: 17 shape(s), tags=rect] =====
-
 ===== histogram_log.vl.json [NaN geometry: 7 shape(s), tags=rect] =====
 
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
 ===== histogram_rel_freq.vl.json [NaN geometry: 20 shape(s), tags=rect] =====
-
-===== interactive_concat_layer.vl.json [NaN geometry: 9 shape(s), tags=rect] =====
 
 ===== joinaggregate_percent_of_total.vl.json [NaN geometry: 5 shape(s), tags=rect] =====
 
@@ -82,7 +78,13 @@
 
 ===== parallel_coordinate.vl.json [NaN geometry: 3 shape(s), tags=path] =====
 
-===== rect_binned_heatmap.vl.json [NaN geometry: 77 shape(s), tags=rect] =====
+===== rect_mosaic_labelled.vl.json [NaN geometry: 9 shape(s), tags=rect] =====
+
+===== rect_mosaic_labelled_with_offset.vl.json [NaN geometry: 9 shape(s), tags=rect] =====
+
+===== rect_mosaic_simple.vl.json [NaN geometry: 9 shape(s), tags=rect] =====
+
+===== rect_params.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
 ===== repeat_layer.vl.json [NaN geometry: 1 shape(s), tags=path] =====
 

@@ -129,6 +129,20 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
   switch (type) {
     case 'bar':
       return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+    case 'rect':
+      // A genuine box on both axes (e.g. prepare.js's 2D-bin heatmap case)
+      // is fully well-defined, not an approximation -- draw it the same
+      // way "bar" draws its own x2/y2 range, without needing
+      // ignoreUnsupported. Anything narrower (one axis only, or no range
+      // at all) is still only handled as a best-effort approximation, via
+      // the default case below.
+      if (encoding.x2 && encoding.y2) {
+        return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      }
+      if (ignoreUnsupported) {
+        return renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      }
+      throw new Error('Unsupported mark type: "rect" (expected an x2/y2 range on both axes)');
     case 'point':
     case 'circle':
     case 'square':
@@ -309,6 +323,14 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       `// vl2d3: unsupported bar orientation (band axis with no value channel), drawing a point per row instead (--ignore-unsupported)\n` +
       renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported)
     );
+  } else if (encoding.x2 && encoding.y2) {
+    // A genuine 2D box on both axes -- e.g. prepare.js's 2D-bin case (each
+    // row is one heatmap cell, with its own x and y bin edges), or any
+    // other spec giving an explicit range on both channels at once.
+    lines.push(`    .attr("x", d => Math.min(x(d[${JSON.stringify(encoding.x.field)}]), x(d[${JSON.stringify(encoding.x2.field)}])))`);
+    lines.push(`    .attr("width", d => Math.abs(x(d[${JSON.stringify(encoding.x2.field)}]) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])))`);
+    lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
   } else if (encoding.x2 && !encoding.y2) {
     lines.push(`    .attr("x", d => Math.min(x(d[${JSON.stringify(encoding.x.field)}]), x(d[${JSON.stringify(encoding.x2.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(d[${JSON.stringify(encoding.x2.field)}]) - x(d[${JSON.stringify(encoding.x.field)}])))`);
@@ -354,14 +376,27 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   return lines.join('\n');
 }
 
+// prepare.js's 2D-bin case gives x/x2 (and y/y2) as a bin's two edges, not
+// a single center -- a "rect" mark wants the box itself (see renderBar's
+// own x2-and-y2 branch), but a point-ish mark has no width/height to fill,
+// so it centers on the bin instead: the midpoint between the two edges.
+function binCenterAccessor(encoding, scales, channel) {
+  const channel2 = `${channel}2`;
+  if (!encoding[channel2]) return null;
+  const scale = scales[channel];
+  const lo = `${scale.varName}(d[${JSON.stringify(encoding[channel].field)}])`;
+  const hi = `${scale.varName}(d[${JSON.stringify(encoding[channel2].field)}])`;
+  return `(${lo} + ${hi}) / 2`;
+}
+
 function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
   const {x, y, size} = scales;
   // A 1D strip/dot plot (only one of x/y given) centers points on the
   // missing axis rather than requiring both; with neither given, every
   // point is centered on both (all overlapping) rather than refusing to
   // render at all.
-  const cx = x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
-  const cy = y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
+  const cx = x ? binCenterAccessor(encoding, scales, 'x') ?? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
+  const cy = y ? binCenterAccessor(encoding, scales, 'y') ?? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
   const r =
     size && encoding.size
       ? `size(d[${JSON.stringify(encoding.size.field)}])`

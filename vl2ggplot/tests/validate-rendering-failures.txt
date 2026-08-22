@@ -392,78 +392,6 @@ chart <- chart + ggplot2::labs(title = "Body Mass of Penguin Species (g)")
 
 chart
 
-===== circle_binned_maxbins_2.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/movies.json")
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_histogram(
-  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
-  bins = 2
-)
-
-
-chart
-
-===== circle_binned_maxbins_20.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/movies.json")
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_histogram(
-  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
-  bins = 20
-)
-
-
-chart
-
-===== circle_binned_maxbins_5.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/movies.json")
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_histogram(
-  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
-  bins = 5
-)
-
-
-chart
-
-===== circle_binned.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/movies.json")
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_histogram(
-  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
-  bins = 10
-)
-
-
-chart
-
 ===== circle_flatten.vl.json [EXEC] =====
 arguments imply differing number of rows: 2, 5, 4
 library(ggplot2)
@@ -480,61 +408,6 @@ chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_point(
   mapping = ggplot2::aes(x = foo, y = factor(bar), colour = factor(key))
 )
-
-
-chart
-
-===== concat_weather.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-concat1_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-concat1_data <- dplyr::mutate(concat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-concat1_data <- dplyr::filter(concat1_data, location == 'Seattle')
-concat1 <- ggplot2::ggplot(concat1_data)
-concat1 <- concat1 + ggplot2::geom_col(
-  mapping = ggplot2::aes(x = factor(date), y = precipitation),
-  stat = "summary",
-  fun = "mean"
-)
-concat2_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-concat2_data <- dplyr::mutate(concat2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-concat2_data <- dplyr::filter(concat2_data, location == 'Seattle')
-concat2 <- ggplot2::ggplot(concat2_data)
-concat2 <- concat2 + ggplot2::geom_col(
-  mapping = ggplot2::aes(x = factor(date), y = precipitation),
-  stat = "summary",
-  fun = "median"
-)
-concat3_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-concat3_data <- dplyr::filter(concat3_data, location == 'Seattle')
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-concat3 <- ggplot2::ggplot(concat3_data)
-concat3 <- concat3 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = temp_min, y = temp_max), bins = 30)
-chart <- patchwork::wrap_plots(list(concat1, concat2, concat3), ncol = 2)
 
 
 chart
@@ -748,42 +621,6 @@ chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(shape = geo, colour = pct))
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
 chart <- chart + ggplot2::facet_grid(rows = dplyr::vars(group))
-
-
-chart
-
-===== hconcat_weather.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-hconcat1_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-hconcat1_data <- dplyr::mutate(hconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-hconcat1_data <- dplyr::filter(hconcat1_data, location == 'Seattle')
-hconcat1 <- ggplot2::ggplot(hconcat1_data)
-hconcat1 <- hconcat1 + ggplot2::geom_col(
-  mapping = ggplot2::aes(x = factor(date), y = precipitation),
-  stat = "summary",
-  fun = "mean"
-)
-hconcat2_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-hconcat2_data <- dplyr::filter(hconcat2_data, location == 'Seattle')
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-hconcat2 <- ggplot2::ggplot(hconcat2_data)
-hconcat2 <- hconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = temp_min, y = temp_max), bins = 30)
-chart <- patchwork::wrap_plots(list(hconcat1, hconcat2), ncol = 2)
 
 
 chart
@@ -1428,35 +1265,6 @@ chart <- chart + ggplot2::geom_text(
 
 chart
 
-===== layer_circle_independent_color.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-layer_data <- jsonlite::fromJSON("data/cars.json")
-chart <- ggplot2::ggplot(layer_data)
-layer1_data <- layer_data
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- chart + ggplot2::geom_histogram(
-  data = layer1_data,
-  mapping = ggplot2::aes(x = Acceleration, y = Horsepower),
-  bins = 30
-)
-layer2_data <- layer_data
-layer2_data <- dplyr::filter(layer2_data, Origin == 'Japan')
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- chart + ggplot2::geom_histogram(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = Acceleration, y = Horsepower),
-  colour = "firebrick",
-  bins = 30
-)
-
-
-chart
-
 ===== layer_falkensee.vl.json [EXEC] =====
 ℹ In argument: `start = if (...) NULL`.
 Caused by error in `charToDate()`:
@@ -1940,26 +1748,6 @@ hconcat2_data <- dplyr::mutate(hconcat2_data, norm = quantileNormal(p))
 hconcat2 <- ggplot2::ggplot(hconcat2_data)
 hconcat2 <- hconcat2 + ggplot2::geom_point(mapping = ggplot2::aes(x = norm, y = v))
 chart <- patchwork::wrap_plots(list(hconcat1, hconcat2), ncol = 2)
-
-
-chart
-
-===== rect_binned_heatmap.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/movies.json")
-chart_data <- dplyr::filter(chart_data, (!is.na(`IMDB Rating`)) & (!is.na(`Rotten Tomatoes Rating`)))
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_histogram(
-  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
-  bins = 60
-)
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 200)
 
 
 chart
@@ -2474,42 +2262,6 @@ chart
 ===== vconcat_flatten.vl.json [TRANSLATE] =====
 Unsupported: nested field reference "lc.time" (dot-path into a sub-object) is not supported
 
-
-===== vconcat_weather.vl.json [EXEC] =====
-Problem while computing stat.
-ℹ Error occurred in the 1st layer.
-Caused by error in `setup_params()`:
-! `stat_bin()` must only have an x or y aesthetic.
-library(ggplot2)
-
-vconcat1_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-vconcat1_data <- dplyr::filter(vconcat1_data, location == 'Seattle')
-vconcat1 <- ggplot2::ggplot(vconcat1_data)
-vconcat1 <- vconcat1 + ggplot2::geom_col(
-  mapping = ggplot2::aes(x = factor(date), y = precipitation),
-  stat = "summary",
-  fun = "mean"
-)
-vconcat2_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
-vconcat2_data <- dplyr::filter(vconcat2_data, location == 'Seattle')
-# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
-vconcat2 <- ggplot2::ggplot(vconcat2_data)
-vconcat2 <- vconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = temp_min, y = temp_max), bins = 30)
-chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
-
-
-chart
 
 ===== waterfall_chart.vl.json [EXEC] =====
 ℹ In argument: `text_amount = +...`.
