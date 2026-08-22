@@ -87,37 +87,6 @@ chart
 Unsupported: nested field reference "record.low" (dot-path into a sub-object) is not supported
 
 
-===== bar_simple_binned_timeunit_special_chars.vl.json [EXEC] =====
-'\.' is an unrecognized escape in character string (<input>:10:44)
-library(ggplot2)
-
-chart_data <- data.frame(
-  a.b = c("2022-01-01", "2022-01-04", "2022-01-07", "2022-01-02", "2022-01-05", "2022-01-08", "2022-01-03", "2022-01-06", "2022-01-09"),
-  b = c(28, NA, 43, 91, NA, 53, 19, NA, 52),
-  b.b = c(NA, 55, NA, NA, 81, NA, NA, 87, NA),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart_data <- dplyr::mutate(chart_data, `a\.b` = if (is.numeric(`a\.b`)) as.Date(`a\.b` / 86400000, origin = "1970-01-01") else as.Date(as.character(`a\.b`), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: unsupported timeUnit "binnedutcyearmonthdate", left untruncated (ignore_unsupported)
-chart_data <- dplyr::mutate(chart_data, `binnedutcyearmonthdate_a\.b` = `a\.b`)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_col(mapping = ggplot2::aes(y = `binnedutcyearmonthdate_a\.b`, x = b))
-chart <- chart + ggplot2::labs(title = "A Simple Bar Chart with Lines at Extents")
-
-
-chart
-
 ===== bar_simple_extent.vl.json [EXEC] =====
 Problem while setting up geom.
 ℹ Error occurred in the 2nd layer.
@@ -953,7 +922,7 @@ layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(d
 )))
 chart <- chart + ggplot2::geom_line(
   data = layer1_data,
-  mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol))
+  mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
 )
 layer2_data <- layer_data
 layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
@@ -1235,7 +1204,7 @@ layer1_data <- dplyr::mutate(layer1_data, fps = 1000/data)
 layer1_data <- dplyr::mutate(layer1_data, system = 'Falcon')
 chart <- chart + ggplot2::geom_line(
   data = layer1_data,
-  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system)),
+  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system), group = factor(system)),
   size = 1
 )
 # vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
@@ -1246,7 +1215,7 @@ layer2_data <- dplyr::mutate(layer2_data, fps = 1000/data)
 layer2_data <- dplyr::mutate(layer2_data, system = 'Square Crossfilter (3M)')
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
-  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system)),
+  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system), group = factor(system)),
   size = 1
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 200)
@@ -1435,7 +1404,9 @@ chart_data <- dplyr::mutate(chart_data, `sin(x)` = sin(x))
 chart_data <- dplyr::mutate(chart_data, `cos(x)` = cos(x))
 chart_data <- do.call(rbind, lapply(c("sin(x)", "cos(x)"), function(.f) { .d <- chart_data; .d[["key"]] <- .f; .d[["value"]] <- .d[[.f]]; .d }))
 chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_line(mapping = ggplot2::aes(x = x, y = value, colour = factor(key)))
+chart <- chart + ggplot2::geom_line(
+  mapping = ggplot2::aes(x = x, y = value, colour = factor(key), group = factor(key))
+)
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 150)
 
 
@@ -1678,13 +1649,16 @@ Unsupported: nested field reference "source.reco" (dot-path into a sub-object) i
 
 
 ===== test_subobject.vl.json [EXEC] =====
-'\.' is an unrecognized escape in character string (<input>:6:73)
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'source.reco' not found
 library(ggplot2)
 
 # vl2ggplot: unsupported data "format.property" (extracting a nested array from a larger JSON object), using an empty data.frame instead (ignore_unsupported)
 chart_data <- data.frame()
 chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(x = `source\.reco`, y = `source\.yes`))
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(x = source.reco, y = source.yes))
 
 
 chart

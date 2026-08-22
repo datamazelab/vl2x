@@ -71,6 +71,24 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
     }
   }
 
+  # geom_line()/geom_step()/geom_area()'s default grouping is the
+  # interaction of *every* discrete aesthetic, including x/y themselves --
+  # Vega-Lite's own semantics instead group a line/area by its
+  # color/detail/shape encoding alone, connecting across the sorted x-domain
+  # regardless of whether x (or y) also happens to be discrete (e.g. an
+  # ordinal axis). Without an explicit `group` override here, every distinct
+  # (x, y, colour) *row* becomes its own single-point "line" whenever x or y
+  # is discrete too -- nothing visibly connects, even though the data and
+  # colour mapping are both otherwise correct.
+  if (mark_type %in% c("line", "trail", "area") && is.null(aes_pairs[["group"]])) {
+    grouping_exprs <- unlist(aes_pairs[intersect(c("colour", "fill", "shape"), names(aes_pairs))], use.names = FALSE)
+    if (length(grouping_exprs) == 1) {
+      aes_pairs[["group"]] <- grouping_exprs
+    } else if (length(grouping_exprs) > 1) {
+      aes_pairs[["group"]] <- sprintf("interaction(%s)", paste(grouping_exprs, collapse = ", "))
+    }
+  }
+
   list(aes = aes_pairs, fixed = fixed, sort_field = sort_field)
 }
 

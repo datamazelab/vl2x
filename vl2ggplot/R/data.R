@@ -144,7 +144,7 @@ render_temporal_coercion <- function(var_name, fields) {
     # form expects days-since-origin, so this must convert first.
     sprintf(
       "%s = if (is.numeric(%s)) as.Date(%s / 86400000, origin = \"1970-01-01\") else as.Date(as.character(%s), tryFormats = %s)",
-      render_name(f), ref, ref, ref, formats
+      render_name(unescape_field_path(f)), ref, ref, ref, formats
     )
   }, character(1))
   sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))

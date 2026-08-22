@@ -88,25 +88,6 @@ extract_date_function_fields <- function(expr) {
 # inherited data, not destructively to the shared variable every sibling
 # layer also reads, so a copy (`data2 <- data1`) is made first rather than
 # reassigning `inherited_data_var` in place.
-# Vega-Lite escapes a literal special character inside a field NAME (most
-# commonly `.`, to distinguish "a.b" the column from a nested-path access
-# into column "a"'s "b" property) with a leading backslash. field_ref()
-# undoes this for its own callers, but a couple of other places
-# (collect_temporal_fields()'s output, used both as a field_ref() input AND
-# as a bare render_name()'d assignment target in render_temporal_coercion())
-# read `$field` directly rather than through field_ref() -- so this is
-# applied once, up front, to every channel's `field` in a view's own
-# encoding, before anything else (including field_ref()) ever sees it.
-unescape_encoding_fields <- function(encoding) {
-  for (ch in names(encoding)) {
-    field <- encoding[[ch]]$field
-    if (is.character(field) && length(field) == 1 && grepl("\\\\", field)) {
-      encoding[[ch]]$field <- gsub("\\\\(.)", "\\1", field, perl = TRUE)
-    }
-  }
-  encoding
-}
-
 # A Vega-Lite field name is normally a plain (possibly dotted/escaped)
 # property path, but a compound aggregate result (`argmin`/`argmax`, which
 # stores the *whole matching row* under its `as` name -- see aggops.R) is
@@ -148,7 +129,7 @@ flatten_bracket_fields <- function(encoding, work_var) {
 }
 
 prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL) {
-  node_encoding <- unescape_encoding_fields(node$encoding %||% list())
+  node_encoding <- node$encoding %||% list()
   geo_channel <- intersect(names(node_encoding), .geo_channels)
   if (length(geo_channel) > 0) {
     if (!ignore_unsupported) {
@@ -280,8 +261,26 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   list(
     data_var = data_var, encoding = plan$encoding, original_encoding = encoding,
     mark = node$mark, extra_fixed = extra_fixed, extra_aes = extra_aes,
-    use_histogram = plan$use_histogram
+    use_histogram = plan$use_histogram, extent_params = collect_extent_params(node$transform %||% list())
   )
+}
+
+# A top-level `extent` transform (`{extent: field, param: name}`) computes
+# the [min, max] of `field` and exposes it under `param` for later
+# expressions to reference (e.g. a rule mark's `value: {expr:
+# "scale('x', b_extent[0])"}}`) -- not a data-pipeline step at all (no
+# var_name reshaping), so it's collected here rather than handled inside
+# render_transforms(), and resolved directly at the point of use (see
+# resolve_value_channel_expr() in encoding.R) rather than through a
+# separately pre-declared runtime variable (avoids a redeclaration clash
+# across sibling layer children, which -- like any other top-level
+# transform -- each independently re-run their own copy of).
+collect_extent_params <- function(transform_list) {
+  params <- list()
+  for (t in transform_list) {
+    if (!is.null(t$extent) && !is.null(t$param)) params[[t$param]] <- t$extent
+  }
+  params
 }
 
 # A dodged/grouped position offset needs two things added to the geom call:
@@ -422,7 +421,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   base_hint <- if (identical(hint, "chart")) "layer" else hint
   plot_var <- new_var(emitter, hint)
 
-  wrapper_encoding <- unescape_encoding_fields(spec$encoding %||% list())
+  wrapper_encoding <- spec$encoding %||% list()
   has_nested_layer <- any(vapply(spec$layer, function(c) !is.null(c$layer), logical(1)))
   if (has_nested_layer && !ignore_unsupported) {
     stop("Unsupported: nested layer-of-layers is not yet supported by vl2ggplot")

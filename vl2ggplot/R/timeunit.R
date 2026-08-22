@@ -61,6 +61,45 @@ is_supported_timeunit <- function(unit) {
   !is.null(key) && key %in% names(.timeunit_local)
 }
 
+# The raw unit name, for output-field-naming purposes (out_field_name())
+# only -- unlike normalize_timeunit(), a "utc"/"binned" prefix is kept as-is
+# (so e.g. a plain "year" and a "utcyear" bucketing don't collide in the
+# derived field name) and `step` is dropped silently (naming doesn't need
+# to reflect it). `unit` may be a plain string or a `{unit, step}`
+# TimeUnitParams object -- paste0()'ing the latter directly into a name
+# would coerce the whole list into a multi-element character vector instead
+# of erroring loudly, so this must be unwrapped before any such use.
+timeunit_label <- function(unit) if (is.list(unit)) unit$unit else unit
+
+# A single-part timeUnit as a bare NUMBER (not a truncated Date/POSIXct) --
+# e.g. "year" -> the 4-digit year, "month" -> 1-12. Used only for a filter
+# predicate comparing a timeUnit'd field against a plain scalar (as opposed
+# to a DateTime object): Vega-Lite's own semantics for `{field, timeUnit:
+# "year", equal: 2006}` compare just the extracted component number, not
+# the full bucketed date, to the given value (a bucketed Date vs. a bare
+# number is never meaningfully equal/ordered). `day`/`dayofyear` already
+# return a number from `.timeunit_local` itself, so they're reused
+# directly; a multi-part unit (yearmonth/yearmonthdate/yearquarter) has no
+# single-number form and returns NULL (falls back to the bucketed-date
+# comparison, which real specs practically never hit for these since
+# they're normally compared against a DateTime object instead).
+.timeunit_component <- list(
+  year = function(d) sprintf('as.integer(format(%s, "%%Y"))', d),
+  quarter = function(d) sprintf('((as.integer(format(%s, "%%m")) - 1) %%/%% 3 + 1)', d),
+  month = function(d) sprintf('as.integer(format(%s, "%%m"))', d),
+  date = function(d) sprintf('as.integer(format(%s, "%%d"))', d),
+  hours = function(d) sprintf('as.integer(format(%s, "%%H"))', d),
+  minutes = function(d) sprintf('as.integer(format(%s, "%%M"))', d),
+  seconds = function(d) sprintf('as.integer(format(%s, "%%S"))', d)
+)
+
+timeunit_component_expr <- function(unit, date_expr) {
+  key <- normalize_timeunit(unit)
+  if (key %in% c("day", "dayofyear")) return(.timeunit_local[[key]](date_expr))
+  fn <- .timeunit_component[[key]]
+  if (is.null(fn)) NULL else fn(date_expr)
+}
+
 timeunit_expr <- function(unit, date_expr, ignore_unsupported = FALSE) {
   key <- normalize_timeunit(unit)
   fn <- .timeunit_local[[key]]

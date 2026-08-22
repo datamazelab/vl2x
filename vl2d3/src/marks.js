@@ -2,6 +2,7 @@
 // resolved scales (see scales.js) and the (prepare.js-rewritten) encoding.
 
 import {formatValue} from './literals.js';
+import {translateExpr} from './expr.js';
 
 const DEFAULT_FILL = 'steelblue';
 const DEFAULT_STROKE = 'steelblue';
@@ -69,6 +70,19 @@ function fillExpr(encoding, scales, fallback = DEFAULT_FILL) {
   return JSON.stringify(fallback);
 }
 
+// A mark-level literal color (`"mark": {"type": "rule", "stroke":
+// "firebrick"}`, or the generic `color` property Vega-Lite accepts on any
+// mark) should win over this mark-type's own hardcoded default -- but
+// still loses to an actual `encoding.color` channel (fillExpr() above
+// already gives that priority, since this only ever supplies its
+// `fallback` argument). `kind` is whichever SVG attribute this mark
+// renderer sets from color ("fill" or "stroke") -- checked first since
+// it's the more specific property, falling back to the mark-type-agnostic
+// `color` before the hardcoded default.
+function markColorFallback(markProps, kind, defaultColor) {
+  return markProps[kind] ?? markProps.color ?? defaultColor;
+}
+
 // Whether `fillExpr(encoding, ...)` produces a per-row expression
 // (references `d`) rather than a constant -- callers need to know this to
 // decide whether the fill/stroke belongs on the enclosing <g> (a constant,
@@ -123,7 +137,7 @@ function renderApproximateMark(type, encoding, scales, dims, dataVar, markProps,
   return note('point') + '\n' + renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
 }
 
-export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsupported = false) {
+export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsupported = false, extentParams = {}) {
   const type = typeof mark === 'string' ? mark : mark.type;
   const markProps = typeof mark === 'string' ? {} : mark;
   switch (type) {
@@ -153,7 +167,7 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
     case 'area':
       return renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     case 'rule':
-      return renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      return renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupported, extentParams);
     case 'tick':
       return renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     case 'text':
@@ -209,7 +223,7 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   const yTemporalBar = !yBand && y && encoding.y && encoding.y.type === 'temporal';
   const xAmbiguous = x && x.kind === 'ambiguous';
   const yAmbiguous = y && y.kind === 'ambiguous';
-  const fill = fillExpr(encoding, scales);
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   // Both variable names are plain (not field-derived) since the whole
@@ -414,7 +428,7 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
       ? `size(d[${JSON.stringify(encoding.size.field)}])`
       : formatValue(markProps.size ? Math.sqrt(simpleMarkProp(markProps.size, 9, 'size', ignoreUnsupported) / Math.PI) : 3) +
         markPropNote(markProps.size, 'size', ignoreUnsupported);
-  const fill = fillExpr(encoding, scales);
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
   const opacity = opacityAttr(encoding, scales);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
@@ -454,7 +468,7 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const lines = [];
 
   if (groupField) {
-    const stroke = encoding.color ? `color(key)` : JSON.stringify(DEFAULT_STROKE);
+    const stroke = encoding.color ? `color(key)` : JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
     lines.push(`svg.append("g")`);
     lines.push(`    .attr("fill", "none")`);
     lines.push(`    .attr("stroke-width", ${formatValue(simpleMarkProp(markProps.strokeWidth, 1.5, 'strokeWidth', ignoreUnsupported))}${markPropNote(markProps.strokeWidth, 'strokeWidth', ignoreUnsupported)})`);
@@ -467,7 +481,7 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
         `(rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
     );
   } else {
-    const stroke = markProps.stroke ? formatValue(markProps.stroke) : JSON.stringify(DEFAULT_STROKE);
+    const stroke = JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
     lines.push(`svg.append("path")`);
     lines.push(`    .attr("fill", "none")`);
     lines.push(`    .attr("stroke", ${stroke})`);
@@ -492,7 +506,7 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const sortField = x ? encoding.x.field : encoding.y.field;
   const sortFieldJson = JSON.stringify(sortField);
   const lines = [];
-  const fill = fillExpr(encoding, scales);
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
 
   if (groupField) {
     lines.push(`svg.append("g")`);
@@ -516,9 +530,43 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   return singleAxisNote + lines.join('\n');
 }
 
-function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
+// A rule mark's x/y channel commonly has no `field` at all -- just a
+// constant `value` (a fixed reference line position), sometimes itself
+// computed via `{"expr": "..."}` rather than given as a literal. The
+// common real-world shape for that expr is `scale('x', <inner>)`: Vega's
+// own idiom for converting a *data-space* value into the pixel space a
+// mark's raw position property expects (needed because such a value
+// channel bypasses the normal field->scale encoding pipeline entirely) --
+// translated here into an actual call to this chart's own x/y scale
+// function, which already does exactly that. `<inner>` commonly indexes
+// into an `extent` transform's param array (`b_extent[0]`) -- resolved
+// directly at each reference (see collectExtentParams() in translator.js)
+// rather than through a separately pre-declared runtime variable, sidestepping
+// any redeclaration clash across sibling layer children (each of which
+// independently re-runs its own copy of the same top-level transform).
+const SCALE_CALL_RE = /^scale\(\s*['"]([xy])['"]\s*,\s*(.+)\)$/;
+
+function resolveValueChannelExpr(def, dataVar, extentParams, ignoreUnsupported) {
+  if (def.value === null || def.value === undefined) {
+    if (ignoreUnsupported) return '0 /* vl2d3: unsupported value-channel shape (no field/value), using 0 (--ignore-unsupported) */';
+    throw new Error('Unsupported: channel has neither a field nor a value');
+  }
+  if (typeof def.value !== 'object' || !('expr' in def.value)) {
+    return formatValue(def.value);
+  }
+  const m = SCALE_CALL_RE.exec(def.value.expr.trim());
+  if (!m) return translateExpr(def.value.expr);
+  const [, axisChannel, inner] = m;
+  const rewrittenInner = inner.replace(/\b([A-Za-z_$][\w$]*)\[(\d+)\]/g, (whole, name, idx) => {
+    const sourceField = extentParams[name];
+    return sourceField === undefined ? whole : `d3.extent(${dataVar}, d => d[${JSON.stringify(sourceField)}])[${idx}]`;
+  });
+  return `${axisChannel}(${rewrittenInner})`;
+}
+
+function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false, extentParams = {}) {
   const {x, y} = scales;
-  const stroke = fillExpr(encoding, scales, 'black');
+  const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   lines.push(`svg.append("g")`);
@@ -538,13 +586,25 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     lines.push(`    .attr("x1", d => ${x ? accessor(encoding.x, scales, 'x') : dims.marginLeftExpr})`);
     lines.push(`    .attr("x2", d => ${x ? accessor(encoding.x, scales, 'x') : dims.widthMinusRightExpr})`);
   } else if (encoding.x && !encoding.y) {
-    lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
-    lines.push(`    .attr("x2", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+    if (encoding.x.field) {
+      lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+      lines.push(`    .attr("x2", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+    } else {
+      const constExpr = resolveValueChannelExpr(encoding.x, dataVar, extentParams, ignoreUnsupported);
+      lines.push(`    .attr("x1", ${constExpr})`);
+      lines.push(`    .attr("x2", ${constExpr})`);
+    }
     lines.push(`    .attr("y1", ${dims.marginTopExpr})`);
     lines.push(`    .attr("y2", ${dims.heightMinusBottomExpr})`);
   } else if (encoding.y && !encoding.x) {
-    lines.push(`    .attr("y1", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
-    lines.push(`    .attr("y2", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+    if (encoding.y.field) {
+      lines.push(`    .attr("y1", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+      lines.push(`    .attr("y2", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+    } else {
+      const constExpr = resolveValueChannelExpr(encoding.y, dataVar, extentParams, ignoreUnsupported);
+      lines.push(`    .attr("y1", ${constExpr})`);
+      lines.push(`    .attr("y2", ${constExpr})`);
+    }
     lines.push(`    .attr("x1", ${dims.marginLeftExpr})`);
     lines.push(`    .attr("x2", ${dims.widthMinusRightExpr})`);
   } else if (ignoreUnsupported) {
@@ -561,7 +621,7 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     if (ignoreUnsupported) return SKIP_COMMENT('"tick"/"boxplot" mark has neither x nor y encoding');
     throw new Error('"tick" mark requires an x and/or y encoding');
   }
-  const stroke = fillExpr(encoding, scales, 'black');
+  const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   lines.push(`svg.append("g")`);
@@ -619,7 +679,7 @@ function renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const cx = encoding.x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
   const cy = encoding.y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
   const textField = rawField(encoding.text) || formatValue(encoding.text.value);
-  const fill = fillExpr(encoding, scales, 'black');
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   lines.push(`svg.append("g")`);

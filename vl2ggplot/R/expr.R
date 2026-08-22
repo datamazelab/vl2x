@@ -57,14 +57,22 @@ field_ref <- function(field) {
   if (grepl("(?<!\\\\)\\.", field, perl = TRUE)) {
     stop(sprintf('Unsupported: nested field reference "%s" (dot-path into a sub-object) is not supported', field))
   }
-  # Now that every remaining dot is known to be an escaped, literal one,
-  # undo the escaping -- the real column name has no backslash in it at
-  # all, and R's own backtick-quoted-name syntax parses backslash escapes
-  # the same way a string literal does, so a bare `\.` left in (not a
-  # recognized escape like `\n`/`\\`) is an R *parse error*, not just a
-  # lookup miss.
-  field <- gsub("\\\\(.)", "\\1", field, perl = TRUE)
+  field <- unescape_field_path(field)
   if (grepl(paste0("^", .identifier_re, "$"), field)) field else paste0("`", field, "`")
+}
+
+# Undo a Vega-Lite field NAME's own backslash-escaping (most commonly of a
+# literal "." -- see field_ref()'s doc comment) -- the real column name in
+# the loaded data has no backslash in it at all. Every consumer that reads
+# a channel's `$field` directly (bypassing field_ref(), typically because
+# it needs the name as something other than an aes()/mutate() symbol -- e.g.
+# render_temporal_coercion()'s render_name()'d assignment target) must
+# apply this itself; R's own backtick-quoted-name syntax parses backslash
+# escapes the same way a string literal does, so a left-in `\.` (not a
+# recognized escape like `\n`/`\\`) is an R *parse error* there, not just a
+# lookup miss.
+unescape_field_path <- function(field) {
+  gsub("\\\\(.)", "\\1", field, perl = TRUE)
 }
 
 # Apply `replace_fn(match_text) -> replacement_text` to every match of
@@ -440,13 +448,18 @@ filter_to_expr <- function(filter, ignore_unsupported = FALSE, .notes = NULL) {
         stop(sprintf('Unsupported timeUnit: "%s"', filter[["timeUnit"]]))
       }
       ref <- if (has_time_unit) sprintf("(%s)", timeunit_expr(filter[["timeUnit"]], raw_ref, ignore_unsupported)) else raw_ref
-      # A `timeUnit`-bucketed field's comparison values are DateTime
-      # objects, not raw scalars -- compare via their own Date/POSIXct
-      # construction rather than format_value()-ing the list into a
-      # meaningless (and type-incompatible) literal.
+      # A `timeUnit`-bucketed field's comparison value is either a DateTime
+      # object (compare via its own Date/POSIXct construction, not
+      # format_value()-ing the list into a meaningless, type-incompatible
+      # literal) or a bare number (Vega-Lite's own semantics for e.g.
+      # `{timeUnit: "year", equal: 2006}` compare just the extracted
+      # component number -- a bucketed *Date* vs. a bare number is never
+      # meaningfully equal/ordered, unlike two Dates or two plain numbers).
+      component_ref <- if (has_time_unit) timeunit_component_expr(filter[["timeUnit"]], raw_ref) else NULL
       cmp <- function(op, value) {
-        rhs <- if (is_date_time_object(value)) date_time_object_expr(value) else format_value(value)
-        sprintf("%s %s %s", ref, op, rhs)
+        if (is_date_time_object(value)) return(sprintf("%s %s %s", ref, op, date_time_object_expr(value)))
+        if (!is.null(component_ref)) return(sprintf("%s %s %s", component_ref, op, format_value(value)))
+        sprintf("%s %s %s", ref, op, format_value(value))
       }
       if (!is.null(filter[["equal"]])) return(cmp("==", filter[["equal"]]))
       if (!is.null(filter[["lt"]])) return(cmp("<", filter[["lt"]]))

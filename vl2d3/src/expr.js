@@ -14,7 +14,7 @@
 // clear ReferenceError at chart-render time rather than silently producing
 // wrong output.
 
-import {isSupportedTimeUnit, timeUnitExpr} from './timeunit.js';
+import {isSupportedTimeUnit, timeUnitExpr, timeUnitComponentExpr} from './timeunit.js';
 
 const IDENTIFIER_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 
@@ -208,11 +208,19 @@ export function filterToExpr(filter, rowVar = 'd', ignoreUnsupported = false) {
         throw new Error(`Unsupported timeUnit: "${filter.timeUnit}"`);
       }
       const ref = hasTimeUnit ? `(${timeUnitExpr(filter.timeUnit, rawRef, ignoreUnsupported)})` : rawRef;
-      // A `timeUnit`-bucketed field's comparison values are DateTime
-      // objects, not raw scalars -- compare via their own Date construction
-      // rather than JSON.stringify-ing the object into a meaningless literal.
-      const cmp = (op, value) =>
-        isDateTimeObject(value) ? `${ref}.getTime() ${op} (${dateTimeObjectExpr(value)}).getTime()` : `${ref} ${op} ${JSON.stringify(value)}`;
+      // A `timeUnit`-bucketed field's comparison value is either a DateTime
+      // object (compare via its own Date construction, not
+      // JSON.stringify-ing the object into a meaningless literal) or a bare
+      // number (Vega-Lite's own semantics for e.g. `{timeUnit: "year",
+      // equal: 2006}` compare just the extracted component number -- a
+      // bucketed *Date* vs. a bare number is never meaningfully
+      // equal/ordered, unlike two Date .getTime()s or two plain numbers).
+      const componentRef = hasTimeUnit ? timeUnitComponentExpr(filter.timeUnit, rawRef) : null;
+      const cmp = (op, value) => {
+        if (isDateTimeObject(value)) return `${ref}.getTime() ${op} (${dateTimeObjectExpr(value)}).getTime()`;
+        if (componentRef != null) return `${componentRef} ${op} ${JSON.stringify(value)}`;
+        return `${ref} ${op} ${JSON.stringify(value)}`;
+      };
       if ('equal' in filter) return cmp('===', filter.equal);
       if ('lt' in filter) return cmp('<', filter.lt);
       if ('lte' in filter) return cmp('<=', filter.lte);

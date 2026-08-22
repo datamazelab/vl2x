@@ -107,6 +107,24 @@ function collectProducedFields(transformList = []) {
   return produced;
 }
 
+// A top-level `extent` transform (`{extent: field, param: name}`) computes
+// the [min, max] of `field` and exposes it under `param` for later
+// expressions to reference (e.g. a rule mark's `value: {expr:
+// "scale('x', b_extent[0])"}}`) -- not a data-pipeline step at all (no
+// dataVar reshaping), so it's collected here rather than handled inside
+// renderTransforms(), and resolved directly at the point of use (see
+// resolveValueExpr() in marks.js) rather than through a separately
+// pre-declared runtime variable (avoids a redeclaration clash across
+// sibling layer children, which -- like any other top-level transform --
+// each independently re-run their own copy of via mergeDown()).
+function collectExtentParams(transformList = []) {
+  const params = {};
+  for (const t of transformList || []) {
+    if (t.extent && t.param) params[t.param] = t.extent;
+  }
+  return params;
+}
+
 // Fields to null/NaN-filter a view's raw data on, before any other
 // transform runs -- every continuous-typed position/color/size/opacity
 // channel's own source `field` (whether or not it's also aggregated/
@@ -279,7 +297,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
     const {statements: prepStmts, encoding} = prepareEncoding(encodingIn, dataVar, ignoreUnsupported);
     prepStmts.forEach(b);
 
-    return {dataVar, encoding, originalEncoding: encodingIn, mark: child.mark};
+    return {dataVar, encoding, originalEncoding: encodingIn, mark: child.mark, extentParams: collectExtentParams(child.transform)};
   });
   lines.push('');
 
@@ -386,7 +404,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
 
   // -- marks --
   for (const p of prepared) {
-    let markCode = renderMark(p.mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported);
+    let markCode = renderMark(p.mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
     if (!/[;}]\s*$/.test(markCode)) markCode += ';';
     lines.push(markCode.replace(/^/gm, '  '));
     lines.push('');

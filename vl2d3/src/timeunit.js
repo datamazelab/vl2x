@@ -72,3 +72,32 @@ export function timeUnitExpr(unit, dateExpr, ignoreUnsupported = false) {
   }
   return fn(dateExpr);
 }
+
+// A single-part timeUnit as a bare NUMBER (not a truncated Date) -- e.g.
+// "year" -> the 4-digit year, "month" -> 1-12. Used only for a filter
+// predicate comparing a timeUnit'd field against a plain scalar (as
+// opposed to a DateTime object): Vega-Lite's own semantics for
+// `{field, timeUnit: "year", equal: 2006}` compare just the extracted
+// component number, not the full bucketed date, to the given value (a
+// bucketed Date vs. a bare number is never meaningfully equal/ordered).
+// `day`/`dayofyear` already return a number from `local` itself, so they're
+// reused directly; a multi-part unit (yearmonth/yearmonthdate/yearquarter)
+// has no single-number form and returns null (falls back to the
+// bucketed-date comparison, which real specs practically never hit for
+// these since they're normally compared against a DateTime object instead).
+const componentUnits = {
+  year: d => `${d}.getFullYear()`,
+  quarter: d => `(Math.floor(${d}.getMonth() / 3) + 1)`,
+  month: d => `(${d}.getMonth() + 1)`,
+  date: d => `${d}.getDate()`,
+  hours: d => `${d}.getHours()`,
+  minutes: d => `${d}.getMinutes()`,
+  seconds: d => `${d}.getSeconds()`,
+};
+
+export function timeUnitComponentExpr(unit, dateExpr) {
+  const key = normalize(unit);
+  if (key === 'day' || key === 'dayofyear') return local[key](dateExpr);
+  const fn = componentUnits[key];
+  return fn ? fn(dateExpr) : null;
+}

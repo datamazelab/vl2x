@@ -458,8 +458,14 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
         if (!supported) {
           notes <- c(notes, sprintf('# vl2ggplot: unsupported timeUnit "%s", left untruncated (ignore_unsupported)', def$timeUnit))
         }
-        out <- out_field_name(def$field, def$timeUnit)
-        assigns <- c(assigns, paste0(render_name(out), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
+        out <- out_field_name(def$field, timeunit_label(def$timeUnit))
+        # `out` may still carry def$field's own escaping (e.g. "..._a\.b")
+        # -- fine for the later field_ref(out) this project uses everywhere
+        # else (it knows how to unescape), but render_name() here doesn't,
+        # and a raw `\.` left inside a backtick-quoted mutate() assignment
+        # target is an R *parse error* (backtick names parse escapes the
+        # same way a string literal does), not just a lookup miss.
+        assigns <- c(assigns, paste0(render_name(unescape_field_path(out)), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
         rewritten[[k]]$field <- out
         rewritten[[k]]$timeUnit <- NULL
       } else if (!is.null(def$bin)) {
@@ -539,7 +545,7 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
   if (length(agg_keys) == 1 && length(group_keys) > 0 && mark_type != "rule" && agg_keys %in% c("x", "y")) {
     op <- encoding[[agg_keys]]$aggregate
     if (op == "count" || is_stat_summary_op(op)) {
-      plan <- plan_native_stat(encoding, agg_keys, op, group_keys)
+      plan <- plan_native_stat(encoding, agg_keys, op, group_keys, var_name, ignore_unsupported)
       plan$statements <- c(plan_notes, plan$statements)
       return(plan)
     }
@@ -550,9 +556,34 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
   plan
 }
 
-plan_native_stat <- function(encoding, agg_key, op, group_keys) {
+plan_native_stat <- function(encoding, agg_key, op, group_keys, var_name, ignore_unsupported = FALSE) {
   rewritten <- encoding
   extra_fixed <- list()
+  statements <- character(0)
+  notes <- character(0)
+  # A groupby channel with its own `timeUnit` (and no aggregate/bin of its
+  # own -- e.g. a `color` channel bucketed by year) needs the same bucketing
+  # mutate() the map-only path (above) applies: stat_summary()/stat_count()
+  # group by whatever raw value the field already holds, so an un-bucketed
+  # temporal field would group by its full per-row resolution (e.g. every
+  # distinct day) instead of the requested per-year buckets.
+  for (k in group_keys) {
+    def <- encoding[[k]]
+    if (is.null(def$timeUnit)) next
+    supported <- is_supported_timeunit(def$timeUnit)
+    if (!supported && !ignore_unsupported) stop(sprintf('Unsupported timeUnit: "%s"', def$timeUnit))
+    if (!supported) {
+      notes <- c(notes, sprintf('# vl2ggplot: unsupported timeUnit "%s", left untruncated (ignore_unsupported)', def$timeUnit))
+      next
+    }
+    out <- out_field_name(def$field, timeunit_label(def$timeUnit))
+    statements <- c(statements, sprintf(
+      "%s <- dplyr::mutate(%s, %s = %s)",
+      var_name, var_name, render_name(unescape_field_path(out)), timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)
+    ))
+    rewritten[[k]]$field <- out
+    rewritten[[k]]$timeUnit <- NULL
+  }
   if (op == "count") {
     rewritten[[agg_key]] <- NULL # geom's default stat="count" supplies this aes itself
     # Set explicitly (even though it's already geom_bar's default) so
@@ -570,7 +601,7 @@ plan_native_stat <- function(encoding, agg_key, op, group_keys) {
     if (agg_key == "x") extra_fixed[["orientation"]] <- '"y"'
     rewritten[[agg_key]]$aggregate <- NULL
   }
-  list(statements = character(0), encoding = rewritten, extra_fixed = extra_fixed, extra_aes = list(), use_histogram = FALSE)
+  list(statements = c(notes, statements), encoding = rewritten, extra_fixed = extra_fixed, extra_aes = list(), use_histogram = FALSE)
 }
 
 plan_histogram <- function(mark_type, encoding, bin_key, agg_keys, var_name, ignore_unsupported = FALSE) {
@@ -710,8 +741,11 @@ apply_error_extent <- function(mark_props, encoding, var_name, ignore_unsupporte
 
   lo_field <- out_field_name(field, "lo")
   hi_field <- out_field_name(field, "hi")
+  # lo_field/hi_field may still carry `field`'s own escaping (see the
+  # out_field_name()/render_name() comment above in render_one_transform) --
+  # render_name() doesn't undo it, so it must happen here explicitly.
   value_assigns <- sprintf(
-    "%s = %s, %s = %s", render_name(lo_field), bounds$lo, render_name(hi_field), bounds$hi
+    "%s = %s, %s = %s", render_name(unescape_field_path(lo_field)), bounds$lo, render_name(unescape_field_path(hi_field)), bounds$hi
   )
 
   group_fields <- error_extent_group_fields(encoding, axis, extra_group_fields)
@@ -768,9 +802,12 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
       if (!supported) {
         notes <- c(notes, sprintf('# vl2ggplot: unsupported timeUnit "%s", left untruncated (ignore_unsupported)', def$timeUnit))
       }
-      out <- out_field_name(def$field, def$timeUnit)
-      pre_assigns <- c(pre_assigns, paste0(render_name(out), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
-      group_field_refs <- c(group_field_refs, render_name(out))
+      out <- out_field_name(def$field, timeunit_label(def$timeUnit))
+      # See the identical comment on the other out_field_name()/render_name()
+      # pairing above -- `out` may still carry def$field's own escaping, which
+      # render_name() (unlike field_ref()) doesn't undo.
+      pre_assigns <- c(pre_assigns, paste0(render_name(unescape_field_path(out)), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
+      group_field_refs <- c(group_field_refs, render_name(unescape_field_path(out)))
       rewritten[[k]]$field <- out
       rewritten[[k]]$timeUnit <- NULL
     } else {
@@ -784,7 +821,9 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     rewritten[[k]]$field <<- out
     rewritten[[k]]$aggregate <<- NULL
     expr <- if (def$aggregate == "count") "dplyr::n()" else aggregate_summarise_expr(def$aggregate, field_ref(def$field), ignore_unsupported)
-    paste0(render_name(out), " = ", expr)
+    # `out` may still carry def$field's own escaping (see the
+    # out_field_name()/render_name() comment above for the timeUnit case).
+    paste0(render_name(unescape_field_path(out)), " = ", expr)
   }, character(1))
 
   stmts <- notes
