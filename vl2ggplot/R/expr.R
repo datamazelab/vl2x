@@ -302,24 +302,36 @@ translate_expr <- function(expr) {
 # (`{field, equal/range/oneOf/lt/lte/gt/gte/valid}`), a logical composition
 # (`{and/or/not: [...]}`), or a lookup/param predicate. Returns an R boolean
 # expression string suitable for dplyr::filter().
-filter_to_expr <- function(filter) {
+#
+# `.notes` (an environment, if supplied) is an out-of-band channel for
+# recording that some (possibly nested) sub-filter fell back to "TRUE" --
+# needed because the recursive and/or/not calls all return a plain string
+# (spliced together by the caller), leaving nowhere in that return value
+# itself to also flag "a fallback happened somewhere in here" for the
+# statement-level caller in transforms.R to turn into a "# vl2ggplot: ..."
+# comment.
+filter_to_expr <- function(filter, ignore_unsupported = FALSE, .notes = NULL) {
   if (is.character(filter) && length(filter) == 1) return(translate_expr(filter))
 
   if (is.list(filter) && is.null(names(filter))) {
+    if (ignore_unsupported) {
+      if (!is.null(.notes)) assign("unsupported", TRUE, envir = .notes)
+      return("TRUE")
+    }
     stop("Unsupported filter: bare array (expected object or expression string)")
   }
 
   if (is.list(filter)) {
     if (!is.null(filter[["and"]])) {
-      parts <- vapply(filter[["and"]], function(f) paste0("(", filter_to_expr(f), ")"), character(1))
+      parts <- vapply(filter[["and"]], function(f) paste0("(", filter_to_expr(f, ignore_unsupported, .notes), ")"), character(1))
       return(paste(parts, collapse = " & "))
     }
     if (!is.null(filter[["or"]])) {
-      parts <- vapply(filter[["or"]], function(f) paste0("(", filter_to_expr(f), ")"), character(1))
+      parts <- vapply(filter[["or"]], function(f) paste0("(", filter_to_expr(f, ignore_unsupported, .notes), ")"), character(1))
       return(paste(parts, collapse = " | "))
     }
     if (!is.null(filter[["not"]])) {
-      return(paste0("!(", filter_to_expr(filter[["not"]]), ")"))
+      return(paste0("!(", filter_to_expr(filter[["not"]], ignore_unsupported, .notes), ")"))
     }
     if (!is.null(filter[["field"]])) {
       ref <- field_ref(filter[["field"]])
@@ -344,5 +356,13 @@ filter_to_expr <- function(filter) {
     }
   }
 
+  if (ignore_unsupported) {
+    # A param/selection-driven predicate (e.g. `{"param": "brush"}`) has no
+    # meaning without live interactivity (not implemented) -- "TRUE" (keep
+    # every row, as if nothing were selected/brushed) is the closest
+    # reasonable default for a static render.
+    if (!is.null(.notes)) assign("unsupported", TRUE, envir = .notes)
+    return("TRUE")
+  }
   stop(sprintf("Unsupported filter predicate shape: %s", jsonlite::toJSON(filter, auto_unbox = TRUE)))
 }

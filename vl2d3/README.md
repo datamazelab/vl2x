@@ -92,6 +92,7 @@ consumer of the *generated* code only needs `d3` itself.
 import {vegaLiteToD3Code} from './src/index.js';
 
 const code = vegaLiteToD3Code(spec); // spec: plain object
+const code = vegaLiteToD3Code(spec, {ignoreUnsupported: true}); // best-effort fallback (see below)
 ```
 
 The returned string is a complete ES module exporting a single async
@@ -116,10 +117,41 @@ page's own location the same way a normal `<script>`-loaded fetch would).
 ### From the command line
 
 ```bash
-node bin/cli.js chart.vl.json                # print to stdout
-node bin/cli.js chart.vl.json -o chart.js     # write to a file
-cat chart.vl.json | node bin/cli.js           # read from stdin
+node bin/cli.js chart.vl.json                     # print to stdout
+node bin/cli.js chart.vl.json -o chart.js          # write to a file
+node bin/cli.js chart.vl.json --ignore-unsupported # best-effort fallback (see below)
+cat chart.vl.json | node bin/cli.js                # read from stdin
 ```
+
+## `ignoreUnsupported`: best-effort rendering instead of a clean refusal
+
+By default, an unsupported feature throws a clear `"Unsupported: ..."`
+error — nothing renders, and the message says exactly what wasn't handled.
+Passing `{ignoreUnsupported: true}` (or `--ignore-unsupported` on the CLI)
+relaxes that into a best-effort sacrifice instead, so the chart still draws
+*something*:
+
+- An unsupported top-level composition (`concat`/`hconcat`/`vconcat`/
+  `facet`/`repeat`) renders each child independently in a simple flex grid
+  (nested layer-of-layers included) — no shared/aligned scales across
+  panels, and a `facet`'s distinct values must be knowable at generation
+  time (inline data, or a flat `repeat` field list) or it falls back to one
+  combined view ignoring the split entirely.
+- An unsupported mark type (`rect`, `errorbar`/`errorband` without an x2/y2
+  range, `boxplot`, ...) is approximated by the nearest supported one (a bar
+  for a ranged box, a point/tick otherwise) instead of refusing.
+- Geographic encoding (`longitude`/`latitude`) plots as a plain unprojected
+  x/y scatter.
+- An unsupported transform type, aggregate op, or `timeUnit` is skipped, or
+  falls back to a close numeric stand-in (`mean`, or the untruncated date),
+  rather than aborting the whole chart over one step.
+- A `param`/selection-driven filter predicate (no live interactivity is
+  implemented) is treated as always-true (every row kept, as if nothing
+  were selected/brushed).
+
+This is always an explicit opt-in — the default stays exactly as strict as
+without the flag. See `src/translator.js`'s module docstring and `marks.js`
+for the full list of fallbacks.
 
 ## What it supports
 

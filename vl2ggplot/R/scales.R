@@ -17,13 +17,13 @@ axis_kind <- function(def) {
 
 # Build the scale_*() call(s) for one channel, or character(0) if the
 # defaults suffice.
-build_scale_calls <- function(channel, def, mark_type) {
+build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
   if (is.null(def) || is.null(def$type)) return(character(0))
 
   if (channel %in% c("x", "y")) return(build_position_scale(channel, def))
   if (channel == "color") return(build_color_scale(color_channel_aes(mark_type), def))
-  if (channel == "size") return(build_size_scale(def))
-  if (channel == "opacity") return(build_opacity_scale(def))
+  if (channel == "size") return(build_size_scale(def, ignore_unsupported, .notes))
+  if (channel == "opacity") return(build_opacity_scale(def, ignore_unsupported, .notes))
   character(0)
 }
 
@@ -96,22 +96,38 @@ build_color_scale <- function(aes_name, def) {
 
 .discretizing_scale_types <- c("quantile", "quantize", "threshold")
 
-build_size_scale <- function(def) {
+build_size_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
   range <- def$scale$range
   if (is.null(range)) return(character(0))
   # scale_size()'s range is a 2-element continuous interval, unlike Vega-Lite's
   # discretizing scale types (quantile/quantize/threshold), whose range is a
   # list of discrete output values -- passing one through crashes scale_size().
   if (length(range) > 2 || (!is.null(def$scale$type) && def$scale$type %in% .discretizing_scale_types)) {
+    # No custom scale call at all -- ggplot2's own default size scale still
+    # applies, just without the discrete range this spec asked for.
+    if (ignore_unsupported) {
+      .push_note(.notes, sprintf(
+        'unsupported scale type "%s" for a size channel, using the default size scale instead (ignore_unsupported)',
+        def$scale$type %||% "range"
+      ))
+      return(character(0))
+    }
     stop(sprintf('Unsupported: scale type "%s" for a size channel is not yet supported', def$scale$type %||% "range"))
   }
   format_call("ggplot2::scale_size", sprintf("range = %s", format_value(range)))
 }
 
-build_opacity_scale <- function(def) {
+build_opacity_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
   range <- def$scale$range
   if (is.null(range)) return(character(0))
   if (length(range) > 2 || (!is.null(def$scale$type) && def$scale$type %in% .discretizing_scale_types)) {
+    if (ignore_unsupported) {
+      .push_note(.notes, sprintf(
+        'unsupported scale type "%s" for an opacity channel, using the default opacity scale instead (ignore_unsupported)',
+        def$scale$type %||% "range"
+      ))
+      return(character(0))
+    }
     stop(sprintf('Unsupported: scale type "%s" for an opacity channel is not yet supported', def$scale$type %||% "range"))
   }
   format_call("ggplot2::scale_alpha", sprintf("range = %s", format_value(range)))

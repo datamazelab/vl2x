@@ -31,7 +31,7 @@ for (i in seq_along(files)) {
 
   result <- tryCatch({
     spec <- jsonlite::fromJSON(file.path(specs_dir, fname), simplifyVector = FALSE)
-    code <- vegalite_to_ggplot(spec)
+    code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
     writeLines(code, file.path(example_dir, "ggplot.R"))
 
     env <- new.env()

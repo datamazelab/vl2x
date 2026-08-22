@@ -18,11 +18,23 @@ color_channel_aes <- function(mark_type) if (mark_type %in% .fill_marks) "fill" 
   shape = "shape", detail = "group", text = "label"
 )
 
+# Record that some (possibly deeply nested) value-rendering call fell back
+# to a placeholder under `ignore_unsupported` -- an out-of-band channel (an
+# environment, if supplied) for the same reason as expr.R's filter_to_expr()
+# `.notes`: the fallback happens many calls deep inside a single expression
+# fragment (an aes()/fixed geom argument), with no way to splice an R
+# comment into that expression itself, so the note is collected here and
+# turned into a "# vl2ggplot: ..." comment line by the statement-level
+# caller in geoms.R/translator.R instead.
+.push_note <- function(notes_env, msg) {
+  if (!is.null(notes_env)) notes_env$notes <- c(notes_env$notes, msg)
+}
+
 # Build the aes() mapping and fixed (outside-aes) parameters for one geom
 # layer's encoding (excluding x2/y2, handled separately by geoms.R). Returns
 # list(aes = list(name = expr_string), fixed = list(name = expr_string),
 # sort_field = field name or NULL).
-build_layer_channels <- function(encoding, mark_type) {
+build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
   aes_pairs <- list()
   fixed <- list()
   sort_field <- NULL
@@ -44,21 +56,44 @@ build_layer_channels <- function(encoding, mark_type) {
       aes_pairs[[aes_name]] <- discrete_field_ref(def)
     } else if (!is.null(def$value)) {
       fixed[[aes_name]] <- format_value(def$value)
+    } else if (!is.null(def$datum)) {
+      fixed[[aes_name]] <- literal_datum_value(def$datum, ignore_unsupported, .notes)
     }
   }
 
   list(aes = aes_pairs, fixed = fixed, sort_field = sort_field)
 }
 
+# A `datum` value is usually a plain literal (rare, typically seen with a
+# repeat/facet-templated view), but Vega-Lite also allows it to be bound to
+# a `param` (interactive value binding) via `{"expr": "paramName"}` -- no
+# live interactivity is implemented, so that form has no static value to
+# fall back on beyond a placeholder constant.
+literal_datum_value <- function(datum, ignore_unsupported = FALSE, .notes = NULL) {
+  if (is.list(datum) && !is.null(datum$expr)) {
+    if (ignore_unsupported) {
+      .push_note(.notes, "unsupported datum bound to a param/signal expression, using 0 instead (ignore_unsupported)")
+      return("0")
+    }
+    stop("Unsupported: a datum bound to a param/signal expression has no static value")
+  }
+  format_value(datum)
+}
+
 # A channel definition can reference a `field`, a literal `value`, or (more
 # rarely -- typically seen with a repeat/facet-templated view) a literal
 # `datum`. Used for channels like x2/y2 that geoms.R handles outside the
 # normal build_layer_channels() pass.
-channel_value_expr <- function(def) {
+channel_value_expr <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
   if (is.null(def)) stop("Internal: channel_value_expr() called with no definition")
   if (!is.null(def$field)) return(discrete_field_ref(def))
   if (!is.null(def$value)) return(format_value(def$value))
-  if (!is.null(def$datum)) return(format_value(def$datum))
+  if (!is.null(def$datum)) return(literal_datum_value(def$datum, ignore_unsupported, .notes))
+  if (ignore_unsupported) {
+    # e.g. a param-bound `{"expr": "..."}` value with no static equivalent
+    .push_note(.notes, "unsupported channel value (bound to a param/signal expression with no field/value/datum), using 0 instead (ignore_unsupported)")
+    return("0")
+  }
   stop("Unsupported: channel has none of field/value/datum")
 }
 

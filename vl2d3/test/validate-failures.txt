@@ -235,7 +235,3 @@ export default async function chart(container, options = {}) {
   return svg.node();
 }
 
-
-===== wheat_wages.vl.json [TRANSLATE] =====
-"rule" mark requires an x and/or y encoding
-

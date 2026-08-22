@@ -5,7 +5,7 @@
 
 import {formatValue} from './literals.js';
 
-export function renderDataLoad(data, dataVar) {
+export function renderDataLoad(data, dataVar, ignoreUnsupported = false) {
   if (data && Array.isArray(data.values)) {
     return {statements: [`let ${dataVar} = ${formatValue(data.values)};`], isAsync: false};
   }
@@ -21,6 +21,18 @@ export function renderDataLoad(data, dataVar) {
     return {
       statements: [`let ${dataVar} = await d3.${loader}(${urlExpr}${parseNumbers});`],
       isAsync: true,
+    };
+  }
+  if (ignoreUnsupported) {
+    // Nothing to load (no `values`, no `url`) -- an empty dataset still
+    // lets the rest of the chart (axes, other layers) render instead of
+    // aborting entirely.
+    return {
+      statements: [
+        `// vl2d3: unsupported data source (expected inline "values" or a "url"), using an empty dataset (--ignore-unsupported)`,
+        `let ${dataVar} = [];`,
+      ],
+      isAsync: false,
     };
   }
   throw new Error('Unsupported data source: expected inline "values" or a "url"');

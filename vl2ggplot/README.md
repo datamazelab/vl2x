@@ -82,6 +82,7 @@ library(vl2ggplot)
 spec <- jsonlite::fromJSON("chart.vl.json", simplifyVector = FALSE)
 code <- vegalite_to_ggplot(spec)                    # variable name defaults to "chart"
 code <- vegalite_to_ggplot(spec, chart_var = "plot") # rename the output variable
+code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE) # best-effort fallback (see below)
 ```
 
 The returned string is a complete, standalone R script (not a live plot
@@ -103,6 +104,38 @@ frames/vectors would change that shape under it.
 
 There's no command-line entry point (unlike `vl2d3`/`vl2vlapi`'s
 `bin/cli.js`) — call `vegalite_to_ggplot()` directly from R.
+
+## `ignore_unsupported`: best-effort rendering instead of a clean refusal
+
+By default, an unsupported feature `stop()`s with a clear `"Unsupported:
+..."` message — nothing renders, and the message says exactly what wasn't
+handled. Passing `ignore_unsupported = TRUE` relaxes that into a best-effort
+sacrifice instead, so the chart still draws *something*:
+
+- Nested layer-of-layers is flattened instead of refused; a `repeat` with a
+  row/column mapping (or a dodged `xOffset`/`yOffset`) renders each panel
+  independently in a `patchwork` grid instead — no shared/aligned scales
+  across panels.
+- An unsupported mark type (`rect`/`errorbar`/`errorband` without an x2/y2
+  range, `boxplot` on a plain axis, geoshape/image, ...) is approximated by
+  the nearest supported geom (`geom_tile`, a point/tick strip, ...) instead
+  of refusing; a `rect`-as-reference-band with no x or y at all spans the
+  full plot width/height rather than forcing a fake categorical position.
+- Geographic encoding (`longitude`/`latitude`) plots as a plain unprojected
+  x/y scatter.
+- An unsupported transform type, aggregate op, `timeUnit`, gradient
+  fill/stroke, or discretizing (`quantile`/`quantize`/`threshold`) size/
+  opacity scale is skipped or falls back to a close stand-in (`mean`, the
+  untruncated date, a flat color, ggplot2's own default scale) rather than
+  aborting the whole chart over one step.
+- A `param`/selection-driven filter predicate or datum value (no live
+  interactivity is implemented) is treated as always-true / a placeholder
+  constant, as if nothing were selected/bound.
+
+This is always an explicit opt-in — the default stays exactly as strict as
+without the argument. See `R/translator.R`'s module docstring and the
+`ignore_unsupported` branches throughout `R/geoms.R`/`R/transforms.R` for
+the full list of fallbacks.
 
 ## What it supports
 

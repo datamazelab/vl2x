@@ -53,10 +53,16 @@ guess_format_from_url <- function(url) {
 # Render the statement(s) that produce a data.frame variable `var_name` from
 # a Vega-Lite `data` object, and whether the field is a data.frame directly
 # usable or needs a following as.data.frame()-style step.
-render_data_load <- function(data, var_name) {
+render_data_load <- function(data, var_name, ignore_unsupported = FALSE) {
   if (is.null(data)) return(character(0))
 
   if (!is.null(data$format$property)) {
+    if (ignore_unsupported) {
+      return(c(
+        '# vl2ggplot: unsupported data "format.property" (extracting a nested array from a larger JSON object), using an empty data.frame instead (ignore_unsupported)',
+        sprintf("%s <- data.frame()", var_name)
+      ))
+    }
     stop('Unsupported: data "format.property" (extracting a nested array from a larger JSON object) is not yet supported')
   }
 
@@ -65,15 +71,25 @@ render_data_load <- function(data, var_name) {
     # JSON text) rather than an array of parsed rows, keyed off format.type.
     if (is.character(data$values) && length(data$values) == 1) {
       fmt <- if (!is.null(data$format) && !is.null(data$format$type)) data$format$type else "csv"
+      known <- fmt %in% c("csv", "tsv", "json")
       loader <- switch(fmt,
         csv = sprintf('read.csv(text = %s, stringsAsFactors = FALSE, check.names = FALSE)', render_string(data$values)),
         tsv = sprintf('read.delim(text = %s, stringsAsFactors = FALSE, check.names = FALSE)', render_string(data$values)),
         json = sprintf('jsonlite::fromJSON(%s)', render_string(data$values)),
-        stop(sprintf('Unsupported data format: "%s"', fmt))
+        if (ignore_unsupported) "data.frame()" else stop(sprintf('Unsupported data format: "%s"', fmt))
       )
-      return(sprintf("%s <- %s", var_name, loader))
+      note <- if (!known && ignore_unsupported) {
+        sprintf('# vl2ggplot: unsupported inline data format "%s", using an empty data.frame instead (ignore_unsupported)', fmt)
+      } else character(0)
+      return(c(note, sprintf("%s <- %s", var_name, loader)))
     }
     if (is_named_list(data$values)) {
+      if (ignore_unsupported) {
+        return(c(
+          '# vl2ggplot: unsupported inline "values" shape (a nested object rather than an array of rows), using an empty data.frame instead (ignore_unsupported)',
+          sprintf("%s <- data.frame()", var_name)
+        ))
+      }
       stop('Unsupported: inline "values" is a nested object rather than an array of rows')
     }
     return(sprintf("%s <- %s", var_name, render_inline_values(data$values)))
@@ -81,15 +97,28 @@ render_data_load <- function(data, var_name) {
 
   if (!is.null(data$url)) {
     fmt <- if (!is.null(data$format) && !is.null(data$format$type)) data$format$type else guess_format_from_url(data$url)
+    known <- fmt %in% c("csv", "tsv", "json")
     loader <- switch(fmt,
       csv = sprintf('read.csv(%s, stringsAsFactors = FALSE, check.names = FALSE)', render_string(data$url)),
       tsv = sprintf('read.delim(%s, stringsAsFactors = FALSE, check.names = FALSE)', render_string(data$url)),
       json = sprintf('jsonlite::fromJSON(%s)', render_string(data$url)),
-      stop(sprintf('Unsupported data format: "%s"', fmt))
+      # A format this project can't parse at all (topojson map geometry, ...)
+      # -- an empty data.frame at least keeps the rest of the chart (other
+      # layers, axes) from failing outright, though this layer draws nothing.
+      if (ignore_unsupported) "data.frame()" else stop(sprintf('Unsupported data format: "%s"', fmt))
     )
-    return(sprintf("%s <- %s", var_name, loader))
+    note <- if (!known && ignore_unsupported) {
+      sprintf('# vl2ggplot: unsupported data format "%s", using an empty data.frame instead (ignore_unsupported)', fmt)
+    } else character(0)
+    return(c(note, sprintf("%s <- %s", var_name, loader)))
   }
 
+  if (ignore_unsupported) {
+    return(c(
+      '# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)',
+      sprintf("%s <- data.frame()", var_name)
+    ))
+  }
   stop('Unsupported data source: expected inline "values" or a "url"')
 }
 

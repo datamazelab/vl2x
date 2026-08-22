@@ -50,25 +50,193 @@ chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)"
 
 chart
 
-===== rule_params.vl.json [TRANSLATE] =====
-"rule" mark requires an x and/or y encoding
-
-
-===== text_format.vl.json [EXEC] =====
-Problem while setting up geom.
-ℹ Error occurred in the 1st layer.
-Caused by error in `compute_geom_1()`:
-! `geom_text()` requires the following missing aesthetics: label.
+===== layer_bar_labels_grey.vl.json [EXEC] =====
+Column name `Major Genre` must not be duplicated.
+Use `.name_repair` to specify repair.
+Caused by error in `repaired_names()`:
+! Names must be unique.
+✖ These names are duplicated:
+  * "Major Genre" at locations 1 and 2.
 library(ggplot2)
 
-chart_data <- jsonlite::fromJSON("data/cars.json")
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_text(
-  mapping = ggplot2::aes(y = factor(Origin), label = Horsepower, x = ""),
+layer_data <- jsonlite::fromJSON("data/movies.json")
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(`Major Genre`)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_col(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = factor(`Major Genre`), x = `IMDB Rating`),
+  fill = "#ddd",
   stat = "summary",
-  fun = "mean"
+  fun = "mean",
+  orientation = "y"
 )
-# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 50)
+layer2_data <- layer_data
+layer2_data <- dplyr::group_by(layer2_data, `Major Genre`, `Major Genre`)
+layer2_data <- dplyr::summarise(layer2_data, count = dplyr::n(), .groups = "drop")
+chart <- chart + ggplot2::geom_text(
+  data = layer2_data,
+  mapping = ggplot2::aes(y = factor(`Major Genre`), label = `Major Genre`, group = count, x = "")
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 200, height = list(step = 16))
+
+
+chart
+
+===== layer_falkensee.vl.json [EXEC] =====
+ℹ In argument: `start = if (...) NULL`.
+Caused by error in `charToDate()`:
+! character string is not in a standard unambiguous format
+library(ggplot2)
+
+layer_data <- data.frame(
+  year = c("1875", "1890", "1910", "1925", "1933", "1939", "1946", "1950", "1964", "1971", "1981", "1985", "1989", "1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014"),
+  population = c(1309, 1558, 4512, 8180, 15915, 24824, 28275, 29189, 29881, 26007, 24029, 23340, 22307, 22087, 22139, 22105, 22242, 22801, 24273, 25640, 27393, 29505, 32124, 33791, 35297, 36179, 36829, 37493, 38376, 39008, 39366, 39821, 40179, 40511, 40465, 40905, 41258, 41777),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- data.frame(
+  start = c("1933", "1948"),
+  end = c("1945", "1989"),
+  event = c("Nazi Rule", "GDR (East Germany)"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer1_data <- dplyr::mutate(layer1_data, start = if (is.numeric(start)) as.Date(start / 86400000, origin = "1970-01-01") else as.Date(as.character(start), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)), end = if (is.numeric(end)) as.Date(end / 86400000, origin = "1970-01-01") else as.Date(as.character(end), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer1_data <- dplyr::mutate(layer1_data, year_start = as.Date(format(start, "%Y-01-01")), year_end = as.Date(format(end, "%Y-01-01")))
+chart <- chart + ggplot2::geom_rect(
+  data = layer1_data,
+  mapping = ggplot2::aes(colour = factor(event), xmin = year_start, xmax = year_end),
+  ymin = -Inf,
+  ymax = Inf
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = year_year, y = population),
+  colour = "#333"
+)
+layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer3_data <- dplyr::mutate(layer3_data, year_year = as.Date(format(year, "%Y-01-01")))
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = year_year, y = population),
+  colour = "#333"
+)
+# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
+
+
+chart
+
+===== wheat_wages.vl.json [EXEC] =====
+<text>:47:76: unexpected input
+46: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+47: layer6_data <- dplyr::mutate(layer6_data, offset = ((!commonwealth & index % 2) ? -1: 1) * 2 + 95)
+                                                                               ^
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/wheat.json")
+layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_linerange(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = wheat, xmin = year, xmax = year_end),
+  fill = "#aaa",
+  colour = "#999",
+  linewidth = 10
+)
+layer2_data <- data.frame(
+  year = c("1600", "1650", "1700", "1750", "1800"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_vline(
+  data = layer2_data,
+  mapping = ggplot2::aes(xintercept = year),
+  colour = "#000",
+  alpha = 0.5,
+  linewidth = 0.6
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_area(
+  data = layer3_data,
+  mapping = ggplot2::aes(y = wages, x = year),
+  fill = "#a4cedb",
+  alpha = 0.7
+)
+layer4_data <- layer_data
+chart <- chart + ggplot2::geom_line(
+  data = layer4_data,
+  mapping = ggplot2::aes(y = wages, x = year),
+  colour = "#000",
+  alpha = 0.7
+)
+layer5_data <- layer_data
+chart <- chart + ggplot2::geom_line(
+  data = layer5_data,
+  mapping = ggplot2::aes(y = wages, x = year),
+  colour = "#EE8182"
+)
+layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+layer6_data <- dplyr::mutate(layer6_data, offset = ((!commonwealth & index % 2) ? -1: 1) * 2 + 95)
+layer6_data <- dplyr::mutate(layer6_data, y = 95)
+chart <- chart + ggplot2::geom_rect(
+  data = layer6_data,
+  mapping = ggplot2::aes(fill = commonwealth, ymin = y, ymax = offset, xmin = start, xmax = end),
+  colour = "#000"
+)
+layer7_data <- jsonlite::fromJSON("data/monarchs.json")
+layer7_data <- dplyr::mutate(layer7_data, off2 = ((!commonwealth & index % 2) ? -1: 1) + 95)
+layer7_data <- dplyr::mutate(layer7_data, x = +start + (+end - +start)/2)
+chart <- chart + ggplot2::geom_text(
+  data = layer7_data,
+  mapping = ggplot2::aes(y = off2, x = x, label = name)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 900, height = 400)
 
 
 chart

@@ -38,9 +38,15 @@ export function isSupportedTimeUnit(unit) {
   return normalize(unit) in local;
 }
 
-export function timeUnitExpr(unit, dateExpr) {
+export function timeUnitExpr(unit, dateExpr, ignoreUnsupported = false) {
   const key = normalize(unit);
   const fn = local[key];
-  if (!fn) throw new Error(`Unsupported timeUnit: "${unit}"`);
+  if (!fn) {
+    // No bucketing/truncation applied -- the real (un-truncated) date is
+    // still a usable temporal value, just not grouped the way this unit
+    // asked for.
+    if (ignoreUnsupported) return `(${dateExpr}) /* vl2d3: unsupported timeUnit "${JSON.stringify(unit)}", left untruncated (--ignore-unsupported) */`;
+    throw new Error(`Unsupported timeUnit: "${unit}"`);
+  }
   return fn(dateExpr);
 }

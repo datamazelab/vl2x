@@ -37,25 +37,6 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
-def rewrite_urls(obj):
-    """Point every relative data.url reference at the local showcase/data/
-    copy, relative to *this page's own location* (examples/<name>/index.html,
-    two directories below showcase/) rather than domain-root-absolute --
-    the previous "/data/..." form only worked when the site happened to be
-    served from a server's actual root, breaking as soon as it's deployed
-    under a subpath (e.g. https://host/vl2x/showcase/...). A genuine
-    external URL (http/https) is left untouched and used directly."""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k == "url" and isinstance(v, str) and not v.startswith(("http://", "https://")):
-                obj[k] = "../../" + v.lstrip("/")
-            else:
-                rewrite_urls(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            rewrite_urls(v)
-
-
 def load_status(fname):
     p = SHOWCASE / fname
     return json.loads(p.read_text()) if p.exists() else {}
@@ -88,9 +69,14 @@ def main():
         category = name.split("_")[0]
         title = gallery_titles.get(name) or humanize(name)
 
+        # Relative data/image references (e.g. "data/cars.json", or an
+        # "image" mark's per-row url field value) are left exactly as
+        # written in the original spec -- the page resolves them at render
+        # time via vega-embed's loader baseURL (see example.html.j2) rather
+        # than needing this spec rewritten ahead of time. Also means the
+        # "View raw spec JSON" panel shows the actual, unmodified spec.
         display_spec = json.loads(spec_path.read_text())
         display_spec.pop("$schema", None)
-        rewrite_urls(display_spec)
 
         example_dir = EXAMPLES_DIR / name
 
@@ -113,8 +99,8 @@ def main():
                     "code": read_code(example_dir, "altair.py")},
             vlapi={"ok": vlapi_status.get("ok", False), "error": vlapi_status.get("error", ""),
                    "code": read_code(example_dir, "vlapi.js")},
-            d3={"ok": d3_status.get("ok", False), "error": d3_status.get("error", ""),
-                "code": read_code(example_dir, "d3.js")},
+            d3={"ok": d3_status.get("ok", False), "translated": d3_status.get("translated", d3_status.get("ok", False)),
+                "error": d3_status.get("error", ""), "code": read_code(example_dir, "d3.js")},
             ggplot={"ok": ggplot_status.get("ok", False), "error": ggplot_status.get("error", ""),
                     "code": read_code(example_dir, "ggplot.R"), "has_png": has_png},
             prev_name=names[i - 1] if i > 0 else None,

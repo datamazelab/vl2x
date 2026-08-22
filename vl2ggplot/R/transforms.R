@@ -16,25 +16,34 @@
 
 # ---- 1. top-level transform array ----
 
-render_transforms <- function(transform_list, var_name) {
+render_transforms <- function(transform_list, var_name, ignore_unsupported = FALSE) {
   stmts <- character(0)
   for (t in transform_list) {
-    stmts <- c(stmts, render_one_transform(t, var_name))
+    stmts <- c(stmts, render_one_transform(t, var_name, ignore_unsupported))
   }
   stmts
 }
 
-render_one_transform <- function(t, var_name) {
+render_one_transform <- function(t, var_name, ignore_unsupported = FALSE) {
   if (!is.null(t$filter)) {
-    return(sprintf("%s <- dplyr::filter(%s, %s)", var_name, var_name, filter_to_expr(t$filter)))
+    notes_env <- new.env()
+    expr <- filter_to_expr(t$filter, ignore_unsupported, notes_env)
+    note <- if (isTRUE(notes_env$unsupported)) {
+      "# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)"
+    } else character(0)
+    return(c(note, sprintf("%s <- dplyr::filter(%s, %s)", var_name, var_name, expr)))
   }
   if (!is.null(t$calculate)) {
     return(sprintf("%s <- dplyr::mutate(%s, %s = %s)", var_name, var_name, render_name(t$as), translate_expr(t$calculate)))
   }
   if (!is.null(t$timeUnit)) {
-    if (!is_supported_timeunit(t$timeUnit)) stop(sprintf('Unsupported timeUnit: "%s"', t$timeUnit))
-    expr <- timeunit_expr(t$timeUnit, field_ref(t$field))
-    return(sprintf("%s <- dplyr::mutate(%s, %s = %s)", var_name, var_name, render_name(t$as), expr))
+    supported <- is_supported_timeunit(t$timeUnit)
+    if (!supported && !ignore_unsupported) stop(sprintf('Unsupported timeUnit: "%s"', t$timeUnit))
+    expr <- timeunit_expr(t$timeUnit, field_ref(t$field), ignore_unsupported)
+    note <- if (!supported) {
+      sprintf('# vl2ggplot: unsupported timeUnit "%s", left untruncated (ignore_unsupported)', t$timeUnit)
+    } else character(0)
+    return(c(note, sprintf("%s <- dplyr::mutate(%s, %s = %s)", var_name, var_name, render_name(t$as), expr)))
   }
   if (!is.null(t$bin)) {
     max_bins <- if (is.list(t$bin) && !is.null(t$bin$maxbins)) t$bin$maxbins else 20
@@ -52,28 +61,48 @@ render_one_transform <- function(t, var_name) {
     ))
   }
   if (!is.null(t$aggregate)) {
-    return(render_aggregate_transform(t, var_name))
+    return(render_aggregate_transform(t, var_name, ignore_unsupported))
+  }
+  if (ignore_unsupported) {
+    # Skip this one step -- the rest of the transform pipeline (and the
+    # chart as a whole) still runs on whatever data shape existed before it,
+    # rather than the entire chart failing over one step it can't perform.
+    return(sprintf("# vl2ggplot: skipped unsupported transform type \"%s\" (ignore_unsupported)", names(t)[1]))
   }
   stop(sprintf('Unsupported transform type: "%s"', names(t)[1]))
 }
 
-render_aggregate_transform <- function(t, var_name) {
-  for (a in t$aggregate) {
-    if (a$op != "count" && !is_supported_aggregate_op(a$op)) {
-      stop(sprintf('Unsupported aggregate op: "%s"', a$op))
+render_aggregate_transform <- function(t, var_name, ignore_unsupported = FALSE) {
+  if (!ignore_unsupported) {
+    for (a in t$aggregate) {
+      if (a$op != "count" && !is_supported_aggregate_op(a$op)) {
+        stop(sprintf('Unsupported aggregate op: "%s"', a$op))
+      }
     }
   }
+  # A compound argmin/argmax op (`a$op` itself a list, e.g. `{"argmax":
+  # "field"}`) is excluded here (`is.character(a$op)` guard): it's a
+  # structurally different feature (a row lookup, not a summary statistic)
+  # that aggregate_summarise_expr() below always rejects outright, in both
+  # modes -- not a "fell back to mean" case worth a note.
+  unsupported_ops <- unique(vapply(t$aggregate, function(a) {
+    if (is.character(a$op) && a$op != "count" && !is_supported_aggregate_op(a$op)) a$op else NA_character_
+  }, character(1)))
+  unsupported_ops <- unsupported_ops[!is.na(unsupported_ops)]
+  notes <- sprintf('# vl2ggplot: unsupported aggregate op "%s", using mean instead (ignore_unsupported)', unsupported_ops)
+
   value_assigns <- vapply(t$aggregate, function(a) {
-    expr <- if (a$op == "count") "dplyr::n()" else aggregate_summarise_expr(a$op, field_ref(a$field))
+    expr <- if (a$op == "count") "dplyr::n()" else aggregate_summarise_expr(a$op, field_ref(a$field), ignore_unsupported)
     paste0(render_name(a$as), " = ", expr)
   }, character(1))
 
   groupby <- t$groupby
   if (is.null(groupby) || length(groupby) == 0) {
-    return(sprintf("%s <- dplyr::summarise(%s, %s)", var_name, var_name, paste(value_assigns, collapse = ", ")))
+    return(c(notes, sprintf("%s <- dplyr::summarise(%s, %s)", var_name, var_name, paste(value_assigns, collapse = ", "))))
   }
   group_args <- paste(vapply(groupby, field_ref, character(1)), collapse = ", ")
   c(
+    notes,
     sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, group_args),
     sprintf("%s <- dplyr::summarise(%s, %s, .groups = \"drop\")", var_name, var_name, paste(value_assigns, collapse = ", "))
   )
@@ -104,7 +133,7 @@ channel_entries <- function(encoding) {
 out_field_name <- function(field, suffix) if (is.null(field)) suffix else paste0(suffix, "_", field)
 
 # Returns list(statements, encoding, extra_fixed, extra_aes, use_histogram).
-plan_layer_data <- function(mark_type, encoding, var_name) {
+plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE) {
   keys <- channel_entries(encoding)
   agg_keys <- keys[vapply(keys, function(k) !is.null(encoding[[k]]$aggregate), logical(1))]
   bin_keys <- keys[vapply(keys, function(k) !is.null(encoding[[k]]$bin), logical(1))]
@@ -142,12 +171,17 @@ plan_layer_data <- function(mark_type, encoding, var_name) {
   if (length(agg_keys) == 0) {
     rewritten <- encoding
     assigns <- character(0)
+    notes <- character(0)
     for (k in c(tu_only_keys, bin_keys)) {
       def <- encoding[[k]]
       if (!is.null(def$timeUnit)) {
-        if (!is_supported_timeunit(def$timeUnit)) stop(sprintf('Unsupported timeUnit: "%s"', def$timeUnit))
+        supported <- is_supported_timeunit(def$timeUnit)
+        if (!supported && !ignore_unsupported) stop(sprintf('Unsupported timeUnit: "%s"', def$timeUnit))
+        if (!supported) {
+          notes <- c(notes, sprintf('# vl2ggplot: unsupported timeUnit "%s", left untruncated (ignore_unsupported)', def$timeUnit))
+        }
         out <- out_field_name(def$field, def$timeUnit)
-        assigns <- c(assigns, paste0(render_name(out), " = ", timeunit_expr(def$timeUnit, field_ref(def$field))))
+        assigns <- c(assigns, paste0(render_name(out), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
         rewritten[[k]]$field <- out
         rewritten[[k]]$timeUnit <- NULL
       } else if (!is.null(def$bin)) {
@@ -158,22 +192,39 @@ plan_layer_data <- function(mark_type, encoding, var_name) {
       }
     }
     if (length(assigns) > 0) {
-      empty_plan$statements <- sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))
+      empty_plan$statements <- c(notes, sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", ")))
     }
     empty_plan$encoding <- rewritten
     return(empty_plan)
   }
 
   # From here, at least one channel aggregates.
-  if (length(bin_keys) > 1 || (length(bin_keys) == 1 && (length(plain_keys) > 0 || length(tu_only_keys) > 0))) {
-    stop("Unsupported: binning combined with additional groupby channels is not yet supported")
+  plan_notes <- character(0)
+  bin_group_conflict <- length(bin_keys) > 1 || (length(bin_keys) == 1 && (length(plain_keys) > 0 || length(tu_only_keys) > 0))
+  if (bin_group_conflict) {
+    if (!ignore_unsupported) {
+      stop("Unsupported: binning combined with additional groupby channels is not yet supported")
+    }
+    # Keep just the first binned channel and drop every other groupby
+    # channel -- a plain histogram of that one field, rather than nothing.
+    bin_keys <- bin_keys[seq_len(min(length(bin_keys), 1))]
+    plain_keys <- character(0)
+    tu_only_keys <- character(0)
+    plan_notes <- c(plan_notes, "# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)")
   }
 
   if (length(bin_keys) == 1) {
-    return(plan_histogram(mark_type, encoding, bin_keys[1], agg_keys, var_name))
+    plan <- plan_histogram(mark_type, encoding, bin_keys[1], agg_keys, var_name, ignore_unsupported)
+    plan$statements <- c(plan_notes, plan$statements)
+    return(plan)
   }
 
   group_keys <- c(plain_keys, tu_only_keys)
+  if (length(group_keys) > 2) {
+    if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
+    group_keys <- group_keys[1:2]
+    plan_notes <- c(plan_notes, "# vl2ggplot: unsupported aggregation grouped by more than 2 fields, keeping only the first 2 (ignore_unsupported)")
+  }
 
   # All-stat-summary-compatible, exactly one aggregate channel, and *some*
   # discrete groupby channel to summarize within -- let the geom's own stat
@@ -187,14 +238,23 @@ plan_layer_data <- function(mark_type, encoding, var_name) {
   # stat_count() can't target (they only compute plain x/y) -- so rule marks
   # always go through the explicit dplyr::summarise() path below instead,
   # the same one already used for a rule's groupless dataset-wide mean.
-  if (length(agg_keys) == 1 && length(group_keys) > 0 && mark_type != "rule") {
+  # And stat_count()/stat_summary() only ever compute a plain x or y value --
+  # an aggregate declared on a *non-position* channel (e.g. `color:
+  # {"aggregate": "count"}` on a heatmap-style rect, colored/sized by count
+  # rather than positioned by it) has nothing for either stat to target, so
+  # that also needs the explicit dplyr path instead.
+  if (length(agg_keys) == 1 && length(group_keys) > 0 && mark_type != "rule" && agg_keys %in% c("x", "y")) {
     op <- encoding[[agg_keys]]$aggregate
     if (op == "count" || is_stat_summary_op(op)) {
-      return(plan_native_stat(encoding, agg_keys, op, group_keys))
+      plan <- plan_native_stat(encoding, agg_keys, op, group_keys)
+      plan$statements <- c(plan_notes, plan$statements)
+      return(plan)
     }
   }
 
-  plan_explicit_aggregate(encoding, agg_keys, group_keys, var_name)
+  plan <- plan_explicit_aggregate(encoding, agg_keys, group_keys, var_name, ignore_unsupported)
+  plan$statements <- c(plan_notes, plan$statements)
+  plan
 }
 
 plan_native_stat <- function(encoding, agg_key, op, group_keys) {
@@ -220,7 +280,7 @@ plan_native_stat <- function(encoding, agg_key, op, group_keys) {
   list(statements = character(0), encoding = rewritten, extra_fixed = extra_fixed, extra_aes = list(), use_histogram = FALSE)
 }
 
-plan_histogram <- function(mark_type, encoding, bin_key, agg_keys, var_name) {
+plan_histogram <- function(mark_type, encoding, bin_key, agg_keys, var_name, ignore_unsupported = FALSE) {
   def <- encoding[[bin_key]]
   max_bins <- if (is.list(def$bin) && !is.null(def$bin$maxbins)) def$bin$maxbins else 30
   rewritten <- encoding
@@ -234,7 +294,16 @@ plan_histogram <- function(mark_type, encoding, bin_key, agg_keys, var_name) {
   rewritten[[bin_key]]$type <- "quantitative"
 
   if (length(agg_keys) == 0) {
-    stop("Unsupported: a binned channel with no aggregate value channel is not yet supported")
+    if (!ignore_unsupported) {
+      stop("Unsupported: a binned channel with no aggregate value channel is not yet supported")
+    }
+    # Nothing to aggregate against -- a plain count histogram is a
+    # reasonable default for "just show me the distribution of this field".
+    return(list(
+      statements = "# vl2ggplot: unsupported binned channel with no aggregate value channel, using a plain count histogram instead (ignore_unsupported)",
+      encoding = rewritten,
+      extra_fixed = list(bins = as.character(max_bins)), extra_aes = list(), use_histogram = TRUE
+    ))
   }
   op <- encoding[[agg_keys[1]]]$aggregate
   rewritten[[agg_keys[1]]] <- NULL
@@ -244,10 +313,14 @@ plan_histogram <- function(mark_type, encoding, bin_key, agg_keys, var_name) {
       statements = character(0), encoding = rewritten,
       extra_fixed = list(bins = as.character(max_bins)), extra_aes = list(), use_histogram = TRUE
     )
-  } else if (is_stat_summary_op(op)) {
+  } else if (is_stat_summary_op(op) || ignore_unsupported) {
+    fun_name <- if (is_stat_summary_op(op)) stat_summary_fun_name(op) else "mean"
+    note <- if (!is_stat_summary_op(op)) {
+      sprintf('# vl2ggplot: unsupported aggregate op "%s" for a binned channel, using mean instead (ignore_unsupported)', op)
+    } else character(0)
     list(
-      statements = character(0), encoding = rewritten,
-      extra_fixed = list(stat = '"summary_bin"', fun = render_string(stat_summary_fun_name(op)), bins = as.character(max_bins)),
+      statements = note, encoding = rewritten,
+      extra_fixed = list(stat = '"summary_bin"', fun = render_string(fun_name), bins = as.character(max_bins)),
       extra_aes = setNames(list(field_ref(encoding[[agg_keys[1]]]$field)), "y"),
       use_histogram = FALSE
     )
@@ -289,7 +362,8 @@ needs_error_extent <- function(mark_type, mark_props, encoding) {
 # field-accessor expression. `ci` is an approximate normal-theory 95%
 # interval (Vega-Lite's own default uses a bootstrap) -- a documented
 # simplification, not an exact match.
-extent_bounds_expr <- function(extent, f) {
+extent_bounds_expr <- function(extent, f, ignore_unsupported = FALSE) {
+  if (ignore_unsupported && !(extent %in% c("stdev", "stderr", "ci", "iqr"))) extent <- "stderr"
   switch(extent,
     stdev = list(
       lo = sprintf("mean(%s, na.rm = TRUE) - stats::sd(%s, na.rm = TRUE)", f, f),
@@ -313,22 +387,33 @@ extent_bounds_expr <- function(extent, f) {
 
 # Groupby fields for the extent computation: the *other* axis (if it's a
 # plain categorical field) plus color/detail, mirroring which channels
-# act as an implicit groupby elsewhere in this file.
-error_extent_group_fields <- function(encoding, value_axis) {
+# act as an implicit groupby elsewhere in this file. `extra_fields` folds in
+# a dodged/grouped position offset (xOffset/yOffset) -- it's not a channel
+# `encoding` itself carries by the time this runs (prepare_unit strips it
+# before building the ggplot2 aes(), since ggplot2 has no such aes), but the
+# extent still needs to be computed *per offset group*, or a shared-across-
+# groups extent band gets dodged in the final aes() with nothing behind it
+# to justify the split (a `group` referencing a column this data frame
+# never grouped by at all).
+error_extent_group_fields <- function(encoding, value_axis, extra_fields = character(0)) {
   other_axis <- if (value_axis == "x") "y" else "x"
   fields <- character(0)
   for (ch in c(other_axis, "color", "detail")) {
     def <- encoding[[ch]]
     if (!is.null(def) && !is.null(def$field) && is.null(def$aggregate)) fields <- c(fields, def$field)
   }
-  unique(fields)
+  unique(c(fields, extra_fields))
 }
 
-apply_error_extent <- function(mark_props, encoding, var_name) {
+apply_error_extent <- function(mark_props, encoding, var_name, ignore_unsupported = FALSE, extra_group_fields = character(0)) {
   axis <- error_extent_axis(encoding)
   field <- encoding[[axis]]$field
   f <- field_ref(field)
-  bounds <- extent_bounds_expr(mark_props$extent %||% "stderr", f)
+  extent <- mark_props$extent %||% "stderr"
+  bounds <- extent_bounds_expr(extent, f, ignore_unsupported)
+  note <- if (ignore_unsupported && !(extent %in% c("stdev", "stderr", "ci", "iqr"))) {
+    sprintf('# vl2ggplot: unsupported errorbar/errorband extent "%s", using stderr instead (ignore_unsupported)', extent)
+  } else character(0)
 
   lo_field <- out_field_name(field, "lo")
   hi_field <- out_field_name(field, "hi")
@@ -336,7 +421,7 @@ apply_error_extent <- function(mark_props, encoding, var_name) {
     "%s = %s, %s = %s", render_name(lo_field), bounds$lo, render_name(hi_field), bounds$hi
   )
 
-  group_fields <- error_extent_group_fields(encoding, axis)
+  group_fields <- error_extent_group_fields(encoding, axis, extra_group_fields)
   rewritten <- encoding
   rewritten[[axis]] <- list(field = lo_field, type = "quantitative")
   rewritten[[paste0(axis, "2")]] <- list(field = hi_field, type = "quantitative")
@@ -351,16 +436,32 @@ apply_error_extent <- function(mark_props, encoding, var_name) {
     )
   }
 
-  list(statements = stmts, encoding = rewritten)
+  list(statements = c(note, stmts), encoding = rewritten)
 }
 
-plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name) {
+plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE) {
+  notes <- character(0)
   if (length(group_keys) > 2) {
-    stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
+    if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
+    group_keys <- group_keys[1:2]
+    notes <- c(notes, "# vl2ggplot: unsupported aggregation grouped by more than 2 fields, keeping only the first 2 (ignore_unsupported)")
   }
-  for (k in agg_keys) {
-    op <- encoding[[k]]$aggregate
-    if (op != "count" && !is_supported_aggregate_op(op)) stop(sprintf('Unsupported aggregate op: "%s"', op))
+  if (!ignore_unsupported) {
+    for (k in agg_keys) {
+      op <- encoding[[k]]$aggregate
+      if (op != "count" && !is_supported_aggregate_op(op)) stop(sprintf('Unsupported aggregate op: "%s"', op))
+    }
+  } else {
+    # See render_aggregate_transform()'s identical guard: a compound
+    # argmin/argmax op (a list, not a plain string) is excluded here --
+    # aggregate_summarise_expr() below always rejects it outright regardless
+    # of ignore_unsupported, so it's not a "fell back to mean" case.
+    unsupported_ops <- unique(vapply(agg_keys, function(k) {
+      op <- encoding[[k]]$aggregate
+      if (is.character(op) && op != "count" && !is_supported_aggregate_op(op)) op else NA_character_
+    }, character(1)))
+    unsupported_ops <- unsupported_ops[!is.na(unsupported_ops)]
+    notes <- c(notes, sprintf('# vl2ggplot: unsupported aggregate op "%s", using mean instead (ignore_unsupported)', unsupported_ops))
   }
 
   rewritten <- encoding
@@ -369,9 +470,13 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name) {
   for (k in group_keys) {
     def <- encoding[[k]]
     if (!is.null(def$timeUnit)) {
-      if (!is_supported_timeunit(def$timeUnit)) stop(sprintf('Unsupported timeUnit: "%s"', def$timeUnit))
+      supported <- is_supported_timeunit(def$timeUnit)
+      if (!supported && !ignore_unsupported) stop(sprintf('Unsupported timeUnit: "%s"', def$timeUnit))
+      if (!supported) {
+        notes <- c(notes, sprintf('# vl2ggplot: unsupported timeUnit "%s", left untruncated (ignore_unsupported)', def$timeUnit))
+      }
       out <- out_field_name(def$field, def$timeUnit)
-      pre_assigns <- c(pre_assigns, paste0(render_name(out), " = ", timeunit_expr(def$timeUnit, field_ref(def$field))))
+      pre_assigns <- c(pre_assigns, paste0(render_name(out), " = ", timeunit_expr(def$timeUnit, field_ref(def$field), ignore_unsupported)))
       group_field_refs <- c(group_field_refs, render_name(out))
       rewritten[[k]]$field <- out
       rewritten[[k]]$timeUnit <- NULL
@@ -385,11 +490,11 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name) {
     out <- if (def$aggregate == "count") "count" else out_field_name(def$field, def$aggregate)
     rewritten[[k]]$field <<- out
     rewritten[[k]]$aggregate <<- NULL
-    expr <- if (def$aggregate == "count") "dplyr::n()" else aggregate_summarise_expr(def$aggregate, field_ref(def$field))
+    expr <- if (def$aggregate == "count") "dplyr::n()" else aggregate_summarise_expr(def$aggregate, field_ref(def$field), ignore_unsupported)
     paste0(render_name(out), " = ", expr)
   }, character(1))
 
-  stmts <- character(0)
+  stmts <- notes
   if (length(pre_assigns) > 0) {
     stmts <- c(stmts, sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(pre_assigns, collapse = ", ")))
   }

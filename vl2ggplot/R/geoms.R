@@ -17,16 +17,30 @@
 # stops) -- grid/ggplot2 has no equivalent without extra packages, so this
 # throws a clear error rather than splicing the gradient object in as if it
 # were a color string.
-simple_color_value <- function(value) {
-  if (is.list(value)) stop("Unsupported: gradient fill/stroke definitions are not supported")
+simple_color_value <- function(value, ignore_unsupported = FALSE, .notes = NULL) {
+  if (is.list(value)) {
+    if (ignore_unsupported) {
+      # Use the gradient's first color stop if it has one, else a neutral
+      # default -- a flat fill instead of the intended gradient, but still a
+      # real, visible color rather than a crash.
+      stops <- value$stops
+      if (is.list(stops) && length(stops) > 0 && !is.null(stops[[1]]$color)) {
+        .push_note(.notes, "unsupported gradient fill/stroke definition, using its first color stop instead (ignore_unsupported)")
+        return(format_value(stops[[1]]$color))
+      }
+      .push_note(.notes, 'unsupported gradient fill/stroke definition, using "steelblue" instead (ignore_unsupported)')
+      return(render_string("steelblue"))
+    }
+    stop("Unsupported: gradient fill/stroke definitions are not supported")
+  }
   format_value(value)
 }
 
-mark_fixed_params <- function(mark_props, mark_type) {
+mark_fixed_params <- function(mark_props, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
   fixed <- list()
-  if (!is.null(mark_props$color)) fixed[[color_channel_aes(mark_type)]] <- simple_color_value(mark_props$color)
-  if (!is.null(mark_props$fill)) fixed[["fill"]] <- simple_color_value(mark_props$fill)
-  if (!is.null(mark_props$stroke)) fixed[["colour"]] <- simple_color_value(mark_props$stroke)
+  if (!is.null(mark_props$color)) fixed[[color_channel_aes(mark_type)]] <- simple_color_value(mark_props$color, ignore_unsupported, .notes)
+  if (!is.null(mark_props$fill)) fixed[["fill"]] <- simple_color_value(mark_props$fill, ignore_unsupported, .notes)
+  if (!is.null(mark_props$stroke)) fixed[["colour"]] <- simple_color_value(mark_props$stroke, ignore_unsupported, .notes)
   if (!is.null(mark_props$opacity)) fixed[["alpha"]] <- format_value(mark_props$opacity)
   if (!is.null(mark_props$strokeWidth)) fixed[["linewidth"]] <- format_value(mark_props$strokeWidth)
   if (!is.null(mark_props$size) && !(mark_type %in% c("bar", "area", "line"))) {
@@ -48,8 +62,8 @@ mark_fixed_params <- function(mark_props, mark_type) {
 
 # geom function name for a mark, given its properties (a few marks pick a
 # different geom based on a property, e.g. line + interpolate: "step").
-geom_function_name <- function(mark_type, mark_props, has_y = TRUE) {
-  switch(mark_type,
+geom_function_name <- function(mark_type, mark_props, has_y = TRUE, ignore_unsupported = FALSE, .notes = NULL) {
+  known <- switch(mark_type,
     # geom_col (stat="identity") needs an explicit y; a bar mark whose y is
     # a bare `{"aggregate": "count"}` has none -- geom_bar's default
     # stat="count" is what supplies it.
@@ -58,6 +72,7 @@ geom_function_name <- function(mark_type, mark_props, has_y = TRUE) {
     area = "ggplot2::geom_area",
     point = "ggplot2::geom_point",
     circle = "ggplot2::geom_point",
+    square = "ggplot2::geom_point",
     tick = "ggplot2::geom_point",
     text = "ggplot2::geom_text",
     rule = NULL, # dispatched specially: geom_hline/vline/segment
@@ -66,8 +81,17 @@ geom_function_name <- function(mark_type, mark_props, has_y = TRUE) {
     errorbar = "ggplot2::geom_errorbar",
     errorband = "ggplot2::geom_ribbon",
     trail = "ggplot2::geom_line",
-    stop(sprintf('Unsupported mark type: "%s"', mark_type))
+    rect = "ggplot2::geom_tile",
+    NA_character_
   )
+  if (mark_type == "rule" || !is.na(known)) return(known)
+  if (ignore_unsupported) {
+    # Anything else unrecognized (geoshape, image, ...) -- a point per row
+    # is still a rendered chart, even without the mark's real shape.
+    .push_note(.notes, sprintf('unsupported mark type "%s", drawing as a point instead (ignore_unsupported)', mark_type))
+    return("ggplot2::geom_point")
+  }
+  stop(sprintf('Unsupported mark type: "%s"', mark_type))
 }
 
 # Merge two named lists of rendered-expression strings, `override` winning
@@ -89,38 +113,48 @@ render_kwargs <- function(named_list) {
 #     the upper bound, it's the offset to it).
 #   - `x2`/`y2` alone: `x`/`y` and `x2`/`y2` are themselves the two bounds.
 # Returns NULL if this axis has none of these (a plain single-value axis).
-error_bounds <- function(encoding, axis) {
+error_bounds <- function(encoding, axis, ignore_unsupported = FALSE, .notes = NULL) {
   err_key <- paste0(axis, "Error")
   err2_key <- paste0(axis, "Error2")
   range2_key <- paste0(axis, "2")
   base <- encoding[[axis]]
   if (is.null(base)) return(NULL)
-  base_expr <- channel_value_expr(base)
+  base_expr <- channel_value_expr(base, ignore_unsupported, .notes)
 
   if (!is.null(encoding[[err_key]])) {
-    err_expr <- channel_value_expr(encoding[[err_key]])
+    err_expr <- channel_value_expr(encoding[[err_key]], ignore_unsupported, .notes)
     if (!is.null(encoding[[err2_key]])) {
-      err2_expr <- channel_value_expr(encoding[[err2_key]])
+      err2_expr <- channel_value_expr(encoding[[err2_key]], ignore_unsupported, .notes)
       return(list(min = sprintf("(%s) + (%s)", base_expr, err_expr), max = sprintf("(%s) + (%s)", base_expr, err2_expr)))
     }
     return(list(min = sprintf("(%s) - (%s)", base_expr, err_expr), max = sprintf("(%s) + (%s)", base_expr, err_expr)))
   }
   if (!is.null(encoding[[range2_key]])) {
-    return(list(min = base_expr, max = channel_value_expr(encoding[[range2_key]])))
+    return(list(min = base_expr, max = channel_value_expr(encoding[[range2_key]], ignore_unsupported, .notes)))
   }
   NULL
 }
 
-# Build one complete geom_*(...) layer call.
+# Build one complete geom_*(...) layer call. Returns list(code = the geom
+# call expression string, notes = character vector of "# vl2ggplot: ..."
+# comment lines to emit immediately before the statement that uses `code`,
+# one per ignore_unsupported fallback triggered while building it).
 # `plan` (from transforms.R's plan_layer_data()) may add extra fixed params
 # (e.g. stat = "count"/"summary") and note whether this layer needs
 # geom_histogram instead of the plain mark geom.
-render_geom_layer <- function(mark, encoding, data_arg, plan) {
+render_geom_layer <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE) {
+  notes_env <- new.env()
+  code <- render_geom_layer_code(mark, encoding, data_arg, plan, ignore_unsupported, notes_env)
+  notes <- notes_env$notes
+  list(code = code, notes = if (is.null(notes)) character(0) else paste0("# vl2ggplot: ", notes))
+}
+
+render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE, .notes = NULL) {
   mark_type <- if (is.character(mark)) mark else mark$type
   mark_props <- if (is.character(mark)) list() else mark[names(mark) != "type"]
 
-  channels <- build_layer_channels(encoding, mark_type)
-  fixed <- merge_named(mark_fixed_params(mark_props, mark_type), channels$fixed)
+  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes)
+  fixed <- merge_named(mark_fixed_params(mark_props, mark_type, ignore_unsupported, .notes), channels$fixed)
   if (!is.null(plan$extra_fixed)) fixed <- merge_named(fixed, plan$extra_fixed)
 
   aes_pairs <- channels$aes
@@ -129,11 +163,11 @@ render_geom_layer <- function(mark, encoding, data_arg, plan) {
   # x2/y2/xError/yError: meaning depends on the geom, and either axis can
   # carry the range for a horizontal-vs-vertical errorbar/errorband.
   if (mark_type == "rule") {
-    return(render_rule_layer(encoding, aes_pairs, fixed, data_arg))
+    return(render_rule_layer(encoding, aes_pairs, fixed, data_arg, ignore_unsupported, .notes))
   }
-  y_range <- error_bounds(encoding, "y")
-  x_range <- error_bounds(encoding, "x")
-  if (!is.null(y_range) && !is.null(x_range) && mark_type == "bar") {
+  y_range <- error_bounds(encoding, "y", ignore_unsupported, .notes)
+  x_range <- error_bounds(encoding, "x", ignore_unsupported, .notes)
+  if (!is.null(y_range) && !is.null(x_range) && mark_type %in% c("bar", "rect")) {
     # A true 2D box (both axes have their own range, e.g. a heatmap-style
     # rect) -- geom_rect wants numeric ymin/ymax *and* xmin/xmax.
     aes_pairs[["ymin"]] <- y_range$min
@@ -144,11 +178,22 @@ render_geom_layer <- function(mark, encoding, data_arg, plan) {
     aes_pairs[["y"]] <- NULL
     return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
   }
-  if (!is.null(y_range) && mark_type %in% c("bar", "area", "errorband", "errorbar")) {
+  if (!is.null(y_range) && mark_type %in% c("bar", "rect", "area", "errorband", "errorbar")) {
     aes_pairs[["ymin"]] <- y_range$min
     aes_pairs[["ymax"]] <- y_range$max
     aes_pairs[["y"]] <- NULL
-    if (mark_type == "bar") {
+    if (mark_type == "rect" && is.null(aes_pairs[["x"]])) {
+      # A `rect` with no x at all (e.g. a min/max reference band spanning
+      # the whole plot) needs a real filled box, not a thin geom_linerange
+      # line -- geom_rect with a fixed -Inf/Inf xmin/xmax spans the full
+      # width without disturbing a continuous x scale a sibling layer uses
+      # (a fake categorical x="" would otherwise force a discrete scale).
+      aes_pairs[["x"]] <- NULL
+      fixed[["xmin"]] <- "-Inf"
+      fixed[["xmax"]] <- "Inf"
+      return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    }
+    if (mark_type %in% c("bar", "rect")) {
       if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
       return(build_call("ggplot2::geom_linerange", aes_pairs, fixed, data_arg))
     }
@@ -174,12 +219,19 @@ render_geom_layer <- function(mark, encoding, data_arg, plan) {
     if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
     return(build_call("ggplot2::geom_errorbar", aes_pairs, fixed, data_arg))
   }
-  if (!is.null(x_range) && mark_type %in% c("bar", "errorband", "errorbar")) {
+  if (!is.null(x_range) && mark_type %in% c("bar", "rect", "errorband", "errorbar")) {
     aes_pairs[["xmin"]] <- x_range$min
     aes_pairs[["xmax"]] <- x_range$max
     aes_pairs[["x"]] <- NULL
+    if (mark_type == "rect" && is.null(aes_pairs[["y"]])) {
+      # Same reasoning as the y_range branch's "rect" case above, just
+      # transposed: a vertical full-height band instead of horizontal.
+      fixed[["ymin"]] <- "-Inf"
+      fixed[["ymax"]] <- "Inf"
+      return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    }
     if (is.null(aes_pairs[["y"]])) aes_pairs[["y"]] <- '""'
-    if (mark_type == "bar") {
+    if (mark_type %in% c("bar", "rect")) {
       # The companion axis (y) is typically categorical here (e.g. a Gantt
       # chart), which geom_rect can't size a box against directly --
       # geom_linerange with a widened linewidth is the standard ggplot2
@@ -198,7 +250,7 @@ render_geom_layer <- function(mark, encoding, data_arg, plan) {
     fixed[["width"]] <- "1"
     fixed[["stat"]] <- fixed[["stat"]] %||% '"identity"'
   }
-  if (mark_type %in% c("point", "circle", "tick", "bar", "text") && !isTRUE(plan$use_histogram) && !identical(fixed[["stat"]], '"count"')) {
+  if (mark_type %in% c("point", "circle", "square", "tick", "bar", "rect", "text") && !isTRUE(plan$use_histogram) && !identical(fixed[["stat"]], '"count"')) {
     # A 1D strip/dot plot (only one of x/y given) centers on the missing
     # axis rather than requiring both -- mirroring vl2d3's same fallback.
     # With *neither* axis given, ggplot2 needs the constant supplied as a
@@ -219,18 +271,18 @@ render_geom_layer <- function(mark, encoding, data_arg, plan) {
       aes_pairs[["y"]] <- '""'
     }
   }
-  fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]))
+  fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]), ignore_unsupported, .notes)
   build_call(fn, aes_pairs, fixed, data_arg)
 }
 
-render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg) {
+render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg, ignore_unsupported = FALSE, .notes = NULL) {
   has_x <- !is.null(encoding$x)
   has_y <- !is.null(encoding$y)
   has_x2 <- !is.null(encoding$x2)
   has_y2 <- !is.null(encoding$y2)
 
   if (has_x && has_x2 && !has_y2) {
-    aes_pairs[["xend"]] <- channel_value_expr(encoding$x2)
+    aes_pairs[["xend"]] <- channel_value_expr(encoding$x2, ignore_unsupported, .notes)
     # geom_segment always needs y/yend even for a purely horizontal segment
     # (no y channel at all) -- the same constant-"" convention as the
     # 1D-strip fallback elsewhere.
@@ -239,7 +291,7 @@ render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg) {
     return(build_call("ggplot2::geom_segment", aes_pairs, fixed, data_arg))
   }
   if (has_y && has_y2 && !has_x2) {
-    aes_pairs[["yend"]] <- channel_value_expr(encoding$y2)
+    aes_pairs[["yend"]] <- channel_value_expr(encoding$y2, ignore_unsupported, .notes)
     aes_pairs[["x"]] <- if (has_x) aes_pairs[["x"]] else '""'
     aes_pairs[["xend"]] <- aes_pairs[["x"]]
     return(build_call("ggplot2::geom_segment", aes_pairs, fixed, data_arg))
@@ -266,6 +318,10 @@ render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg) {
       return(build_call("ggplot2::geom_hline", aes_pairs, fixed, data_arg))
     }
     return(build_call("ggplot2::geom_hline", list(yintercept = aes_pairs[["y"]]), fixed, data_arg = NULL, as_aes = FALSE))
+  }
+  if (ignore_unsupported) {
+    .push_note(.notes, '"rule" mark has neither x nor y encoding, drawing nothing (ignore_unsupported)')
+    return("ggplot2::geom_blank()") # nothing to draw a rule against
   }
   stop('"rule" mark requires an x and/or y encoding')
 }

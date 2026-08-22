@@ -64,10 +64,10 @@
     <div class="panel">
       <div class="panel-head"><span class="title">D3 {{ "✅" if d3.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
       <div class="panel-body">
-        {% if d3.ok %}
+        {% if d3.translated %}
         <div class="code-wrap"><pre><code class="language-javascript">{{ d3.code }}</code></pre></div>
         <div class="render-wrap"><div id="vis-d3"></div></div>
-        <div class="render-note">Generated D3 code running live in this page (no grammar-of-graphics layer — drawn from scratch).</div>
+        <div class="render-note">Generated D3 code running live in this page (no grammar-of-graphics layer — drawn from scratch). Built with <code>ignoreUnsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
         {% else %}
         <div class="error-box">{{ d3.error }}</div>
         {% endif %}
@@ -80,7 +80,7 @@
         {% if ggplot.ok and ggplot.has_png %}
         <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
         <div class="render-wrap"><img src="../../renders/{{ name }}.png" alt="ggplot2 render of {{ title }}"></div>
-        <div class="render-note">Static PNG rendered ahead of time with R (can't run R in a browser).</div>
+        <div class="render-note">Static PNG rendered ahead of time with R (can't run R in a browser). Built with <code>ignore_unsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
         {% elif ggplot.ok %}
         <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
         <div class="error-box">Translated, but evaluating the generated R failed.</div>
@@ -108,31 +108,39 @@
     console.error('syntax highlighting failed (charts below are unaffected):', e);
   }
 
-  vegaEmbed('#vis-original', spec, {actions: false}).catch(e => {
+  // Relative to *this page's own URL* (examples/<name>/index.html), not
+  // domain-root -- so this still resolves to showcase/ when the site is
+  // deployed under a subpath (e.g. https://host/vl2x/showcase/...). Used
+  // both as vega-embed's loader baseURL (so a spec's own unmodified
+  // relative "data/xyz.csv" data.url AND any relative path embedded in a
+  // data *value* -- e.g. an "image" mark's per-row url field -- resolve
+  // against showcase/data/, not against the example page's own directory)
+  // and for the D3 panel below.
+  const baseURL = new URL('../../', location.href).href;
+  const vegaLoader = vega.loader({baseURL});
+
+  vegaEmbed('#vis-original', spec, {actions: false, loader: vegaLoader}).catch(e => {
     document.getElementById('vis-original').innerHTML =
       '<div class="error-box">Vega-Lite render failed: ' + (e && e.message ? e.message : e) + '</div>';
   });
   {% if altair.ok %}
-  vegaEmbed('#vis-altair', spec, {actions: false}).catch(e => {
+  vegaEmbed('#vis-altair', spec, {actions: false, loader: vegaLoader}).catch(e => {
     document.getElementById('vis-altair').innerHTML =
       '<div class="error-box">Render failed: ' + (e && e.message ? e.message : e) + '</div>';
   });
   {% endif %}
   {% if vlapi.ok %}
-  vegaEmbed('#vis-vlapi', spec, {actions: false}).catch(e => {
+  vegaEmbed('#vis-vlapi', spec, {actions: false, loader: vegaLoader}).catch(e => {
     document.getElementById('vis-vlapi').innerHTML =
       '<div class="error-box">Render failed: ' + (e && e.message ? e.message : e) + '</div>';
   });
   {% endif %}
 </script>
-{% if d3.ok %}
+{% if d3.translated %}
 <script type="module">
   import chart from './d3.js';
   const el = document.getElementById('vis-d3');
   try {
-    // Relative to *this page's own URL* (examples/<name>/index.html), not
-    // domain-root -- so this still resolves to showcase/ when the site is
-    // deployed under a subpath (e.g. https://host/vl2x/showcase/...).
     const baseURL = new URL('../../', location.href).href;
     const node = await chart(el, {baseURL});
     if (node) el.appendChild(node);

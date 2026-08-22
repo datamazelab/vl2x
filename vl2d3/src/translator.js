@@ -6,16 +6,26 @@
 // clear "not supported" error -- D3 has no small-multiples primitive of its
 // own, and faithfully reproducing Vega-Lite's layout/resolve semantics by
 // hand is a substantially larger project than a single-view renderer.
+//
+// Passing `{ignoreUnsupported: true}` relaxes this (and every other
+// "Unsupported: ..." check throughout the pipeline) into a best-effort
+// fallback instead -- each child view still renders independently (losing
+// shared-scale alignment), a facet/repeat becomes a simple grid of
+// independently-rendered panels, geographic encoding is drawn as a plain
+// unprojected x/y scatter, and so on. Default is off (current strict
+// behavior): a chart that renders something is only better than one that
+// refuses when the caller has actually asked for that tradeoff.
 
 import {renderDataLoad, renderTemporalCoercion} from './data.js';
 import {renderTransforms} from './transforms.js';
 import {prepareEncoding} from './prepare.js';
-import {resolvePositionScale, resolveColorScale, resolveSizeScale, resolveOpacityScale} from './scales.js';
+import {resolvePositionScale, resolveColorScale, resolveSizeScale, resolveOpacityScale, resolveOffsetScale} from './scales.js';
 import {renderMark} from './marks.js';
 import {formatValue} from './literals.js';
 import {extractDateFunctionFields} from './expr.js';
 
 const UNSUPPORTED_COMPOSITIONS = ['facet', 'repeat', 'concat', 'hconcat', 'vconcat'];
+const GEO_CHANNELS = ['longitude', 'latitude', 'longitude2', 'latitude2'];
 
 function mergeDown(child, wrapper) {
   const merged = {...child};
@@ -58,24 +68,13 @@ function flattenLayers(node, wrapper) {
   return [merged];
 }
 
-export function specToCode(spec) {
-  const root = {...spec};
-  delete root.$schema;
-
-  for (const key of UNSUPPORTED_COMPOSITIONS) {
-    if (key in root) {
-      throw new Error(
-        `Unsupported top-level composition: "${key}" is not yet supported by vl2d3 ` +
-          '(single view and layer are supported)'
-      );
-    }
-  }
-
+// Build the body (everything between the function signature and its
+// closing brace) of a single-view-or-layer chart function, as an array of
+// already-indented lines ending in `return svg.node();`.
+function buildUnitOrLayerBody(root, ignoreUnsupported) {
   const children = flattenLayers(root, {});
 
   const lines = [];
-  lines.push('import * as d3 from "d3";', '');
-  lines.push('export default async function chart(container, options = {}) {');
   const b = s => lines.push('  ' + s);
 
   b('const width = options.width ?? 640;');
@@ -101,27 +100,39 @@ export function specToCode(spec) {
 
   // -- per-child data preparation --
   const prepared = children.map((child, i) => {
-    const geoChannel = ['longitude', 'latitude', 'longitude2', 'latitude2'].find(k => child.encoding && k in child.encoding);
+    let encodingIn = child.encoding || {};
+    const geoChannel = GEO_CHANNELS.find(k => k in encodingIn);
     if (geoChannel) {
-      throw new Error(
-        `Unsupported: geographic encoding ("${geoChannel}") is not yet supported by vl2d3 -- ` +
-          'no map projection support'
-      );
+      if (!ignoreUnsupported) {
+        throw new Error(
+          `Unsupported: geographic encoding ("${geoChannel}") is not yet supported by vl2d3 -- ` +
+            'no map projection support'
+        );
+      }
+      // No map projection -- plot longitude/latitude directly as a plain
+      // quantitative x/y scatter instead (an unprojected, but still
+      // spatially-ordered, approximation), unless the view already has its
+      // own x/y (kept as-is then).
+      encodingIn = {...encodingIn};
+      if (!encodingIn.x && encodingIn.longitude) encodingIn.x = {field: encodingIn.longitude.field, type: 'quantitative'};
+      if (!encodingIn.y && encodingIn.latitude) encodingIn.y = {field: encodingIn.latitude.field, type: 'quantitative'};
+      for (const k of GEO_CHANNELS) delete encodingIn[k];
+      b(`// vl2d3: unsupported geographic encoding ("${geoChannel}"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (--ignore-unsupported)`);
     }
 
     const dataVar = `data${i + 1}`;
-    const {statements: loadStmts, isAsync} = renderDataLoad(child.data, dataVar);
+    const {statements: loadStmts} = renderDataLoad(child.data, dataVar, ignoreUnsupported);
     loadStmts.forEach(b);
 
-    const temporalFields = collectTemporalFields(child.encoding || {}, child.transform || []);
+    const temporalFields = collectTemporalFields(encodingIn, child.transform || []);
     renderTemporalCoercion(dataVar, temporalFields).forEach(b);
 
-    if (child.transform) renderTransforms(child.transform, dataVar).forEach(b);
+    if (child.transform) renderTransforms(child.transform, dataVar, ignoreUnsupported).forEach(b);
 
-    const {statements: prepStmts, encoding} = prepareEncoding(child.encoding || {}, dataVar);
+    const {statements: prepStmts, encoding} = prepareEncoding(encodingIn, dataVar, ignoreUnsupported);
     prepStmts.forEach(b);
 
-    return {dataVar, encoding, originalEncoding: child.encoding || {}, mark: child.mark};
+    return {dataVar, encoding, originalEncoding: encodingIn, mark: child.mark};
   });
   lines.push('');
 
@@ -138,6 +149,7 @@ export function specToCode(spec) {
       dataVar: allDataExpr,
       rangeExpr: dims[`${channel}RangeExpr`],
       zeroBaseline: zeroBaseline && def.type === 'quantitative',
+      ignoreUnsupported,
     });
     b(scale.decl);
     scales[channel] = scale;
@@ -145,9 +157,21 @@ export function specToCode(spec) {
   for (const [channel, resolver] of [['color', resolveColorScale], ['size', resolveSizeScale], ['opacity', resolveOpacityScale]]) {
     const def = prepared.map(p => p.encoding[channel]).find(Boolean);
     if (!def || 'value' in def) continue;
-    const scale = resolver(def, {dataVar: allDataExpr});
+    const scale = resolver(def, {dataVar: allDataExpr, ignoreUnsupported});
     b(scale.decl);
     scales[channel] = scale;
+  }
+  // A dodged/grouped position offset only has a band to nest inside when
+  // its own position channel (x for xOffset, y for yOffset) resolved to a
+  // real band scale -- otherwise there's no bandwidth to sub-divide, so it's
+  // left unhandled (dropped, same as before this offset support existed).
+  for (const [offsetChannel, posChannel] of [['xOffset', 'x'], ['yOffset', 'y']]) {
+    const def = prepared.map(p => p.encoding[offsetChannel]).find(Boolean);
+    const outerScale = scales[posChannel];
+    if (!def || 'value' in def || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
+    const scale = resolveOffsetScale(offsetChannel, def, {dataVar: allDataExpr, outerScale});
+    b(scale.decl);
+    scales[offsetChannel] = scale;
   }
   lines.push('');
 
@@ -208,7 +232,7 @@ export function specToCode(spec) {
 
   // -- marks --
   for (const p of prepared) {
-    let markCode = renderMark(p.mark, p.encoding, scales, dims, p.dataVar);
+    let markCode = renderMark(p.mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported);
     if (!/[;}]\s*$/.test(markCode)) markCode += ';';
     lines.push(markCode.replace(/^/gm, '  '));
     lines.push('');
@@ -228,8 +252,152 @@ export function specToCode(spec) {
   }
 
   b('return svg.node();');
-  lines.push('}');
-  lines.push('');
+  return lines;
+}
+
+function buildFunction(fnName, bodyLines, prefix = '') {
+  return [`${prefix}async function ${fnName}(container, options = {}) {`, ...bodyLines, '}', ''];
+}
+
+// Recursively substitute a `{"repeat": "row"|"column"|"repeat"}` value
+// (Vega-Lite's placeholder for "the field name currently being repeated")
+// anywhere it appears in a repeated child spec, with the literal field name
+// for this particular repetition.
+function substituteRepeatPlaceholders(node, values) {
+  if (Array.isArray(node)) return node.map(n => substituteRepeatPlaceholders(n, values));
+  if (node && typeof node === 'object') {
+    const keys = Object.keys(node);
+    if (keys.length === 1 && keys[0] === 'repeat' && typeof node.repeat === 'string' && node.repeat in values) {
+      return values[node.repeat];
+    }
+    const out = {};
+    for (const k of keys) out[k] = substituteRepeatPlaceholders(node[k], values);
+    return out;
+  }
+  return node;
+}
+
+// Reduce a top-level composition (concat/hconcat/vconcat/repeat/facet) down
+// to a flat list of independent child unit-or-layer specs plus a rough
+// layout direction, so each can be rendered by its own
+// buildUnitOrLayerBody() call and mounted side by side -- a real sacrifice
+// (no shared/aligned scales across panels, and facet/repeat need the
+// distinct grouping values knowable *now*, at code-generation time) but
+// still a rendered chart rather than none at all.
+function getCompositionChildren(root, compositionKey) {
+  const wrapper = {data: root.data, transform: root.transform, encoding: root.encoding};
+
+  if (compositionKey === 'hconcat') return {children: root.hconcat.map(c => mergeDown(c, wrapper)), direction: 'row'};
+  if (compositionKey === 'vconcat') return {children: root.vconcat.map(c => mergeDown(c, wrapper)), direction: 'column'};
+  if (compositionKey === 'concat') return {children: root.concat.map(c => mergeDown(c, wrapper)), direction: 'wrap'};
+
+  if (compositionKey === 'repeat') {
+    const rep = root.repeat;
+    if (Array.isArray(rep)) {
+      const children = rep.map(v => mergeDown(substituteRepeatPlaceholders(root.spec, {repeat: v}), wrapper));
+      return {children, direction: 'wrap'};
+    }
+    const rows = rep.row || [null];
+    const cols = rep.column || [null];
+    const children = [];
+    for (const r of rows) {
+      for (const c of cols) {
+        children.push(mergeDown(substituteRepeatPlaceholders(root.spec, {row: r, column: c}), wrapper));
+      }
+    }
+    const direction = rep.row && rep.column ? 'grid' : rep.row ? 'column' : 'row';
+    return {children, direction};
+  }
+
+  // facet
+  const facetDef = root.facet;
+  const dataValues = (root.spec && root.spec.data && root.spec.data.values) || (root.data && root.data.values);
+  if (facetDef && facetDef.field && Array.isArray(dataValues)) {
+    const distinct = [...new Set(dataValues.map(d => d[facetDef.field]))];
+    const children = distinct.map(v =>
+      mergeDown(
+        {
+          ...root.spec,
+          transform: [...(root.spec.transform || []), {filter: `datum[${JSON.stringify(facetDef.field)}] === ${JSON.stringify(v)}`}],
+          title: root.spec.title || String(v),
+        },
+        wrapper
+      )
+    );
+    return {children, direction: 'wrap'};
+  }
+  // Can't determine the distinct facet values at generation time (data is
+  // URL-sourced, or this is a row/column facet mapping) -- fall back to one
+  // combined view of all the data, ignoring the facet split entirely.
+  return {
+    children: [mergeDown(root.spec, wrapper)],
+    direction: 'row',
+    note: 'unsupported facet (distinct facet values not known at code-generation time), rendering one combined view of all the data instead',
+  };
+}
+
+// Build one panel's drawing function, named `fnName` -- either a plain
+// unit/layer chart, or (recursively, since a concat/vconcat/hconcat/repeat
+// child can itself be another composition, e.g. a repeat nested inside a
+// vconcat) a further grid of sub-panels. Returns the array of lines
+// defining (but not exporting) that function.
+function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
+  const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in spec);
+  if (!compositionKey) {
+    return buildFunction(fnName, buildUnitOrLayerBody(spec, ignoreUnsupported), prefix);
+  }
+
+  const {children, direction, note} = getCompositionChildren(spec, compositionKey);
+  const lines = [];
+  const childNames = children.map((_, i) => `${fnName}_p${i + 1}`);
+  children.forEach((child, i) => {
+    lines.push(...buildPanelFunction(child, childNames[i], ignoreUnsupported));
+  });
+
+  const flexStyle = direction === 'column' ? 'flex-direction: column;' : 'flex-wrap: wrap;';
+  const wrapperBody = [];
+  const b = s => wrapperBody.push('  ' + s);
+  b(
+    `// vl2d3: unsupported top-level composition "${compositionKey}", rendering each panel independently ` +
+      `(no shared/aligned scales across panels) (--ignore-unsupported)`
+  );
+  if (note) b(`// vl2d3: ${note} (--ignore-unsupported)`);
+  // `container.ownerDocument` (not the bare global `document`) works
+  // whether or not this module happens to run somewhere `document` is a
+  // global (a real browser page always has one; a plain Node/test context
+  // run against jsdom doesn't unless it's explicitly exposed globally).
+  b(`const doc = container.ownerDocument;`);
+  b(`const wrap = doc.createElement("div");`);
+  b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 12px;";`);
+  b(`container.appendChild(wrap);`);
+  for (const childName of childNames) {
+    b(`{`);
+    b(`  const panel = doc.createElement("div");`);
+    b(`  wrap.appendChild(panel);`);
+    b(`  await ${childName}(panel, options);`);
+    b(`}`);
+  }
+  b('return wrap;');
+
+  lines.push(...buildFunction(fnName, wrapperBody, prefix));
+  return lines;
+}
+
+export function specToCode(spec, options = {}) {
+  const {ignoreUnsupported = false} = options;
+  const root = {...spec};
+  delete root.$schema;
+
+  const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in root);
+  if (compositionKey && !ignoreUnsupported) {
+    throw new Error(
+      `Unsupported top-level composition: "${compositionKey}" is not yet supported by vl2d3 ` +
+        '(single view and layer are supported)'
+    );
+  }
+
+  const lines = ['import * as d3 from "d3";', ''];
+  lines.push(...buildPanelFunction(root, 'chart', ignoreUnsupported, 'export default '));
 
   return lines.join('\n');
 }

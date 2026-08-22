@@ -39,9 +39,25 @@ is_stat_summary_op <- function(op) op %in% names(.agg_stat_fun)
 
 stat_summary_fun_name <- function(op) .agg_stat_fun[[op]]
 
-aggregate_summarise_expr <- function(op, field) {
+aggregate_summarise_expr <- function(op, field, ignore_unsupported = FALSE) {
+  # `op` is normally a plain string, but Vega-Lite also allows a compound
+  # form for argmin/argmax (`{"argmax": "otherField"}`, selecting the row at
+  # that field's max rather than reducing to a scalar) -- a structurally
+  # different feature (a row *lookup*, not a summary statistic) with no
+  # equivalent here; `mean` is not a meaningful stand-in for it either, so
+  # this fails the same way in both modes rather than guessing.
+  if (!is.character(op) || length(op) != 1) {
+    stop(sprintf("Unsupported aggregate op: %s (compound argmin/argmax form not supported)", jsonlite::toJSON(op, auto_unbox = TRUE)))
+  }
   fn <- .agg_summarise[[op]]
   if (is.null(fn)) {
+    if (ignore_unsupported) {
+      # No base-R equivalent for this op (argmin/argmax, ci0/ci1, ...) --
+      # `mean` is a reasonable numeric stand-in when some summary value is
+      # needed to keep the chart rendering, closer to the original than an
+      # arbitrary constant.
+      return(.agg_summarise[["mean"]](field))
+    }
     stop(sprintf(
       "Unsupported aggregate op: \"%s\" (supported: %s)",
       op, paste(names(.agg_summarise), collapse = ", ")

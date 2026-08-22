@@ -39,9 +39,14 @@ is_supported_timeunit <- function(unit) {
   !is.null(key) && key %in% names(.timeunit_local)
 }
 
-timeunit_expr <- function(unit, date_expr) {
+timeunit_expr <- function(unit, date_expr, ignore_unsupported = FALSE) {
   key <- normalize_timeunit(unit)
   fn <- .timeunit_local[[key]]
-  if (is.null(fn)) stop(sprintf('Unsupported timeUnit: "%s"', unit))
+  if (is.null(fn)) {
+    # No bucketing/truncation applied -- the real (un-truncated) date is
+    # still a usable temporal value, just not grouped the way this unit asked for.
+    if (ignore_unsupported) return(date_expr)
+    stop(sprintf('Unsupported timeUnit: "%s"', unit))
+  }
   fn(date_expr)
 }
