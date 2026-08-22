@@ -154,6 +154,25 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       if (encoding.x2 && encoding.y2 && encoding.x.field && encoding.x2.field && encoding.y.field && encoding.y2.field) {
         return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
       }
+      // The other equally well-defined "rect" shapes: a plain calendar-
+      // heatmap/grid cell -- both x and y are band (ordinal/nominal, or
+      // binned-quantitative) scales with no x2/y2 range at all, so a full
+      // bandwidth-by-bandwidth box at each (x, y) pair is exactly what's
+      // wanted (renderBar's `xBand && yBand` branch); or the same shape but
+      // with both axes left as *continuous* temporal scales instead of
+      // banded (e.g. `type: "temporal"` + `timeUnit` with an explicit
+      // `bandPosition`, rather than `type: "ordinal"` + `timeUnit`) --
+      // renderBar's own per-axis "temporal bar width" estimate, applied to
+      // both axes at once, gives the same grid.
+      if (scales.x && scales.y && !encoding.x2 && !encoding.y2) {
+        const bothBand = scales.x.kind === 'band' && scales.y.kind === 'band';
+        const bothTemporal =
+          scales.x.kind === 'continuous' && scales.y.kind === 'continuous' &&
+          encoding.x.type === 'temporal' && encoding.y.type === 'temporal';
+        if (bothBand || bothTemporal) {
+          return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+        }
+      }
       if (ignoreUnsupported) {
         return renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
       }
@@ -244,8 +263,20 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   // xOffset at all.
   const xOffsetAmbiguous = xAmbiguous && encoding.xOffset && scales.xOffset && scales.xOffset.conditional;
   const yOffsetAmbiguous = yAmbiguous && encoding.yOffset && scales.yOffset && scales.yOffset.conditional;
+  // A "rect" grid whose axes are both left as continuous temporal scales
+  // (rather than banded) instead of one bar-shaped value axis: neither
+  // axis has a real bandwidth to size a box against, so both need their
+  // own estimated width (same idea as xTemporalBar/yTemporalBar below,
+  // just applied to both axes at once, hence its own distinct pair of
+  // `const` names -- xBarWidthVar/yBarWidthVar are the same identifier and
+  // would collide with each other if declared side by side).
+  const xyBothTemporalBand = xTemporalBar && yTemporalBar && !encoding.x2 && !encoding.y2;
   let needsWidthBlock = false;
-  if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
+  if (xyBothTemporalBand) {
+    lines.push(temporalBarWidthDecl('xBarWidth2', 'x', dataVar, encoding.x.field));
+    lines.push(temporalBarWidthDecl('yBarWidth2', 'y', dataVar, encoding.y.field));
+    needsWidthBlock = true;
+  } else if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
     needsWidthBlock = true;
   } else if (yTemporalBar && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
@@ -271,7 +302,12 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   lines.push(`  .join("rect")`);
   if (rowDependent) lines.push(`    .attr("fill", d => ${fill})`);
 
-  if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
+  if (xyBothTemporalBand) {
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - xBarWidth2 / 2)`);
+    lines.push(`    .attr("width", xBarWidth2)`);
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - yBarWidth2 / 2)`);
+    lines.push(`    .attr("height", yBarWidth2)`);
+  } else if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
@@ -305,6 +341,15 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("height", ${yBarWidthVar})`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+  } else if (xBand && yBand && !encoding.x2 && !encoding.y2) {
+    // Both axes are bands with no value/range channel at all -- a
+    // heatmap/grid cell: a full bandwidth-by-bandwidth box at each (x, y)
+    // category pair (as opposed to every other branch here, which sizes a
+    // bar's length from a zero baseline along one axis).
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+    lines.push(`    .attr("width", x.bandwidth())`);
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+    lines.push(`    .attr("height", y.bandwidth())`);
   } else if (xBand && !yBand && encoding.y && !encoding.y2 && encoding.xOffset && scales.xOffset) {
     // Dodged/grouped bars: an inner band scale (see scales.js's
     // resolveOffsetScale) slices the outer category band into one

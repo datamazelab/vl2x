@@ -16,8 +16,6 @@
 
 ===== bar_layered_weather.vl.json [NaN geometry: 60 shape(s), tags=rect] =====
 
-===== bar_ranged_offset_quantitative.vl.json [NaN geometry: 8 shape(s), tags=rect] =====
-
 ===== boxplot_1D_invalid.vl.json [NaN geometry: 6 shape(s), tags=line] =====
 
 ===== facet_bullet.vl.json [NaN geometry: 25 shape(s), tags=rect] =====

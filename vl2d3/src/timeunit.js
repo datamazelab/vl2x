@@ -6,17 +6,37 @@
 // Vega-Lite treats them as still-temporal (rather than the `utc*`/ordinal
 // variants some units support -- those aren't specially handled here and
 // fall back to the plain local-time unit of the same name).
+//
+// A single-component unit that doesn't include "year" (`month`, `date`,
+// `quarter`, `hours`, `minutes`, `seconds`) is a *cyclic* bucket -- e.g.
+// `month` alone means "which of the 12 months", collapsing every year in
+// the data down to the same 12 buckets, not "the first of this month in
+// this particular year". Every OTHER component of the resulting Date must
+// therefore be pinned to the same constant for every row (not carried over
+// from the real value), or rows from different years/months never
+// collapse into the same bucket at all -- every row gets its own distinct,
+// ever-increasing key, which both explodes an ordinal axis out to
+// (effectively) one category per row instead of 12/31/24/etc, and --
+// because that ever-increasing key still correlates with real elapsed
+// time -- drags a second such axis along with it, producing a diagonal
+// smear on a 2D grid (e.g. a calendar heatmap binning both "date" and
+// "month") instead of a proper grid. `REF_YEAR` (a fixed, arbitrary leap
+// year, matching Vega's own convention) is only needed so `date`'s Feb 29
+// doesn't misbehave if this table is ever extended with a `monthdate`-style
+// combo; here it's just a constant, since date/month/quarter's *own*
+// non-extracted components are always fixed to Jan 1 regardless.
+const REF_YEAR = 2012;
 
 const local = {
   year: d => `new Date(${d}.getFullYear(), 0, 1)`,
-  quarter: d => `new Date(${d}.getFullYear(), Math.floor(${d}.getMonth() / 3) * 3, 1)`,
-  month: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), 1)`,
-  date: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate())`,
+  quarter: d => `new Date(${REF_YEAR}, Math.floor(${d}.getMonth() / 3) * 3, 1)`,
+  month: d => `new Date(${REF_YEAR}, ${d}.getMonth(), 1)`,
+  date: d => `new Date(${REF_YEAR}, 0, ${d}.getDate())`,
   day: d => `${d}.getDay()`,
   dayofyear: d => `Math.ceil((${d} - new Date(${d}.getFullYear(), 0, 0)) / 864e5)`,
-  hours: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate(), ${d}.getHours())`,
-  minutes: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate(), ${d}.getHours(), ${d}.getMinutes())`,
-  seconds: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate(), ${d}.getHours(), ${d}.getMinutes(), ${d}.getSeconds())`,
+  hours: d => `new Date(${REF_YEAR}, 0, 1, ${d}.getHours())`,
+  minutes: d => `new Date(${REF_YEAR}, 0, 1, 0, ${d}.getMinutes())`,
+  seconds: d => `new Date(${REF_YEAR}, 0, 1, 0, 0, ${d}.getSeconds())`,
   yearmonth: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), 1)`,
   yearmonthdate: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate())`,
   yearquarter: d => `new Date(${d}.getFullYear(), Math.floor(${d}.getMonth() / 3) * 3, 1)`,
