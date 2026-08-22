@@ -15,6 +15,23 @@
 
 .identifier_re <- "[A-Za-z_.][A-Za-z0-9_.]*"
 
+#' JS-style truthiness for a Vega-Lite string-expression filter
+#'
+#' A Vega-Lite `"filter": "datum.field"` expression (no comparison at all)
+#' relies on JS's truthy/falsy coercion -- `0`, `""`, `null`/`undefined`, and
+#' `NaN` are dropped, everything else kept. `dplyr::filter()` requires a
+#' strict logical vector, so every translated string-filter expression is
+#' wrapped in this at generated-code run time (a bare comparison already
+#' yields a logical, which this passes through unchanged modulo NA-as-FALSE).
+#' Exported (not just internal) because it is referenced by name from the
+#' standalone R code this package generates, which runs after `library(vl2ggplot)`.
+#' @export
+vl_truthy <- function(x) {
+  if (is.logical(x)) return(!is.na(x) & x)
+  if (is.character(x)) return(!is.na(x) & x != "")
+  !is.na(x) & x != 0
+}
+
 # R already has abs/sqrt/log/exp/sign/cos/sin/tan/atan under the same name;
 # these few differ from their Vega/JS spelling. toNumber/toBoolean/toString
 # are 1-argument type coercions with an exact base-R equivalent (unlike
@@ -40,10 +57,15 @@
 # isn't already a valid R identifier (e.g. it contains spaces).
 field_ref <- function(field) {
   # Vega-Lite "bullet chart" style specs use a field name like "ranges[2]" to
-  # index into a single row's array-valued cell -- not a real column name.
-  # Backtick-quoting it as a literal name would silently reference a
-  # nonexistent column, so fail loudly instead.
-  if (grepl("\\[[0-9]+\\]$", field)) {
+  # index into a single row's array-valued cell, and a compound-aggregate
+  # (argmin/argmax) result is referenced the same way with a string key
+  # (e.g. "argmax_US_Gross['Production Budget']") -- neither is a real
+  # column name. `flatten_bracket_fields()` (translator.R) rewrites the
+  # latter shape into a plain new field before it ever reaches here; a
+  # bracket-suffixed field that still arrives at this point (any other
+  # shape) would backtick-quote into a nonexistent column if allowed
+  # through, so fail loudly instead.
+  if (grepl("\\[[^][]*\\]$", field)) {
     stop(sprintf('Unsupported: bracket-indexed field reference "%s" is not supported', field))
   }
   # Per Vega-Lite's field convention, an unescaped "." means nested-object
@@ -367,8 +389,39 @@ translate_expr <- function(expr) {
 # itself to also flag "a fallback happened somewhere in here" for the
 # statement-level caller in transforms.R to turn into a "# vl2ggplot: ..."
 # comment.
+# A Vega-Lite field-predicate filter's comparison value is a plain scalar
+# almost always, but for a `timeUnit`-bucketed field it can instead be a
+# `DateTime` object (`{year: 2005, month: 1}`) naming date components --
+# distinguished from an ordinary list value (e.g. `oneOf`'s plain array,
+# unnamed once parsed) by having at least one recognized date-part name.
+.date_part_keys <- c("year", "quarter", "month", "date", "day", "hours", "minutes", "seconds", "milliseconds")
+
+is_date_time_object <- function(v) {
+  is.list(v) && any(.date_part_keys %in% names(v))
+}
+
+# The R Date/POSIXct construction for a Vega-Lite `DateTime` object,
+# matching the granularity `timeunit_expr`'s bucketing functions produce so
+# the two sides of a filter comparison are the same shape.
+date_time_object_expr <- function(v) {
+  year <- if (!is.null(v[["year"]])) v[["year"]] else as.integer(format(Sys.Date(), "%Y"))
+  month <- if (!is.null(v[["month"]])) v[["month"]] else 1
+  day <- if (!is.null(v[["date"]])) v[["date"]] else 1
+  has_time <- !is.null(v[["hours"]]) || !is.null(v[["minutes"]]) || !is.null(v[["seconds"]])
+  if (has_time) {
+    hour <- if (!is.null(v[["hours"]])) v[["hours"]] else 0
+    minute <- if (!is.null(v[["minutes"]])) v[["minutes"]] else 0
+    sec <- if (!is.null(v[["seconds"]])) v[["seconds"]] else 0
+    return(sprintf(
+      'as.POSIXct(sprintf("%%04d-%%02d-%%02d %%02d:%%02d:%%02d", %d, %d, %d, %d, %d, %d), tz = "UTC")',
+      year, month, day, hour, minute, sec
+    ))
+  }
+  sprintf('as.Date(sprintf("%%04d-%%02d-%%02d", %d, %d, %d))', year, month, day)
+}
+
 filter_to_expr <- function(filter, ignore_unsupported = FALSE, .notes = NULL) {
-  if (is.character(filter) && length(filter) == 1) return(translate_expr(filter))
+  if (is.character(filter) && length(filter) == 1) return(sprintf("vl_truthy(%s)", translate_expr(filter)))
 
   if (is.list(filter) && is.null(names(filter))) {
     if (ignore_unsupported) {
@@ -391,17 +444,30 @@ filter_to_expr <- function(filter, ignore_unsupported = FALSE, .notes = NULL) {
       return(paste0("!(", filter_to_expr(filter[["not"]], ignore_unsupported, .notes), ")"))
     }
     if (!is.null(filter[["field"]])) {
-      ref <- field_ref(filter[["field"]])
-      if (!is.null(filter[["equal"]])) return(sprintf("%s == %s", ref, format_value(filter[["equal"]])))
-      if (!is.null(filter[["lt"]])) return(sprintf("%s < %s", ref, format_value(filter[["lt"]])))
-      if (!is.null(filter[["lte"]])) return(sprintf("%s <= %s", ref, format_value(filter[["lte"]])))
-      if (!is.null(filter[["gt"]])) return(sprintf("%s > %s", ref, format_value(filter[["gt"]])))
-      if (!is.null(filter[["gte"]])) return(sprintf("%s >= %s", ref, format_value(filter[["gte"]])))
+      raw_ref <- field_ref(filter[["field"]])
+      has_time_unit <- !is.null(filter[["timeUnit"]])
+      if (has_time_unit && !is_supported_timeunit(filter[["timeUnit"]]) && !ignore_unsupported) {
+        stop(sprintf('Unsupported timeUnit: "%s"', filter[["timeUnit"]]))
+      }
+      ref <- if (has_time_unit) sprintf("(%s)", timeunit_expr(filter[["timeUnit"]], raw_ref, ignore_unsupported)) else raw_ref
+      # A `timeUnit`-bucketed field's comparison values are DateTime
+      # objects, not raw scalars -- compare via their own Date/POSIXct
+      # construction rather than format_value()-ing the list into a
+      # meaningless (and type-incompatible) literal.
+      cmp <- function(op, value) {
+        rhs <- if (is_date_time_object(value)) date_time_object_expr(value) else format_value(value)
+        sprintf("%s %s %s", ref, op, rhs)
+      }
+      if (!is.null(filter[["equal"]])) return(cmp("==", filter[["equal"]]))
+      if (!is.null(filter[["lt"]])) return(cmp("<", filter[["lt"]]))
+      if (!is.null(filter[["lte"]])) return(cmp("<=", filter[["lte"]]))
+      if (!is.null(filter[["gt"]])) return(cmp(">", filter[["gt"]]))
+      if (!is.null(filter[["gte"]])) return(cmp(">=", filter[["gte"]]))
       if (!is.null(filter[["range"]])) {
         rng <- filter[["range"]]
         parts <- character(0)
-        if (!is.null(rng[[1]])) parts <- c(parts, sprintf("%s >= %s", ref, format_value(rng[[1]])))
-        if (!is.null(rng[[2]])) parts <- c(parts, sprintf("%s <= %s", ref, format_value(rng[[2]])))
+        if (!is.null(rng[[1]])) parts <- c(parts, cmp(">=", rng[[1]]))
+        if (!is.null(rng[[2]])) parts <- c(parts, cmp("<=", rng[[2]]))
         return(if (length(parts)) paste(parts, collapse = " & ") else "TRUE")
       }
       one_of <- filter[["oneOf"]]

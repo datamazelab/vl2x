@@ -14,6 +14,8 @@
 // clear ReferenceError at chart-render time rather than silently producing
 // wrong output.
 
+import {isSupportedTimeUnit, timeUnitExpr} from './timeunit.js';
+
 const IDENTIFIER_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 
 // Vega expression functions that are plain global functions there but live
@@ -127,6 +129,32 @@ function rewriteIfCalls(s) {
 // equivalent and is deliberately left untranslated).
 const RENAME_FUNCS = {toNumber: 'Number', toBoolean: 'Boolean', toString: 'String'};
 
+// A Vega-Lite field-predicate filter's comparison value is a plain scalar
+// almost always, but for a `timeUnit`-bucketed field it can instead be a
+// `DateTime` object (`{year: 2005, month: 1}`) naming date components --
+// distinguished from an ordinary object value (which filters never really
+// use) by having at least one recognized date-part key.
+const DATE_PART_KEYS = ['year', 'quarter', 'month', 'date', 'day', 'hours', 'minutes', 'seconds', 'milliseconds'];
+
+function isDateTimeObject(v) {
+  return v != null && typeof v === 'object' && !Array.isArray(v) && DATE_PART_KEYS.some(k => k in v);
+}
+
+// The JS `new Date(...)` construction for a Vega-Lite `DateTime` object,
+// matching the granularity `timeUnitExpr`'s bucketing functions produce
+// (whole-second, local time) so the two sides of a filter comparison are
+// the same shape.
+function dateTimeObjectExpr(v) {
+  const year = v.year ?? new Date().getFullYear();
+  const month = (v.month ?? 1) - 1;
+  const date = v.date ?? 1;
+  const hours = v.hours ?? 0;
+  const minutes = v.minutes ?? 0;
+  const seconds = v.seconds ?? 0;
+  const ms = v.milliseconds ?? 0;
+  return `new Date(${year}, ${month}, ${date}, ${hours}, ${minutes}, ${seconds}, ${ms})`;
+}
+
 export function translateExpr(expr, rowVar = 'd') {
   if (typeof expr !== 'string') return expr;
   let out = expr.replace(DATE_FUNC_RE, (_, fn, arg) => `(${arg}).${DATE_FUNCS[fn]}()`);
@@ -174,17 +202,27 @@ export function filterToExpr(filter, rowVar = 'd', ignoreUnsupported = false) {
     if ('not' in filter) return `!(${filterToExpr(filter.not, rowVar, ignoreUnsupported)})`;
 
     if ('field' in filter) {
-      const ref = `${rowVar}[${JSON.stringify(filter.field)}]`;
-      if ('equal' in filter) return `${ref} === ${JSON.stringify(filter.equal)}`;
-      if ('lt' in filter) return `${ref} < ${JSON.stringify(filter.lt)}`;
-      if ('lte' in filter) return `${ref} <= ${JSON.stringify(filter.lte)}`;
-      if ('gt' in filter) return `${ref} > ${JSON.stringify(filter.gt)}`;
-      if ('gte' in filter) return `${ref} >= ${JSON.stringify(filter.gte)}`;
+      const rawRef = `${rowVar}[${JSON.stringify(filter.field)}]`;
+      const hasTimeUnit = filter.timeUnit !== undefined;
+      if (hasTimeUnit && !isSupportedTimeUnit(filter.timeUnit) && !ignoreUnsupported) {
+        throw new Error(`Unsupported timeUnit: "${filter.timeUnit}"`);
+      }
+      const ref = hasTimeUnit ? `(${timeUnitExpr(filter.timeUnit, rawRef, ignoreUnsupported)})` : rawRef;
+      // A `timeUnit`-bucketed field's comparison values are DateTime
+      // objects, not raw scalars -- compare via their own Date construction
+      // rather than JSON.stringify-ing the object into a meaningless literal.
+      const cmp = (op, value) =>
+        isDateTimeObject(value) ? `${ref}.getTime() ${op} (${dateTimeObjectExpr(value)}).getTime()` : `${ref} ${op} ${JSON.stringify(value)}`;
+      if ('equal' in filter) return cmp('===', filter.equal);
+      if ('lt' in filter) return cmp('<', filter.lt);
+      if ('lte' in filter) return cmp('<=', filter.lte);
+      if ('gt' in filter) return cmp('>', filter.gt);
+      if ('gte' in filter) return cmp('>=', filter.gte);
       if ('range' in filter) {
         const [lo, hi] = filter.range;
         const parts = [];
-        if (lo !== null && lo !== undefined) parts.push(`${ref} >= ${JSON.stringify(lo)}`);
-        if (hi !== null && hi !== undefined) parts.push(`${ref} <= ${JSON.stringify(hi)}`);
+        if (lo !== null && lo !== undefined) parts.push(cmp('>=', lo));
+        if (hi !== null && hi !== undefined) parts.push(cmp('<=', hi));
         return parts.join(' && ') || 'true';
       }
       if ('oneOf' in filter || 'in' in filter) {

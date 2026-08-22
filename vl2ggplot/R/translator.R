@@ -88,6 +88,46 @@ extract_date_function_fields <- function(expr) {
 # inherited data, not destructively to the shared variable every sibling
 # layer also reads, so a copy (`data2 <- data1`) is made first rather than
 # reassigning `inherited_data_var` in place.
+# A Vega-Lite field name is normally a plain (possibly dotted/escaped)
+# property path, but a compound aggregate result (`argmin`/`argmax`, which
+# stores the *whole matching row* under its `as` name -- see aggops.R) is
+# instead referenced with bracket-index syntax into that nested value, e.g.
+# `argmax_US_Gross['Production Budget']`. field_ref()/discrete_field_ref()
+# only ever look up a single flat column, so rather than teach every one of
+# their call sites a general field-path parser, detect this one shape up
+# front and flatten it into an ordinary new top-level column before any of
+# them ever see it.
+parse_bracket_field_path <- function(field) {
+  if (!is.character(field) || length(field) != 1) return(NULL)
+  m <- regmatches(field, regexec(paste0("^(", .identifier_re, ")((?:\\[(?:'[^']*'|\"[^\"]*\")\\])+)$"), field, perl = TRUE))[[1]]
+  if (length(m) == 0) return(NULL)
+  base <- m[2]
+  raw_keys <- regmatches(m[3], gregexpr("\\[[^]]*\\]", m[3]))[[1]]
+  keys <- gsub("^\\['|^\\[\"|'\\]$|\"\\]$", "", raw_keys)
+  list(base = base, keys = keys)
+}
+
+flatten_bracket_fields <- function(encoding, work_var) {
+  statements <- character(0)
+  rewritten <- encoding
+  for (ch in names(encoding)) {
+    def <- encoding[[ch]]
+    if (!is.list(def) || is.null(def$field)) next
+    parsed <- parse_bracket_field_path(def$field)
+    if (is.null(parsed)) next
+    flat_field <- paste0(parsed$base, "__", paste(gsub("[^A-Za-z0-9_]", "_", parsed$keys), collapse = "__"))
+    access_expr <- ".x"
+    for (k in parsed$keys) access_expr <- sprintf("%s[[%s]]", access_expr, render_string(k))
+    statements <- c(statements, sprintf(
+      "%s <- dplyr::mutate(%s, %s = sapply(%s, function(.x) %s))",
+      work_var, work_var, render_name(flat_field), field_ref(parsed$base), access_expr
+    ))
+    rewritten[[ch]] <- def
+    rewritten[[ch]]$field <- flat_field
+  }
+  list(statements = statements, encoding = rewritten)
+}
+
 prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL) {
   node_encoding <- node$encoding %||% list()
   geo_channel <- intersect(names(node_encoding), .geo_channels)
@@ -180,6 +220,10 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     if (length(coercion)) emit(emitter, coercion)
 
     if (!is.null(node$transform)) emit(emitter, render_transforms(node$transform, work_var, ignore_unsupported))
+
+    bracket_plan <- flatten_bracket_fields(encoding_effective, work_var)
+    if (length(bracket_plan$statements)) emit(emitter, bracket_plan$statements)
+    encoding_effective <- bracket_plan$encoding
   }
 
   mark_type <- mark_type0

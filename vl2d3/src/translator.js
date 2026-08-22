@@ -24,6 +24,11 @@ import {renderMark} from './marks.js';
 import {formatValue} from './literals.js';
 import {extractDateFunctionFields} from './expr.js';
 
+// Every function name runtime.js exports, in preference order for the
+// generated `import {...} from "./vl2d3-runtime.js"` line -- see
+// specToCode()'s conditional-import logic below.
+const RUNTIME_EXPORTS = ['vlPivot'];
+
 const UNSUPPORTED_COMPOSITIONS = ['facet', 'repeat', 'concat', 'hconcat', 'vconcat'];
 const GEO_CHANNELS = ['longitude', 'latitude', 'longitude2', 'latitude2'];
 
@@ -116,11 +121,50 @@ function collectInvalidFilterFields(encoding, transformList) {
   const fields = new Set();
   for (const ch of INVALID_FILTER_CHANNELS) {
     const def = encoding[ch];
-    if (def && typeof def === 'object' && def.field && !produced.has(def.field) && (def.type === 'quantitative' || def.type === 'temporal')) {
-      fields.add(def.field);
-    }
+    if (!def || typeof def !== 'object' || !def.field || !(def.type === 'quantitative' || def.type === 'temporal')) continue;
+    // A bracket-indexed compound-aggregate reference (`argmax_x['y']`) reads
+    // out of a *produced* field (its base), even though the whole string
+    // isn't itself a key `collectProducedFields` ever added -- same "doesn't
+    // exist on the raw, pre-transform rows" trap as a plain produced field.
+    const bracketBase = parseBracketFieldPath(def.field)?.base;
+    if (produced.has(def.field) || (bracketBase && produced.has(bracketBase))) continue;
+    fields.add(def.field);
   }
   return [...fields];
+}
+
+// A Vega-Lite field name is normally a plain (possibly dotted/escaped)
+// property path, but a compound aggregate result (`argmin`/`argmax`, which
+// stores the *whole matching row* under its `as` name) is instead
+// referenced with bracket-index syntax into that nested object, e.g.
+// `argmax_US_Gross['Production Budget']`. Every mark/scale accessor in
+// this codebase turns a channel's `field` into a single `d[JSON.stringify(field)]`
+// property read, which can't express that nested lookup -- so rather than
+// teach every one of those call sites a general field-path parser, detect
+// this one shape up front and flatten it into an ordinary new top-level
+// field before any of them ever see it.
+function parseBracketFieldPath(field) {
+  const m = /^([A-Za-z_$][\w$]*)((?:\[(?:'[^']*'|"[^"]*")\])+)$/.exec(String(field));
+  if (!m) return null;
+  const keys = [...m[2].matchAll(/\[(?:'([^']*)'|"([^"]*)")\]/g)].map(km => km[1] ?? km[2]);
+  return {base: m[1], keys};
+}
+
+function flattenBracketFields(encoding, dataVar) {
+  const statements = [];
+  const rewritten = {...encoding};
+  for (const ch of Object.keys(encoding)) {
+    const def = encoding[ch];
+    if (!def || typeof def !== 'object' || !def.field) continue;
+    const parsed = parseBracketFieldPath(def.field);
+    if (!parsed) continue;
+    const flatField = `${parsed.base}__${parsed.keys.map(k => k.replace(/[^A-Za-z0-9_]/g, '_')).join('__')}`;
+    let expr = `d[${JSON.stringify(parsed.base)}]`;
+    for (const k of parsed.keys) expr = `(${expr} == null ? null : ${expr}[${JSON.stringify(k)}])`;
+    statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${JSON.stringify(flatField)}: ${expr}}));`);
+    rewritten[ch] = {...def, field: flatField};
+  }
+  return {statements, encoding: rewritten};
 }
 
 function renderInvalidFilter(dataVar, fields) {
@@ -206,6 +250,10 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
     renderTemporalCoercion(dataVar, temporalFields).forEach(b);
 
     if (child.transform) renderTransforms(child.transform, dataVar, ignoreUnsupported).forEach(b);
+
+    const {statements: bracketStmts, encoding: encodingAfterBracket} = flattenBracketFields(encodingIn, dataVar);
+    bracketStmts.forEach(b);
+    encodingIn = encodingAfterBracket;
 
     const {statements: prepStmts, encoding} = prepareEncoding(encodingIn, dataVar, ignoreUnsupported);
     prepStmts.forEach(b);
@@ -481,8 +529,21 @@ export function specToCode(spec, options = {}) {
     );
   }
 
-  const lines = ['import * as d3 from "d3";', ''];
-  lines.push(...buildPanelFunction(root, 'chart', ignoreUnsupported, 'export default '));
+  const bodyLines = buildPanelFunction(root, 'chart', ignoreUnsupported, 'export default ');
+
+  // A shared-runtime helper (see runtime.js) is only referenced by name in
+  // the generated body -- rather than thread a "which helpers were used"
+  // value through every render function that might need one, just check
+  // for each known helper's call syntax in the finished text and import
+  // only the ones actually present.
+  const bodyText = bodyLines.join('\n');
+  const neededRuntimeExports = RUNTIME_EXPORTS.filter(name => bodyText.includes(`${name}(`));
+
+  const lines = ['import * as d3 from "d3";'];
+  if (neededRuntimeExports.length > 0) {
+    lines.push(`import {${neededRuntimeExports.join(', ')}} from "./vl2d3-runtime.js";`);
+  }
+  lines.push('', ...bodyLines);
 
   return lines.join('\n');
 }

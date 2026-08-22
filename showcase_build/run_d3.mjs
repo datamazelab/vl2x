@@ -12,6 +12,7 @@ import {readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, createR
 import {join, basename, extname} from 'path';
 import {createServer} from 'http';
 import {fileURLToPath} from 'url';
+import {createHash} from 'crypto';
 import path from 'path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,6 +31,21 @@ const DATA_DIR = path.join(REPO, 'showcase/data');
 // ignore pattern.
 const SCRATCH_DIR = path.join(REPO, 'vl2d3/.scratch');
 mkdirSync(SCRATCH_DIR, {recursive: true});
+
+// Some generated chart.js files import a shared runtime helper module
+// (vl2d3/src/runtime.js -- see translator.js's specToCode()) via the
+// relative specifier "./vl2d3-runtime.js", so a plain copy needs to sit
+// next to every place a generated file importing it gets written: once
+// here (all scratch test files share this one flat directory), and again
+// per-example below (each example gets its own fresh output directory).
+const RUNTIME_JS = readFileSync(path.join(REPO, 'vl2d3/src/runtime.js'), 'utf8');
+writeFileSync(path.join(SCRATCH_DIR, 'vl2d3-runtime.js'), RUNTIME_JS);
+// The same same-URL-across-rebuilds staleness the outer d3.js already
+// guards against (see build_site.py's own d3.js cachebust) applies to this
+// import too -- a content-hash query on the specifier itself, baked in at
+// generation time, since the outer file's own cachebust query has no
+// effect on this separate nested request's cache key.
+const RUNTIME_HASH = createHash('md5').update(RUNTIME_JS).digest('hex').slice(0, 10);
 
 // A tiny static server over showcase/data/ so the generated code's
 // `d3.json`/`d3.csv`/`d3.tsv` calls (and any relative "data/xyz.png" image
@@ -62,6 +78,10 @@ for (let i = 0; i < files.length; i++) {
   try {
     const spec = JSON.parse(readFileSync(path.join(SPECS_DIR, files[i]), 'utf8'));
     code = vegaLiteToD3Code(spec, {ignoreUnsupported: true});
+    if (code.includes('./vl2d3-runtime.js')) {
+      code = code.replace('./vl2d3-runtime.js', `./vl2d3-runtime.js?v=${RUNTIME_HASH}`);
+      writeFileSync(path.join(outDir, 'vl2d3-runtime.js'), RUNTIME_JS);
+    }
     writeFileSync(path.join(outDir, 'd3.js'), code);
   } catch (e) {
     const msg = String(e.message || e).split('\n')[0];

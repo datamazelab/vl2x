@@ -23,15 +23,23 @@ const local = {
 };
 
 // Strip a leading "utc" prefix -- treated the same as the local-time unit
-// (a documented simplification: no timezone handling is performed).
+// (a documented simplification: no timezone handling is performed). A
+// leading "binned" prefix (e.g. "binnedyearmonth") marks a field Vega-Lite
+// expects to already contain bucket-boundary values -- applying the same
+// (idempotent, for genuinely pre-binned data) bucketing function as the
+// unprefixed unit is a safe, simpler stand-in for tracking bin continuity
+// specially.
 //
 // `unit` is usually a plain string, but Vega-Lite also allows a
 // `TimeUnitParams` object (`{"unit": "year", "step": 2}`, used for
 // e.g. binning into 2-year buckets). The `step`/other params are dropped --
 // only the base unit is honored -- rather than failing outright.
 function normalize(unit) {
-  const name = typeof unit === 'object' && unit !== null ? unit.unit : unit;
-  return typeof name === 'string' && name.startsWith('utc') ? name.slice(3) : name;
+  let name = typeof unit === 'object' && unit !== null ? unit.unit : unit;
+  if (typeof name !== 'string') return name;
+  if (name.startsWith('utc')) name = name.slice(3);
+  if (name.startsWith('binned')) name = name.slice(6);
+  return name;
 }
 
 export function isSupportedTimeUnit(unit) {

@@ -1,13 +1,23 @@
 # Map a Vega-Lite aggregate op name to (a) an R expression computing it over
 # a column, for use inside dplyr::summarise(), and (b) where possible, a
 # plain function-name string ggplot2's stat_summary(fun = ...) can call
-# directly. Only the common statistical ops are supported; percentile/
-# selection ops with no direct base-R equivalent (argmin/argmax, ci0/ci1)
-# throw a clear error at translate time rather than silently emitting wrong
+# directly. Only the common statistical ops are supported (plus argmin/
+# argmax, a row *lookup* rather than a scalar reduction -- see below);
+# percentile/selection ops with no direct base-R equivalent (ci0/ci1) throw
+# a clear error at translate time rather than silently emitting wrong
 # numbers.
 
 .agg_summarise <- list(
   count = function(field) "dplyr::n()",
+  # argmax/argmin store the *whole matching row* (every other column, not
+  # just `field`), because Vega-Lite lets a later `field` reference index
+  # into it (e.g. `argmax_Sales['Profit']`). `dplyr::pick(everything())`
+  # inside summarise() sees the group's pre-summarise rows; `as.list()`
+  # turns the one selected row into a plain named list so a later
+  # `flatten_bracket_fields()` mutate can pull an arbitrary column out of it
+  # with `[[...]]` (see translator.R).
+  argmax = function(field) sprintf("list(as.list(dplyr::slice_max(dplyr::pick(dplyr::everything()), %s, n = 1, with_ties = FALSE)))", field),
+  argmin = function(field) sprintf("list(as.list(dplyr::slice_min(dplyr::pick(dplyr::everything()), %s, n = 1, with_ties = FALSE)))", field),
   sum = function(field) sprintf("sum(%s, na.rm = TRUE)", field),
   mean = function(field) sprintf("mean(%s, na.rm = TRUE)", field),
   average = function(field) sprintf("mean(%s, na.rm = TRUE)", field),

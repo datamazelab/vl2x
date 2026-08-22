@@ -4,10 +4,13 @@
 //
 // The common statistical ops (plus distinct/valid/missing/q1/q3, which are
 // exactly expressible with plain JS/d3-array despite having no same-named
-// d3-array function) are supported; op-specific ops with no faithful
-// equivalent at all (argmin/argmax -- a row *lookup*, not a scalar
-// reduction; ci0/ci1 -- a bootstrap confidence interval) throw a clear
-// error at translate time rather than silently emitting wrong numbers.
+// d3-array function) are supported, as are argmin/argmax (a row *lookup* --
+// the whole row where `field` is smallest/largest -- rather than a scalar
+// reduction, so downstream field references into the result, e.g.
+// `argmax_field['Other Field']`, need their own handling; see
+// `flattenBracketFields` in translator.js). Ops with no faithful equivalent
+// at all (ci0/ci1 -- a bootstrap confidence interval) throw a clear error
+// at translate time rather than silently emitting wrong numbers.
 
 const OPS = {
   count: rows => `${rows}.length`,
@@ -24,6 +27,8 @@ const OPS = {
   sum2: (rows, acc) => `d3.sum(${rows}, ${acc})`,
   q1: (rows, acc) => `d3.quantile(${rows}, 0.25, ${acc})`,
   q3: (rows, acc) => `d3.quantile(${rows}, 0.75, ${acc})`,
+  argmax: (rows, acc) => `${rows}.reduce((best, r) => (best === null || (${acc})(r) > (${acc})(best)) ? r : best, null)`,
+  argmin: (rows, acc) => `${rows}.reduce((best, r) => (best === null || (${acc})(r) < (${acc})(best)) ? r : best, null)`,
   distinct: (rows, acc) => `new Set(${rows}.map(${acc})).size`,
   valid: (rows, acc) => `${rows}.map(${acc}).filter(v => v != null && !Number.isNaN(v)).length`,
   missing: (rows, acc) => `${rows}.map(${acc}).filter(v => v == null || Number.isNaN(v)).length`,

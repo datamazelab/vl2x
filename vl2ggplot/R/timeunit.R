@@ -28,10 +28,18 @@
 )
 
 # Strip a leading "utc" prefix -- treated the same as the local-time unit
-# (a documented simplification: no timezone handling is performed).
+# (a documented simplification: no timezone handling is performed). A
+# leading "binned" prefix (e.g. "binnedyearmonth") marks a field Vega-Lite
+# expects to already contain bucket-boundary values -- applying the same
+# (idempotent, for genuinely pre-binned data) bucketing function as the
+# unprefixed unit is a safe, simpler stand-in for tracking bin continuity
+# specially.
 normalize_timeunit <- function(unit) {
   name <- if (is.list(unit)) unit$unit else unit
-  if (is.character(name) && startsWith(name, "utc")) substring(name, 4) else name
+  if (!is.character(name)) return(name)
+  if (startsWith(name, "utc")) name <- substring(name, 4)
+  if (startsWith(name, "binned")) name <- substring(name, 7)
+  name
 }
 
 is_supported_timeunit <- function(unit) {

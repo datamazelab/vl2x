@@ -82,9 +82,9 @@ export default async function chart(container, options = {}) {
   data10 = data10.map(d => ({...d, "low_percent": (d['Low']/d.TotalLevel)}));
   data10 = data10.map(d => ({...d, "x": (0.5 * (2 * d.low_percent + d.medium_percent))}));
   data10 = data10.map(d => ({...d, "y": (0.866 * d.medium_percent)}));
-  data10 = data10.map(d => ({...d, "tooltip_high": (toString(isValid(d['High']) ? d['High'] : 0) + ' (' + toString(Math.round((isValid(d.high_percent) ? d.high_percent : 0) * 100, 1)) + '%)')}));
-  data10 = data10.map(d => ({...d, "tooltip_medium": (toString(isValid(d['Medium']) ? d['Medium'] : 0) + ' (' + toString(Math.round((isValid(d.medium_percent) ? d.medium_percent : 0) * 100, 1)) + '%)')}));
-  data10 = data10.map(d => ({...d, "tooltip_low": (toString(isValid(d['Low']) ? d['Low'] : 0) + ' (' + toString(Math.round((isValid(d.low_percent) ? d.low_percent : 0) * 100, 1)) + '%)')}));
+  data10 = data10.map(d => ({...d, "tooltip_high": (String(isValid(d['High']) ? d['High'] : 0) + ' (' + String(Math.round((isValid(d.high_percent) ? d.high_percent : 0) * 100, 1)) + '%)')}));
+  data10 = data10.map(d => ({...d, "tooltip_medium": (String(isValid(d['Medium']) ? d['Medium'] : 0) + ' (' + String(Math.round((isValid(d.medium_percent) ? d.medium_percent : 0) * 100, 1)) + '%)')}));
+  data10 = data10.map(d => ({...d, "tooltip_low": (String(isValid(d['Low']) ? d['Low'] : 0) + ' (' + String(Math.round((isValid(d.low_percent) ? d.low_percent : 0) * 100, 1)) + '%)')}));
   data10 = data10.filter(d => d['City'] !== null);
   data10 = data10.map(d => ({...d, "leng": (length(d['City']))}));
   data10 = data10.map(d => ({...d, "Xleng": ((d.x*100 - length(d['City']))/100)}));
@@ -109,9 +109,9 @@ export default async function chart(container, options = {}) {
   data11 = data11.map(d => ({...d, "low_percent": (d['Low']/d.TotalLevel)}));
   data11 = data11.map(d => ({...d, "x": (0.5 * (2 * d.low_percent + d.medium_percent))}));
   data11 = data11.map(d => ({...d, "y": (0.866 * d.medium_percent)}));
-  data11 = data11.map(d => ({...d, "tooltip_high": (toString(isValid(d['High']) ? d['High'] : 0) + ' (' + toString(Math.round((isValid(d.high_percent) ? d.high_percent : 0) * 100, 1)) + '%)')}));
-  data11 = data11.map(d => ({...d, "tooltip_medium": (toString(isValid(d['Medium']) ? d['Medium'] : 0) + ' (' + toString(Math.round((isValid(d.medium_percent) ? d.medium_percent : 0) * 100, 1)) + '%)')}));
-  data11 = data11.map(d => ({...d, "tooltip_low": (toString(isValid(d['Low']) ? d['Low'] : 0) + ' (' + toString(Math.round((isValid(d.low_percent) ? d.low_percent : 0) * 100, 1)) + '%)')}));
+  data11 = data11.map(d => ({...d, "tooltip_high": (String(isValid(d['High']) ? d['High'] : 0) + ' (' + String(Math.round((isValid(d.high_percent) ? d.high_percent : 0) * 100, 1)) + '%)')}));
+  data11 = data11.map(d => ({...d, "tooltip_medium": (String(isValid(d['Medium']) ? d['Medium'] : 0) + ' (' + String(Math.round((isValid(d.medium_percent) ? d.medium_percent : 0) * 100, 1)) + '%)')}));
+  data11 = data11.map(d => ({...d, "tooltip_low": (String(isValid(d['Low']) ? d['Low'] : 0) + ' (' + String(Math.round((isValid(d.low_percent) ? d.low_percent : 0) * 100, 1)) + '%)')}));
   data11 = data11.filter(d => d['City'] !== null);
   data11 = data11.map(d => ({...d, "leng": (length(d['City']))}));
   data11 = data11.map(d => ({...d, "Xleng": ((d.x*100 - length(d['City']))/100)}));

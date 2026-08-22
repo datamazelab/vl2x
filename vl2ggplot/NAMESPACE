@@ -1,1 +1,2 @@
 export(vegalite_to_ggplot)
+export(vl_truthy)

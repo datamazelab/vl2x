@@ -103,6 +103,9 @@ function renderOne(t, dataVar, ignoreUnsupported) {
   if ('fold' in t) {
     return renderFoldTransform(t, dataVar);
   }
+  if ('pivot' in t) {
+    return renderPivotTransform(t, dataVar);
+  }
   const kind = Object.keys(t)[0];
   if (ignoreUnsupported) {
     // Skip this one step -- the rest of the transform pipeline (and the
@@ -302,4 +305,21 @@ function renderFoldTransform(t, dataVar) {
   return [
     `${dataVar} = ${dataVar}.flatMap(d => ${fields}.map(f => ({...d, ${JSON.stringify(keyName)}: f, ${JSON.stringify(valueName)}: d[f]})));`,
   ];
+}
+
+// `pivot` (fold's inverse: rows -> columns) needs real per-group
+// bookkeeping (collect duplicates, aggregate them, keep a stable, possibly
+// limited column ordering) that would be error-prone to re-derive inline
+// on every call site -- delegated to the shared vlPivot() runtime helper
+// instead (see runtime.js); translator.js's specToCode() adds the import
+// this needs whenever the generated code actually calls it.
+function renderPivotTransform(t, dataVar) {
+  const opts = [
+    `field: ${JSON.stringify(t.pivot)}`,
+    `value: ${JSON.stringify(t.value)}`,
+    `groupby: ${JSON.stringify(t.groupby || [])}`,
+  ];
+  if (t.op) opts.push(`op: ${JSON.stringify(t.op)}`);
+  if (t.limit) opts.push(`limit: ${JSON.stringify(t.limit)}`);
+  return [`${dataVar} = vlPivot(${dataVar}, {${opts.join(', ')}});`];
 }

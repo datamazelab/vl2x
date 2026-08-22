@@ -50,6 +50,98 @@ chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)"
 
 chart
 
+===== interactive_bin_extent_bottom.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` requires a continuous x aesthetic.
+✖ the x aesthetic is discrete.
+ℹ Perhaps you want `stat="count"`?
+library(ggplot2)
+
+vconcat1_data <- jsonlite::fromJSON("data/flights-5k.json")
+vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
+vconcat1 <- ggplot2::ggplot(vconcat1_data)
+vconcat1 <- vconcat1 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 480, height = 150)
+vconcat2_data <- jsonlite::fromJSON("data/flights-5k.json")
+vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
+vconcat2 <- ggplot2::ggplot(vconcat2_data)
+vconcat2 <- vconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 480, height = 50)
+chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
+
+
+chart
+
+===== interactive_bin_extent.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` requires a continuous x aesthetic.
+✖ the x aesthetic is discrete.
+ℹ Perhaps you want `stat="count"`?
+library(ggplot2)
+
+vconcat1_data <- jsonlite::fromJSON("data/flights-5k.json")
+vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+vconcat1_data <- dplyr::mutate(vconcat1_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
+vconcat1 <- ggplot2::ggplot(vconcat1_data)
+vconcat1 <- vconcat1 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 963, height = 100)
+vconcat2_data <- jsonlite::fromJSON("data/flights-5k.json")
+vconcat2_data <- dplyr::mutate(vconcat2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+vconcat2_data <- dplyr::mutate(vconcat2_data, time = paste0(as.integer(format(date, "%H")), as.integer(format(date, "%M")) / 60))
+vconcat2 <- ggplot2::ggplot(vconcat2_data)
+vconcat2 <- vconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = time), bins = 30)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 963, height = 100)
+chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
+
+
+chart
+
 ===== isotype_bar_chart_emoji.vl.json [EXEC] =====
 <text>:9:63: unexpected ','
 8: )
@@ -204,63 +296,11 @@ chart <- chart + ggplot2::geom_point(
 
 chart
 
-===== waterfall_chart.vl.json [EXEC] =====
-ℹ In argument: `text_amount = +...`.
-Caused by error in `"+":""`:
-! NA/NaN argument
-library(ggplot2)
-
-layer_data <- data.frame(
-  label = c("Begin", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "End"),
-  amount = c(4000, 1707, -1425, -1030, 1812, -1067, -1481, 1228, 1176, 1146, 1205, -1388, 1492, 0),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-layer_data <- dplyr::mutate(layer_data, sum = sum(amount, na.rm = TRUE))
-layer_data <- dplyr::ungroup(layer_data)
-layer_data <- dplyr::mutate(layer_data, lead = dplyr::lead(label, n = 1))
-layer_data <- dplyr::ungroup(layer_data)
-layer_data <- dplyr::mutate(layer_data, lead = ifelse(lead == NA, label, lead))
-layer_data <- dplyr::mutate(layer_data, previous_sum = ifelse(label == 'End', 0, sum - amount))
-layer_data <- dplyr::mutate(layer_data, amount = ifelse(label == 'End', sum, amount))
-layer_data <- dplyr::mutate(layer_data, text_amount = (label != 'Begin' & label != 'End' & amount > 0 ? '+' : '') + amount)
-layer_data <- dplyr::mutate(layer_data, center = (sum + previous_sum) / 2)
-chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = factor(label)))
-layer1_data <- layer_data
-chart <- chart + ggplot2::geom_linerange(
-  data = layer1_data,
-  mapping = ggplot2::aes(x = factor(label), ymin = previous_sum, ymax = sum),
-  fill = "#93c4aa"
-)
-layer2_data <- layer_data
-chart <- chart + ggplot2::geom_segment(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = factor(label), y = sum, xend = lead, yend = sum),
-  colour = 2,
-  alpha = 1,
-  linewidth = 2
-)
-layer3_data <- layer_data
-chart <- chart + ggplot2::geom_text(
-  data = layer3_data,
-  mapping = ggplot2::aes(x = factor(label), y = sum, label = factor(sum))
-)
-layer4_data <- layer_data
-chart <- chart + ggplot2::geom_text(
-  data = layer4_data,
-  mapping = ggplot2::aes(x = factor(label), y = center, label = factor(text_amount)),
-  colour = "white"
-)
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 450)
-
-
-chart
-
 ===== wheat_wages.vl.json [EXEC] =====
-<text>:47:76: unexpected input
+<text>:47:83: unexpected input
 46: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
-47: layer6_data <- dplyr::mutate(layer6_data, offset = ((!commonwealth & index % 2) ? -1: 1) * 2 + 95)
-                                                                               ^
+47: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
+                                                                                      ^
 library(ggplot2)
 
 layer_data <- jsonlite::fromJSON("data/wheat.json")
@@ -307,7 +347,7 @@ chart <- chart + ggplot2::geom_line(
   colour = "#EE8182"
 )
 layer6_data <- jsonlite::fromJSON("data/monarchs.json")
-layer6_data <- dplyr::mutate(layer6_data, offset = ((!commonwealth & index % 2) ? -1: 1) * 2 + 95)
+layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
 layer6_data <- dplyr::mutate(layer6_data, y = 95)
 chart <- chart + ggplot2::geom_rect(
   data = layer6_data,
@@ -315,7 +355,7 @@ chart <- chart + ggplot2::geom_rect(
   colour = "#000"
 )
 layer7_data <- jsonlite::fromJSON("data/monarchs.json")
-layer7_data <- dplyr::mutate(layer7_data, off2 = ((!commonwealth & index % 2) ? -1: 1) + 95)
+layer7_data <- dplyr::mutate(layer7_data, off2 = (ifelse((!commonwealth & index % 2), -1, 1)) + 95)
 layer7_data <- dplyr::mutate(layer7_data, x = +start + (+end - +start)/2)
 chart <- chart + ggplot2::geom_text(
   data = layer7_data,
