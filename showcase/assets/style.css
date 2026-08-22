@@ -347,6 +347,16 @@ details.spec-toggle pre {
   background: #fff;
 }
 
+/* A `"width": "container"` spec (vega-lite sizes it via a ResizeObserver on
+   its mount element's own box) needs that element to actually have a
+   defined width -- otherwise, as a bare flex child with no width/content of
+   its own, it measures 0 and the chart renders invisibly at zero width.
+   Giving the mount point 100% width is harmless for a fixed-width spec too
+   (only "container"-sized specs read the parent's width at all). */
+.hero-vis > div, .render-wrap > div {
+  width: 100%;
+}
+
 .render-wrap img { max-width: 100%; height: auto; display: block; }
 
 .render-note {
