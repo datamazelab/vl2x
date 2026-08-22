@@ -482,9 +482,21 @@ translate_facet <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 
 translate_repeat <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   rep_fields <- spec[["repeat"]]
+  # `{"repeat": {"layer": [...]}}` -- unlike a row/column repeat (independent
+  # side-by-side panels), this repeats the *same* spec once per value as
+  # additional layers of one single combined plot (e.g. one line per stock
+  # symbol, all sharing the same axes) -- a completely different shape from
+  # the row/column grid below, so it's dispatched to its own function rather
+  # than (as before) being silently misrouted into the row/column branch,
+  # which has no "layer" key to find and left the `{"repeat": "layer"}`
+  # placeholder inside the spec never substituted at all.
+  is_layer_repeat <- is.list(rep_fields) && !is.null(rep_fields[["layer"]])
+  if (is_layer_repeat) {
+    return(translate_repeat_layer(spec, emitter, hint, ignore_unsupported))
+  }
   is_row_col <- is.list(rep_fields) && !is.null(names(rep_fields))
   if (is_row_col && !ignore_unsupported) {
-    stop("Unsupported: repeat with row/column/layer mapping is not yet supported (only a flat repeat field list is)")
+    stop("Unsupported: repeat with row/column mapping is not yet supported (only a flat repeat field list is)")
   }
 
   list_var <- new_var(emitter, paste0(hint, "_plots"))
@@ -525,10 +537,70 @@ translate_repeat <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   plot_var
 }
 
+# `{"repeat": {"layer": [v1, v2, ...]}}`: render one combined plot with one
+# (or more, if `spec.spec` is itself a `layer` composition -- e.g. a
+# halo-plus-line pair repeated per series) layer added per repeated value,
+# via prepare_unit()/render_geom_layer() directly (mirroring translate_layer's
+# own per-child loop) rather than translate_spec() + patchwork -- there's no
+# independent panel to lay out here, just more layers on one shared plot.
+translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
+  layer_values <- spec[["repeat"]][["layer"]]
+  base_hint <- if (identical(hint, "chart")) "layer" else hint
+  plot_var <- new_var(emitter, hint)
+  emit(emitter, sprintf("%s <- ggplot2::ggplot()", plot_var))
+
+  encodings_for_scales <- list()
+  facet_def <- NULL
+  i <- 0
+  for (val in layer_values) {
+    child_spec <- inherit_wrapper(substitute_repeat_fields(spec$spec, list(layer = val)), spec)
+    units <- if (!is.null(child_spec$layer)) {
+      unlist(
+        lapply(child_spec$layer, flatten_layers, wrapper = list(data = child_spec$data, transform = child_spec$transform)),
+        recursive = FALSE
+      )
+    } else {
+      list(child_spec)
+    }
+    for (unit in units) {
+      i <- i + 1
+      prepared <- prepare_unit(unit, emitter, sprintf("%s%d", base_hint, i), ignore_unsupported = ignore_unsupported)
+      if (is.null(prepared$data_var)) stop("A view must have a data source")
+      geom <- render_geom_layer(
+        prepared$mark, prepared$encoding, prepared$data_var,
+        list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram),
+        ignore_unsupported
+      )
+      emit(emitter, geom$notes)
+      emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
+
+      mark_type_i <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
+      enc <- prepared$encoding
+      attr(enc, "mark_type") <- mark_type_i
+      encodings_for_scales[[length(encodings_for_scales) + 1]] <- enc
+      if (is.null(facet_def)) facet_def <- extract_facet_channels(prepared$original_encoding)
+    }
+  }
+
+  apply_common(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported)
+  if (!is.null(facet_def)) {
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def)))
+  }
+  plot_var
+}
+
 substitute_repeat_field <- function(node, field) {
   if (is.list(node)) {
     if (!is.null(node[["repeat"]]) && is.character(node[["repeat"]]) && length(node) == 1) return(field)
-    for (n in names(node)) node[[n]] <- substitute_repeat_field(node[[n]], field)
+    # `seq_along()`, not `names(node)`: a JSON *array* (e.g. a `layer` or
+    # `hconcat` list of child specs) parses as an unnamed R list, whose
+    # `names()` is NULL -- `for (n in names(node))` then iterates zero
+    # times, silently skipping every element inside it. That left any
+    # `{"repeat": ...}` placeholder nested inside a repeated spec's array
+    # properties (almost always exactly where they live, e.g.
+    # `spec.layer[i].encoding.y.field`) never substituted at all.
+    # `seq_along()` walks every element either way, named or not.
+    for (i in seq_along(node)) node[[i]] <- substitute_repeat_field(node[[i]], field)
   }
   node
 }
@@ -542,7 +614,7 @@ substitute_repeat_fields <- function(node, values) {
     if (!is.null(rep_key) && is.character(rep_key) && length(node) == 1 && rep_key %in% names(values)) {
       return(values[[rep_key]])
     }
-    for (n in names(node)) node[[n]] <- substitute_repeat_fields(node[[n]], values)
+    for (i in seq_along(node)) node[[i]] <- substitute_repeat_fields(node[[i]], values)
   }
   node
 }

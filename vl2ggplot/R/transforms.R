@@ -63,6 +63,17 @@ render_one_transform <- function(t, var_name, ignore_unsupported = FALSE) {
   if (!is.null(t$aggregate)) {
     return(render_aggregate_transform(t, var_name, ignore_unsupported))
   }
+  if (!is.null(t$density)) {
+    return(render_density_transform(t, var_name))
+  }
+  if (!is.null(t$window)) {
+    supported <- all(vapply(t$window, function(w) is_supported_window_op(w$op), logical(1)))
+    if (!supported && !ignore_unsupported) {
+      bad <- Filter(Negate(is_supported_window_op), vapply(t$window, function(w) w$op, character(1)))
+      stop(sprintf('Unsupported window op: "%s"', bad[1]))
+    }
+    return(render_window_transform(t, var_name, ignore_unsupported))
+  }
   if (ignore_unsupported) {
     # Skip this one step -- the rest of the transform pipeline (and the
     # chart as a whole) still runs on whatever data shape existed before it,
@@ -108,6 +119,181 @@ render_aggregate_transform <- function(t, var_name, ignore_unsupported = FALSE) 
   )
 }
 
+# Vega-Lite's `density` transform: a kernel density estimate of one field,
+# replacing the data with (by default) `value`/`density` sample points
+# tracing the estimated curve -- optionally per `groupby` group. R's
+# `stats::density()` computes exactly this (a real KDE, not an
+# approximation), so this is genuinely supported rather than a sacrifice:
+#   - `bandwidth` maps directly to `bw`; omitted, both Vega-Lite and R's
+#     "nrd0" default fall back to a similar Silverman's-rule-of-thumb
+#     automatic bandwidth (not bit-for-bit identical, but the same idea).
+#   - `extent` maps to `from`/`to`; omitted, both sides estimate over the
+#     data's own range (plus a small margin).
+#   - `steps` maps to `n` (defaulting to 200, Vega-Lite's own default,
+#     rather than R's usual 512, for closer visual parity).
+#   - `counts: true` rescales the density curve so its area equals the
+#     sample count instead of integrating to 1 (Vega-Lite's own definition).
+#   - `groupby` computes one density curve per distinct combination of
+#     those fields, via dplyr::group_modify() (which conveniently
+#     re-attaches the grouping columns to each group's output rows itself).
+render_density_transform <- function(t, var_name) {
+  field <- t$density
+  as_names <- if (!is.null(t$as) && length(t$as) == 2) t$as else c("value", "density")
+  value_name <- render_name(as_names[1])
+  density_name <- render_name(as_names[2])
+  bw_arg <- if (!is.null(t$bandwidth)) format_value(t$bandwidth) else '"nrd0"'
+  n_arg <- if (!is.null(t$steps)) format_value(t$steps) else "200"
+  extent_arg <- if (!is.null(t$extent)) {
+    sprintf(", from = %s, to = %s", format_value(t$extent[[1]]), format_value(t$extent[[2]]))
+  } else {
+    ""
+  }
+  density_call <- function(data_var) {
+    field_expr <- sprintf("%s[[%s]]", data_var, render_string(field))
+    y_expr <- if (isTRUE(t$counts)) {
+      sprintf(".k$y * length(stats::na.omit(%s))", field_expr)
+    } else {
+      ".k$y"
+    }
+    sprintf(
+      "{ .k <- stats::density(%s, bw = %s, n = %s%s, na.rm = TRUE); data.frame(%s = .k$x, %s = %s) }",
+      field_expr, bw_arg, n_arg, extent_arg, value_name, density_name, y_expr
+    )
+  }
+
+  groupby <- t$groupby
+  if (is.null(groupby) || length(groupby) == 0) {
+    return(sprintf("%s <- (function(.d) %s)(%s)", var_name, density_call(".d"), var_name))
+  }
+  # group_modify()'s formula body sees the group's rows as `.x` (and the
+  # group's key columns, unused here, as `.y`) -- and conveniently
+  # re-attaches those key columns to each group's output rows itself, so
+  # the groupby fields survive into the replaced data with no extra work.
+  group_args <- paste(vapply(groupby, field_ref, character(1)), collapse = ", ")
+  c(
+    sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, group_args),
+    sprintf("%s <- dplyr::group_modify(%s, ~ %s)", var_name, var_name, density_call(".x")),
+    sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name)
+  )
+}
+
+# Vega-Lite's `window` transform: SQL-window-function-style per-row derived
+# fields, computed within `groupby` partitions ordered by `sort`. Supports:
+#   - row_number/rank/dense_rank (no `field`/`frame` needed -- purely
+#     positional, based on partition order).
+#   - lag/lead (an earlier/later row's own value, `param` rows away,
+#     defaulting to 1).
+#   - sum/mean/average/count/min/max/median (a `frame`-bounded aggregate:
+#     `[null, null]` -- Vega-Lite's own default when `frame` is omitted --
+#     is a whole-partition aggregate broadcast to every row; `[null, 0]`
+#     is a running/cumulative aggregate from the partition's start through
+#     the current row; any other numeric bound is a genuine sliding window
+#     `frame[0]` rows before to `frame[1]` rows after the current one).
+# Percentile/selection ops with no simple base-R equivalent (percent_rank,
+# cume_dist, ntile, first_value/last_value/nth_value) aren't supported.
+.window_positional_ops <- c("row_number", "rank", "dense_rank", "lag", "lead")
+.window_aggregate_ops <- c("sum", "mean", "average", "count", "min", "max", "median")
+
+is_supported_window_op <- function(op) op %in% c(.window_positional_ops, .window_aggregate_ops)
+
+# The R expression (evaluated inside a dplyr::mutate() on the already
+# sorted/grouped data) for one frame-bounded aggregate window field.
+window_aggregate_expr <- function(op, field, frame) {
+  f <- field_ref(field)
+  whole_partition <- is.null(frame) || (is.null(frame[[1]]) && is.null(frame[[2]]))
+  cumulative <- !is.null(frame) && is.null(frame[[1]]) && identical(frame[[2]], 0)
+
+  base_fn <- switch(op,
+    sum = "sum", mean = , average = "mean", count = NA, min = "min", max = "max", median = "median"
+  )
+  if (whole_partition) {
+    if (op == "count") return("dplyr::n()")
+    return(sprintf("%s(%s, na.rm = TRUE)", base_fn, f))
+  }
+  if (cumulative) {
+    return(switch(op,
+      sum = sprintf("cumsum(%s)", f),
+      count = "dplyr::row_number()",
+      min = sprintf("cummin(%s)", f),
+      max = sprintf("cummax(%s)", f),
+      # mean/average/median have no base-R cumulative version -- computed
+      # directly from the running window bounds instead, same as the
+      # general sliding-window case just below.
+      sprintf(
+        "vapply(seq_along(%s), function(.i) %s(%s[seq_len(.i)], na.rm = TRUE), numeric(1))",
+        f, if (op == "median") "median" else "mean", f
+      )
+    ))
+  }
+  # A genuine sliding window: `frame[1]` rows before to `frame[2]` rows
+  # after the current row (either bound `NULL` means "to the partition's
+  # own start/end"), recomputed at every row via a plain (uncompiled, but
+  # this only runs once per chart render, not performance-critical) loop.
+  lo_arg <- if (is.null(frame[[1]])) "1" else sprintf("max(1, .i + (%s))", format_value(frame[[1]]))
+  hi_arg <- if (is.null(frame[[2]])) "dplyr::n()" else sprintf("min(dplyr::n(), .i + (%s))", format_value(frame[[2]]))
+  agg_fn <- if (op == "count") "length" else if (op %in% c("mean", "average")) "mean" else base_fn
+  sprintf(
+    "vapply(seq_len(dplyr::n()), function(.i) %s(%s[(%s):(%s)], na.rm = TRUE), numeric(1))",
+    agg_fn, f, lo_arg, hi_arg
+  )
+}
+
+render_window_transform <- function(t, var_name, ignore_unsupported = FALSE) {
+  groupby <- t$groupby %||% list()
+  sort_spec <- t$sort %||% list()
+  has_group <- length(groupby) > 0
+  group_args <- if (has_group) paste(vapply(groupby, field_ref, character(1)), collapse = ", ") else NULL
+
+  stmts <- character(0)
+  if (has_group) {
+    stmts <- c(stmts, sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, group_args))
+  }
+  if (length(sort_spec) > 0) {
+    sort_args <- vapply(sort_spec, function(s) {
+      ref <- field_ref(s$field)
+      if (identical(s$order, "descending")) sprintf("dplyr::desc(%s)", ref) else ref
+    }, character(1))
+    by_group <- if (has_group) ", .by_group = TRUE" else ""
+    stmts <- c(stmts, sprintf("%s <- dplyr::arrange(%s, %s%s)", var_name, var_name, paste(sort_args, collapse = ", "), by_group))
+  }
+
+  ops <- vapply(t$window, function(w) w$op, character(1))
+  needs_ties <- any(ops %in% c("rank", "dense_rank"))
+  if (needs_ties) {
+    sort_fields <- if (length(sort_spec) > 0) vapply(sort_spec, function(s) field_ref(s$field), character(1)) else "dplyr::row_number()"
+    stmts <- c(stmts, sprintf("%s <- dplyr::mutate(%s, .win_rn = dplyr::row_number(), .win_tie = dplyr::consecutive_id(%s))", var_name, var_name, paste(sort_fields, collapse = ", ")))
+  }
+  if ("rank" %in% ops) {
+    regroup <- if (has_group) sprintf("%s, .win_tie", group_args) else ".win_tie"
+    stmts <- c(
+      stmts,
+      sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, regroup),
+      sprintf("%s <- dplyr::mutate(%s, .win_rank = min(.win_rn))", var_name, var_name),
+      if (has_group) sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, group_args) else sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name)
+    )
+  }
+
+  assigns <- vapply(t$window, function(w) {
+    as_name <- render_name(w$as)
+    expr <- switch(w$op,
+      row_number = "dplyr::row_number()",
+      rank = ".win_rank",
+      dense_rank = ".win_tie",
+      lag = sprintf("dplyr::lag(%s, n = %s)", field_ref(w$field), if (!is.null(w$param)) format_value(w$param) else "1"),
+      lead = sprintf("dplyr::lead(%s, n = %s)", field_ref(w$field), if (!is.null(w$param)) format_value(w$param) else "1"),
+      window_aggregate_expr(w$op, w$field, t$frame)
+    )
+    sprintf("%s = %s", as_name, expr)
+  }, character(1))
+  stmts <- c(stmts, sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", ")))
+
+  if (needs_ties) {
+    stmts <- c(stmts, sprintf("%s <- dplyr::select(%s, -.win_rn, -.win_tie)", var_name, var_name))
+  }
+  stmts <- c(stmts, sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name))
+  stmts
+}
+
 # ---- 2. inline encoding aggregate/bin/timeUnit ----
 
 
@@ -131,6 +317,38 @@ channel_entries <- function(encoding) {
 }
 
 out_field_name <- function(field, suffix) if (is.null(field)) suffix else paste0(suffix, "_", field)
+
+# See plan_layer_data()'s is_2d_bin check: both x and y binned, with a
+# `count` aggregate elsewhere -- `bins` takes the real per-axis maxbins
+# (falling back to ggplot2's own geom_bin2d()/stat_bin2d() default of 30
+# when a side doesn't specify one, matching how plan_histogram() already
+# falls back to a fixed bin count for the 1D case).
+plan_2d_bin <- function(mark_type, encoding, agg_keys) {
+  bin_count <- function(def) if (is.list(def$bin) && !is.null(def$bin$maxbins)) def$bin$maxbins else 30
+  x_bins <- bin_count(encoding$x)
+  y_bins <- bin_count(encoding$y)
+
+  rewritten <- encoding
+  rewritten$x$bin <- NULL
+  rewritten$y$bin <- NULL
+  extra_aes <- list()
+  for (k in agg_keys) {
+    rewritten[[k]] <- NULL
+    # "color" (unlike "size", which is already ggplot2's own aes name) needs
+    # the same fill-vs-colour routing build_layer_channels() uses for a
+    # real color encoding -- geom_tile (the "rect" mark's geom) only has a
+    # visible "fill"; geom_point only has "colour" (for its default,
+    # unbordered shape).
+    aes_name <- if (k == "color") color_channel_aes(mark_type) else k
+    extra_aes[[aes_name]] <- "ggplot2::after_stat(count)"
+  }
+
+  list(
+    statements = character(0), encoding = rewritten,
+    extra_fixed = list(stat = '"bin2d"', bins = sprintf("c(%d, %d)", x_bins, y_bins)),
+    extra_aes = extra_aes, use_histogram = FALSE
+  )
+}
 
 # Returns list(statements, encoding, extra_fixed, extra_aes, use_histogram).
 plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE) {
@@ -196,6 +414,21 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     }
     empty_plan$encoding <- rewritten
     return(empty_plan)
+  }
+
+  # A genuine 2D histogram/heatmap: both x and y are binned, with a `count`
+  # aggregate on some other channel (size, for a binned scatter, or color,
+  # for a rect/tile heatmap) -- ggplot2's stat_bin2d() computes exactly this
+  # natively (real 2D binning, not an approximation), overriding whichever
+  # geom the mark normally maps to (geom_tile for "rect", geom_point for
+  # "circle"/"point") with `stat = "bin2d"` and reading the count back via
+  # `after_stat(count)` -- so this is genuinely supported, not a sacrifice,
+  # and (like density()/window()) needs no ignore_unsupported gate at all.
+  is_2d_bin <- all(c("x", "y") %in% bin_keys) &&
+    length(agg_keys) > 0 &&
+    all(vapply(agg_keys, function(k) identical(encoding[[k]]$aggregate, "count"), logical(1)))
+  if (is_2d_bin) {
+    return(plan_2d_bin(mark_type, encoding, agg_keys))
   }
 
   # From here, at least one channel aggregates.

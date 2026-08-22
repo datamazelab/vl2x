@@ -32,7 +32,7 @@ build_position_scale <- function(channel, def) {
   fn <- paste0("ggplot2::scale_", channel, "_", kind)
   args <- character(0)
 
-  domain <- def$scale$domain
+  domain <- def$scale[["domain"]]
   if (!is.null(domain) && is.null(names(domain))) {
     if (kind == "date") {
       # A date-axis domain is still raw epoch-millisecond numbers here (the
@@ -62,8 +62,8 @@ build_position_scale <- function(channel, def) {
 build_color_scale <- function(aes_name, def) {
   kind <- axis_kind(def)
   scheme <- def$scale$scheme
-  domain <- def$scale$domain
-  range <- def$scale$range
+  domain <- def$scale[["domain"]]
+  range <- def$scale[["range"]]
 
   # An array of literal color values (e.g. ["red", "blue"]) selects a manual
   # discrete scale; a bare scheme-name string (e.g. "diverging", "ordinal")
@@ -97,7 +97,7 @@ build_color_scale <- function(aes_name, def) {
 .discretizing_scale_types <- c("quantile", "quantize", "threshold")
 
 build_size_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
-  range <- def$scale$range
+  range <- def$scale[["range"]]
   if (is.null(range)) return(character(0))
   # scale_size()'s range is a 2-element continuous interval, unlike Vega-Lite's
   # discretizing scale types (quantile/quantize/threshold), whose range is a
@@ -118,7 +118,7 @@ build_size_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
 }
 
 build_opacity_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
-  range <- def$scale$range
+  range <- def$scale[["range"]]
   if (is.null(range)) return(character(0))
   if (length(range) > 2 || (!is.null(def$scale$type) && def$scale$type %in% .discretizing_scale_types)) {
     if (ignore_unsupported) {

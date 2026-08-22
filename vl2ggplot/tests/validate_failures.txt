@@ -50,6 +50,39 @@ chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)"
 
 chart
 
+===== isotype_bar_chart_emoji.vl.json [EXEC] =====
+<text>:9:63: unexpected ','
+8: )
+9: chart_data <- dplyr::mutate(chart_data, emoji = {'cattle': '🐄',
+                                                                 ^
+library(ggplot2)
+
+chart_data <- data.frame(
+  country = c("Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States"),
+  animal = c("pigs", "pigs", "cattle", "cattle", "cattle", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "pigs", "pigs", "pigs", "pigs", "pigs", "pigs", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, emoji = {'cattle': '🐄', 'pigs': '🐖', 'sheep': '🐏'}[animal])
+chart_data <- dplyr::group_by(chart_data, country, animal)
+chart_data <- dplyr::mutate(chart_data, .win_rn = dplyr::row_number(), .win_tie = dplyr::consecutive_id(dplyr::row_number()))
+chart_data <- dplyr::group_by(chart_data, country, animal, .win_tie)
+chart_data <- dplyr::mutate(chart_data, .win_rank = min(.win_rn))
+chart_data <- dplyr::group_by(chart_data, country, animal)
+chart_data <- dplyr::mutate(chart_data, rank = .win_rank)
+chart_data <- dplyr::select(chart_data, -.win_rn, -.win_tie)
+chart_data <- dplyr::ungroup(chart_data)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_text(
+  mapping = ggplot2::aes(x = factor(rank), y = factor(animal), label = factor(emoji)),
+  size = 65
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 200)
+chart <- chart + ggplot2::facet_grid(rows = dplyr::vars(country))
+
+
+chart
+
 ===== layer_bar_labels_grey.vl.json [EXEC] =====
 Column name `Major Genre` must not be duplicated.
 Use `.name_repair` to specify repair.
@@ -126,7 +159,7 @@ layer1_data <- dplyr::mutate(layer1_data, start = if (is.numeric(start)) as.Date
 layer1_data <- dplyr::mutate(layer1_data, year_start = as.Date(format(start, "%Y-01-01")), year_end = as.Date(format(end, "%Y-01-01")))
 chart <- chart + ggplot2::geom_rect(
   data = layer1_data,
-  mapping = ggplot2::aes(colour = factor(event), xmin = year_start, xmax = year_end),
+  mapping = ggplot2::aes(fill = factor(event), xmin = year_start, xmax = year_end),
   ymin = -Inf,
   ymax = Inf
 )
@@ -167,6 +200,58 @@ chart <- chart + ggplot2::geom_point(
   colour = "#333"
 )
 # NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
+
+
+chart
+
+===== waterfall_chart.vl.json [EXEC] =====
+ℹ In argument: `text_amount = +...`.
+Caused by error in `"+":""`:
+! NA/NaN argument
+library(ggplot2)
+
+layer_data <- data.frame(
+  label = c("Begin", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "End"),
+  amount = c(4000, 1707, -1425, -1030, 1812, -1067, -1481, 1228, 1176, 1146, 1205, -1388, 1492, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer_data <- dplyr::mutate(layer_data, sum = sum(amount, na.rm = TRUE))
+layer_data <- dplyr::ungroup(layer_data)
+layer_data <- dplyr::mutate(layer_data, lead = dplyr::lead(label, n = 1))
+layer_data <- dplyr::ungroup(layer_data)
+layer_data <- dplyr::mutate(layer_data, lead = ifelse(lead == NA, label, lead))
+layer_data <- dplyr::mutate(layer_data, previous_sum = ifelse(label == 'End', 0, sum - amount))
+layer_data <- dplyr::mutate(layer_data, amount = ifelse(label == 'End', sum, amount))
+layer_data <- dplyr::mutate(layer_data, text_amount = (label != 'Begin' & label != 'End' & amount > 0 ? '+' : '') + amount)
+layer_data <- dplyr::mutate(layer_data, center = (sum + previous_sum) / 2)
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = factor(label)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_linerange(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = factor(label), ymin = previous_sum, ymax = sum),
+  fill = "#93c4aa"
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_segment(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = factor(label), y = sum, xend = lead, yend = sum),
+  colour = 2,
+  alpha = 1,
+  linewidth = 2
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = factor(label), y = sum, label = factor(sum))
+)
+layer4_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer4_data,
+  mapping = ggplot2::aes(x = factor(label), y = center, label = factor(text_amount)),
+  colour = "white"
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 450)
 
 
 chart

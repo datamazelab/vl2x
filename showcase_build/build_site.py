@@ -8,6 +8,7 @@ The landing page mirrors https://vega.github.io/vega-lite/examples/'s own
 category structure (see gallery_structure.py) for every example name that
 gallery lists, with everything else grouped into an "Additional Examples"
 catch-all by filename-prefix category."""
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -100,7 +101,15 @@ def main():
             vlapi={"ok": vlapi_status.get("ok", False), "error": vlapi_status.get("error", ""),
                    "code": read_code(example_dir, "vlapi.js")},
             d3={"ok": d3_status.get("ok", False), "translated": d3_status.get("translated", d3_status.get("ok", False)),
-                "error": d3_status.get("error", ""), "code": read_code(example_dir, "d3.js")},
+                "error": d3_status.get("error", ""), "code": read_code(example_dir, "d3.js"),
+                # A same-URL `import` of d3.js is exactly the kind of request
+                # browsers cache hardest (ES modules, no query string) -- a
+                # rebuild that changes d3.js's content but not its path can
+                # otherwise leave a browser silently running the *previous*
+                # build's module on a plain refresh. Busting on a hash of the
+                # actual content (not e.g. current time) means the URL only
+                # changes when the code actually did.
+                "cachebust": hashlib.md5(read_code(example_dir, "d3.js").encode()).hexdigest()[:10]},
             ggplot={"ok": ggplot_status.get("ok", False), "error": ggplot_status.get("error", ""),
                     "code": read_code(example_dir, "ggplot.R"), "has_png": has_png},
             prev_name=names[i - 1] if i > 0 else None,

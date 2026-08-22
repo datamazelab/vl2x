@@ -1,10 +1,20 @@
 # Translate a (prepare.R-rewritten) Vega-Lite `encoding` object into ggplot2
 # aes() mappings plus any fixed (non-aes) geom parameters.
 
-# Marks where Vega-Lite's generic "color" channel means fill color by
-# default (see the Vega-Lite encoding docs); everything else means stroke
-# ("colour" in ggplot2's spelling).
-.fill_marks <- c("bar", "area", "tick", "text", "trail", "circle", "square", "boxplot", "errorband", "arc")
+# Marks whose *ggplot2 geom* (see geoms.R's geom_function_name()) actually
+# has a "fill" aesthetic of its own -- not simply the marks where Vega-Lite's
+# own generic "color" channel is conceptually a fill color, since several of
+# those route to a ggplot2 geom with no such aesthetic at all:
+#   - circle/square/tick -> geom_point()'s default (solid, unbordered) shape
+#     only has "colour"; "fill" is silently ignored.
+#   - text -> geom_text() has no "fill" aesthetic at all (only "colour").
+#   - trail -> geom_line(), likewise colour-only.
+# Routing color to "fill" for any of those left every mark that color
+# through them rendering in the fixed default/black colour instead, with
+# the real per-row color silently dropped (also affects a mark-level
+# literal `color`/`fill`/`stroke` property, via mark_fixed_params() below,
+# which uses this same routing).
+.fill_marks <- c("bar", "area", "rect", "boxplot", "errorband", "arc")
 
 color_channel_aes <- function(mark_type) if (mark_type %in% .fill_marks) "fill" else "colour"
 

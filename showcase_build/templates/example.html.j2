@@ -138,7 +138,7 @@
 </script>
 {% if d3.translated %}
 <script type="module">
-  import chart from './d3.js';
+  import chart from './d3.js?v={{ d3.cachebust }}';
   const el = document.getElementById('vis-d3');
   try {
     const baseURL = new URL('../../', location.href).href;

@@ -5,9 +5,21 @@
 
 import {formatValue} from './literals.js';
 
+// Vega-Lite's own convention for inline `values`: an array of *primitive*
+// values (not row objects) is ingested as if each were `{"data": value}` --
+// e.g. `"values": [1, 2, 3]` means one row per number, each with a single
+// field named "data" (matching vl2ggplot's render_inline_values(), which
+// already does the same wrapping).
+function wrapPrimitiveValues(values) {
+  if (values.length === 0 || (values[0] !== null && typeof values[0] === 'object' && !Array.isArray(values[0]))) {
+    return values;
+  }
+  return values.map(v => ({data: v}));
+}
+
 export function renderDataLoad(data, dataVar, ignoreUnsupported = false) {
   if (data && Array.isArray(data.values)) {
-    return {statements: [`let ${dataVar} = ${formatValue(data.values)};`], isAsync: false};
+    return {statements: [`let ${dataVar} = ${formatValue(wrapPrimitiveValues(data.values))};`], isAsync: false};
   }
   if (data && typeof data.url === 'string') {
     const format = (data.format && data.format.type) || guessFormatFromUrl(data.url);

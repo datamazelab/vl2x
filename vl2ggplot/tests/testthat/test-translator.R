@@ -175,10 +175,27 @@ test_that("field names with spaces round-trip through backtick quoting", {
   expect_equal(nrow(r$built$data[[1]]), 2)
 })
 
+test_that("repeat with layer mapping produces one combined multi-layer plot", {
+  spec <- spec_from_json('{
+    "data": {"values": [{"x": 1, "a": 2, "b": 3}, {"x": 2, "a": 4, "b": 6}]},
+    "repeat": {"layer": ["a", "b"]},
+    "spec": {
+      "mark": "line",
+      "encoding": {
+        "x": {"field": "x", "type": "quantitative"},
+        "y": {"field": {"repeat": "layer"}, "type": "quantitative"}
+      }
+    }
+  }')
+  r <- run_spec(spec)
+  expect_equal(length(r$built$data), 2)
+  expect_false(grepl("wrap_plots", r$code))
+})
+
 test_that("facet/repeat throw a clear error for unsupported shapes", {
   spec <- spec_from_json('{
     "repeat": {"row": ["a"], "column": ["b"]},
     "spec": {"mark": "point", "encoding": {}}
   }')
-  expect_error(vegalite_to_ggplot(spec), "row/column/layer mapping")
+  expect_error(vegalite_to_ggplot(spec), "row/column mapping")
 })

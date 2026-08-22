@@ -42,7 +42,13 @@ mark_fixed_params <- function(mark_props, mark_type, ignore_unsupported = FALSE,
   if (!is.null(mark_props$fill)) fixed[["fill"]] <- simple_color_value(mark_props$fill, ignore_unsupported, .notes)
   if (!is.null(mark_props$stroke)) fixed[["colour"]] <- simple_color_value(mark_props$stroke, ignore_unsupported, .notes)
   if (!is.null(mark_props$opacity)) fixed[["alpha"]] <- format_value(mark_props$opacity)
-  if (!is.null(mark_props$strokeWidth)) fixed[["linewidth"]] <- format_value(mark_props$strokeWidth)
+  if (!is.null(mark_props$strokeWidth)) {
+    # geom_point()'s border-thickness aesthetic is "stroke", not
+    # "linewidth" (that's for a line/area/bar's own line thickness, which
+    # is what every other mark type here maps onto a geom that has).
+    stroke_width_aes <- if (mark_type %in% c("point", "circle", "square", "tick")) "stroke" else "linewidth"
+    fixed[[stroke_width_aes]] <- format_value(mark_props$strokeWidth)
+  }
   if (!is.null(mark_props$size) && !(mark_type %in% c("bar", "area", "line"))) {
     fixed[["size"]] <- format_value(mark_props$size)
   }
@@ -159,6 +165,25 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
 
   aes_pairs <- channels$aes
   if (!is.null(plan$extra_aes)) aes_pairs <- merge_named(aes_pairs, plan$extra_aes)
+
+  # point/circle/square/tick (all geom_point()) have only one color-like
+  # aesthetic in their *default* (solid, unbordered) shape -- "colour" --
+  # same as a plain point. But a mark-level `stroke` property is a
+  # deliberate second, independent color (a border around each point,
+  # distinct from the data-driven main color), which collides outright with
+  # `colour` also being aes()-mapped from the `color` encoding: ggplot2
+  # lets a literal (non-aes) layer argument for an aesthetic silently
+  # *replace* that same aesthetic's aes() mapping wholesale, so every point
+  # rendered in the fixed `stroke` color regardless of the encoding.
+  # Switching to a fillable shape (21: a circle with an independent
+  # border) resolves it the same way Vega-Lite itself keeps a circle's
+  # fill and stroke independent -- the encoding maps to "fill" (interior)
+  # instead, while the mark's own `stroke` keeps meaning "colour" (border).
+  if (mark_type %in% c("point", "circle", "square", "tick") && !is.null(mark_props$stroke) && !is.null(aes_pairs[["colour"]])) {
+    aes_pairs[["fill"]] <- aes_pairs[["colour"]]
+    aes_pairs[["colour"]] <- NULL
+    fixed[["shape"]] <- fixed[["shape"]] %||% "21"
+  }
 
   # x2/y2/xError/yError: meaning depends on the geom, and either axis can
   # carry the range for a horizontal-vs-vertical errorbar/errorband.

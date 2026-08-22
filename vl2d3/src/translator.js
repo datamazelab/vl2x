@@ -168,7 +168,14 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
   for (const [offsetChannel, posChannel] of [['xOffset', 'x'], ['yOffset', 'y']]) {
     const def = prepared.map(p => p.encoding[offsetChannel]).find(Boolean);
     const outerScale = scales[posChannel];
-    if (!def || 'value' in def || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
+    // A quantitative xOffset/yOffset is Vega-Lite's *other* use of this
+    // channel -- per-row jitter by a continuous value, added directly as a
+    // pixel nudge -- not the dodge/grouped-band case resolveOffsetScale()
+    // builds for; there's no finite "distinct group" domain to band over
+    // (every row can have its own value), so this is left unhandled
+    // (dropped, same as before this offset support existed) rather than
+    // building a degenerate one-slot-per-row scale.
+    if (!def || 'value' in def || def.type === 'quantitative' || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
     const scale = resolveOffsetScale(offsetChannel, def, {dataVar: allDataExpr, outerScale});
     b(scale.decl);
     scales[offsetChannel] = scale;

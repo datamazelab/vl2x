@@ -41,6 +41,25 @@ function accessor(def, scales, channel) {
   return scale ? `${scale.varName}(${field})` : field;
 }
 
+// Same idea as accessor(), but folds in a dodged/grouped position offset
+// (xOffset/yOffset) when this channel has one and scales.js built a
+// sub-band scale for it (see resolveOffsetScale()) -- centers the mark
+// within its own offset sub-band instead of at the shared outer-band
+// position every group would otherwise sit on top of. Falls back to the
+// plain accessor() whenever there's no such offset (the common case), so
+// callers can use this in place of accessor() uniformly for x/y.
+function dodgeAwareAccessor(encoding, scales, channel) {
+  const def = encoding[channel];
+  const base = accessor(def, scales, channel);
+  if (base === null || !def || !('field' in def)) return base;
+  const offsetChannel = channel === 'x' ? 'xOffset' : 'yOffset';
+  const offsetDef = encoding[offsetChannel];
+  const offsetScale = scales[offsetChannel];
+  if (!offsetDef || !offsetDef.field || !offsetScale) return base;
+  const withOffset = `${base} + ${offsetScale.varName}(d[${JSON.stringify(offsetDef.field)}]) + ${offsetScale.varName}.bandwidth() / 2`;
+  return offsetScale.conditional ? `(${offsetScale.varName} ? (${withOffset}) : (${base}))` : withOffset;
+}
+
 function rawField(def) {
   return def && def.field ? `d[${JSON.stringify(def.field)}]` : null;
 }
@@ -341,8 +360,8 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
   // missing axis rather than requiring both; with neither given, every
   // point is centered on both (all overlapping) rather than refusing to
   // render at all.
-  const cx = x ? accessor(encoding.x, scales, 'x') : dims.centerXExpr;
-  const cy = y ? accessor(encoding.y, scales, 'y') : dims.centerYExpr;
+  const cx = x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
+  const cy = y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
   const r =
     size && encoding.size
       ? `size(d[${JSON.stringify(encoding.size.field)}])`
@@ -513,9 +532,20 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const TICK_HALF = 10; // half-length used along an axis with no scale (1D strip plots)
 
   if (x && y && xField && yField) {
-    const half = x.kind === 'band' ? 'x.bandwidth() / 2' : '4';
-    lines.push(`    .attr("x1", d => x(d[${xField}]) - ${half})`);
-    lines.push(`    .attr("x2", d => x(d[${xField}]) + ${half})`);
+    // A dodged/grouped offset on x narrows the tick to its own sub-band
+    // (and re-centers it there via dodgeAwareAccessor()) instead of every
+    // group's tick sitting on top of the shared category position.
+    const xOffsetScale = scales.xOffset;
+    const centerX = dodgeAwareAccessor(encoding, scales, 'x');
+    const plainHalf = x.kind === 'band' ? 'x.bandwidth() / 2' : '4';
+    const half =
+      xOffsetScale && encoding.xOffset && encoding.xOffset.field
+        ? xOffsetScale.conditional
+          ? `(${xOffsetScale.varName} ? ${xOffsetScale.varName}.bandwidth() / 2 : ${plainHalf})`
+          : `${xOffsetScale.varName}.bandwidth() / 2`
+        : plainHalf;
+    lines.push(`    .attr("x1", d => ${centerX} - ${half})`);
+    lines.push(`    .attr("x2", d => ${centerX} + ${half})`);
     lines.push(`    .attr("y1", d => y(d[${yField}]))`);
     lines.push(`    .attr("y2", d => y(d[${yField}]))`);
   } else if (x && !y) {
@@ -539,8 +569,8 @@ function renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     if (ignoreUnsupported) return SKIP_COMMENT('"text" mark has no text encoding');
     throw new Error('"text" mark requires a text encoding');
   }
-  const cx = encoding.x ? accessor(encoding.x, scales, 'x') : dims.centerXExpr;
-  const cy = encoding.y ? accessor(encoding.y, scales, 'y') : dims.centerYExpr;
+  const cx = encoding.x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
+  const cy = encoding.y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
   const textField = rawField(encoding.text) || formatValue(encoding.text.value);
   const fill = fillExpr(encoding, scales, 'black');
   const rowDependent = hasRowDependentColor(encoding);

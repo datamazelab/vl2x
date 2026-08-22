@@ -2,6 +2,7 @@ node_modules
 __pycache__
 .scratch
 .DS_Store
+.scratch-rendering
 
 # Editor lock/swap files
 .#*

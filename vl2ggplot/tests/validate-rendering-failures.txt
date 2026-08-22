@@ -1,0 +1,2635 @@
+===== airport_connections.vl.json [EXEC] =====
+ℹ In argument: `state != "PR" & state != "VI"`.
+Caused by error:
+! object 'state' not found
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+layer1_data <- data.frame()
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(data = layer1_data, fill = "#ddd", colour = "#fff", linewidth = 1)
+# vl2ggplot: unsupported geographic encoding ("latitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer2_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer2_data <- dplyr::filter(layer2_data, TRUE)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: "rule" mark has neither x nor y encoding, drawing nothing (ignore_unsupported)
+chart <- chart + ggplot2::geom_blank()
+# vl2ggplot: unsupported geographic encoding ("latitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer3_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer3_data <- dplyr::group_by(layer3_data, origin)
+layer3_data <- dplyr::summarise(layer3_data, routes = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+layer3_data <- dplyr::filter(layer3_data, state != 'PR' & state != 'VI')
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(size = routes, x = longitude, y = latitude)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 900, height = 500)
+
+
+chart
+
+===== area_density_stacked_fold.vl.json [EXEC] =====
+Must group by variables found in `.data`.
+✖ Column `Measurement` is not found.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/cars.json")
+# vl2ggplot: skipped unsupported transform type "fold" (ignore_unsupported)
+chart_data <- dplyr::group_by(chart_data, Measurement)
+chart_data <- dplyr::group_modify(chart_data, ~ { .k <- stats::density(.x[["value"]], bw = 10, n = 200, from = 10, to = 500, na.rm = TRUE); data.frame(value = .k$x, density = .k$y * length(stats::na.omit(.x[["value"]]))) })
+chart_data <- dplyr::ungroup(chart_data)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_area(
+  mapping = ggplot2::aes(x = value, y = density, fill = factor(Measurement))
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 100)
+
+
+chart
+
+===== bar_argmax_transform.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'argmax_US_Gross['Production Budget']' not found
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+# vl2ggplot: unsupported aggregate op "argmax", using mean instead (ignore_unsupported)
+chart_data <- dplyr::group_by(chart_data, `Major Genre`)
+chart_data <- dplyr::summarise(chart_data, argmax_US_Gross = mean(`US Gross`, na.rm = TRUE), .groups = "drop")
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = `argmax_US_Gross['Production Budget']`, y = factor(`Major Genre`))
+)
+
+
+chart
+
+===== bar_argmax.vl.json [TRANSLATE] =====
+Unsupported aggregate op: {"argmax":"US Gross"} (compound argmin/argmax form not supported)
+
+
+===== bar_bullet_expr_bind.vl.json [TRANSLATE] =====
+Unsupported: bracket-indexed field reference "ranges[2]" is not supported
+
+
+===== bar_column_fold.vl.json [EXEC] =====
+At least one layer must contain all faceting variables: `key`
+✖ Plot is missing `key`
+✖ Layer 1 is missing `key`
+library(ggplot2)
+
+chart_data <- data.frame(
+  country = c("USA", "Canada"),
+  gold = c(10, 7),
+  silver = c(20, 26),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "fold" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = factor(country), y = value, fill = factor(country))
+)
+chart <- chart + ggplot2::facet_grid(cols = dplyr::vars(key))
+
+
+chart
+
+===== bar_column_pivot.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'gold' not found
+library(ggplot2)
+
+chart_data <- data.frame(
+  country = c("Norway", "Norway", "Norway", "Germany", "Germany", "Germany", "Canada", "Canada", "Canada"),
+  type = c("gold", "silver", "bronze", "gold", "silver", "bronze", "gold", "silver", "bronze"),
+  count = c(14, 14, 11, 14, 10, 7, 11, 8, 10),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(mapping = ggplot2::aes(x = factor(country), y = gold))
+
+
+chart
+
+===== bar_diverging_stack_transform.vl.json [EXEC] =====
+<text>:11:115: unexpected ','
+10: )
+11: chart_data <- dplyr::mutate(chart_data, q_order = ifelse(type == 'Strongly disagree', -2, 0) + if(type=='Disagree',
+                                                                                                                      ^
+library(ggplot2)
+
+chart_data <- data.frame(
+  question = c("Question 1", "Question 1", "Question 1", "Question 1", "Question 1", "Question 2", "Question 2", "Question 2", "Question 2", "Question 2", "Question 3", "Question 3", "Question 3", "Question 3", "Question 3", "Question 4", "Question 4", "Question 4", "Question 4", "Question 4", "Question 5", "Question 5", "Question 5", "Question 5", "Question 5", "Question 6", "Question 6", "Question 6", "Question 6", "Question 6", "Question 7", "Question 7", "Question 7", "Question 7", "Question 7", "Question 8", "Question 8", "Question 8", "Question 8", "Question 8"),
+  type = c("Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree", "Strongly disagree", "Disagree", "Neither agree nor disagree", "Agree", "Strongly agree"),
+  value = c(24, 294, 594, 1927, 376, 2, 2, 0, 7, 11, 2, 0, 2, 4, 2, 0, 2, 1, 7, 6, 0, 1, 3, 16, 4, 1, 1, 2, 9, 3, 0, 0, 1, 4, 0, 0, 0, 0, 0, 2),
+  percentage = c(0.7, 9.1, 18.5, 59.9, 11.7, 18.2, 18.2, 0, 63.6, 0, 20, 0, 20, 40, 20, 0, 12.5, 6.3, 43.8, 37.5, 0, 4.2, 12.5, 66.7, 16.7, 6.3, 6.3, 12.5, 56.3, 18.8, 0, 0, 20, 80, 0, 0, 0, 0, 0, 100),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, q_order = ifelse(type == 'Strongly disagree', -2, 0) + if(type=='Disagree',-1,0) + if(type =='Neither agree nor disagree',0,0) + if(type =='Agree',1,0) + if(type =='Strongly agree',2,0))
+chart_data <- dplyr::mutate(chart_data, signed_percentage = ifelse(type == 'Disagree' | type == 'Strongly disagree', percentage, 0) + if(type == 'Neither agree nor disagree', percentage / 2,0))
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, nx = v1 - offset)
+chart_data <- dplyr::mutate(chart_data, nx2 = v2 - offset)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(y = factor(question), fill = factor(type), xmin = nx, xmax = nx2),
+  linewidth = 10
+)
+chart <- chart + ggplot2::scale_fill_manual(
+  breaks = c(
+  "Strongly disagree",
+  "Disagree",
+  "Neither agree nor disagree",
+  "Agree",
+  "Strongly agree"
+),
+  values = c("#c30d24", "#f3a583", "#cccccc", "#94c6da", "#1770ab")
+)
+
+
+chart
+
+===== bar_heatlane.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'max_bin_count_end' not found
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/cars.json")
+layer_data <- dplyr::mutate(layer_data, .brks = list(pretty(Horsepower, 20)))
+layer_data <- dplyr::mutate(layer_data, bin_Horsepower_start = .brks[[1]][findInterval(Horsepower, .brks[[1]], all.inside = TRUE)], bin_Horsepower_end = .brks[[1]][findInterval(Horsepower, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)
+layer_data <- dplyr::group_by(layer_data, bin_Horsepower_start, bin_Horsepower_end)
+layer_data <- dplyr::summarise(layer_data, count = dplyr::n(), .groups = "drop")
+layer_data <- dplyr::mutate(layer_data, .brks = list(pretty(count, 20)))
+layer_data <- dplyr::mutate(layer_data, bin_count_start = .brks[[1]][findInterval(count, .brks[[1]], all.inside = TRUE)], bin_count_end = .brks[[1]][findInterval(count, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)
+layer_data <- dplyr::mutate(layer_data, y2 = -bin_count_end/2)
+layer_data <- dplyr::mutate(layer_data, y = bin_count_end/2)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = bin_Horsepower_start, y = y))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_rect(
+  data = layer1_data,
+  mapping = ggplot2::aes(
+  fill = factor(max_bin_count_end),
+  ymin = y,
+  ymax = y2,
+  xmin = bin_Horsepower_start,
+  xmax = bin_Horsepower_end
+)
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_rect(
+  data = layer2_data,
+  mapping = ggplot2::aes(
+  fill = factor(bin_count_end),
+  ymin = y,
+  ymax = y2,
+  xmin = bin_Horsepower_start,
+  xmax = bin_Horsepower_end
+)
+)
+chart <- chart + ggplot2::labs(title = "Heat Lane of Horsepower")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 150)
+
+
+chart
+
+===== bar_layered_weather.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "record.low" (dot-path into a sub-object) is not supported
+
+
+===== bar_percent_of_total.vl.json [EXEC] =====
+ℹ In argument: `PercentOfTotal = Time/TotalTime * 100`.
+Caused by error:
+! object 'TotalTime' not found
+library(ggplot2)
+
+chart_data <- data.frame(
+  Activity = c("Sleeping", "Eating", "TV", "Work", "Exercise"),
+  Time = c(8, 2, 4, 8, 2),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, PercentOfTotal = Time/TotalTime * 100)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(mapping = ggplot2::aes(x = PercentOfTotal, y = factor(Activity)))
+# NOTE: height are set when saving/displaying, e.g. ggsave(..., height = list(step = 12))
+
+
+chart
+
+===== bar_simple_binned_timeunit_special_chars.vl.json [EXEC] =====
+'\.' is an unrecognized escape in character string (<input>:10:44)
+library(ggplot2)
+
+chart_data <- data.frame(
+  a.b = c("2022-01-01", "2022-01-04", "2022-01-07", "2022-01-02", "2022-01-05", "2022-01-08", "2022-01-03", "2022-01-06", "2022-01-09"),
+  b = c(28, NA, 43, 91, NA, 53, 19, NA, 52),
+  b.b = c(NA, 55, NA, NA, 81, NA, NA, 87, NA),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, `a\.b` = if (is.numeric(`a\.b`)) as.Date(`a\.b` / 86400000, origin = "1970-01-01") else as.Date(as.character(`a\.b`), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported timeUnit "binnedutcyearmonthdate", left untruncated (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, `binnedutcyearmonthdate_a\.b` = `a\.b`)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(mapping = ggplot2::aes(y = `binnedutcyearmonthdate_a\.b`, x = b))
+chart <- chart + ggplot2::labs(title = "A Simple Bar Chart with Lines at Extents")
+
+
+chart
+
+===== bar_simple_extent.vl.json [EXEC] =====
+Problem while setting up geom.
+ℹ Error occurred in the 2nd layer.
+Caused by error in `compute_geom_1()`:
+! `geom_vline()` requires the following missing aesthetics: xintercept.
+library(ggplot2)
+
+layer_data <- data.frame(
+  a = c("A", "B", "C", "D", "E", "F", "G", "H", "I"),
+  b = c(28, 55, 43, 91, 81, 53, 19, 87, 52),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "extent" (ignore_unsupported)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_col(data = layer1_data, mapping = ggplot2::aes(y = factor(a), x = b))
+chart <- chart + ggplot2::geom_vline(
+  xintercept = ,
+  colour = "firebrick",
+  x = list(expr = "scale('x', b_extent[0])")
+)
+chart <- chart + ggplot2::geom_vline(
+  xintercept = ,
+  colour = "#ca8861",
+  x = list(expr = "scale('x', b_extent[1])")
+)
+chart <- chart + ggplot2::labs(title = "A Simple Bar Chart with Lines at Extents")
+
+
+chart
+
+===== boxplot_preaggregated_with_height.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 4th layer.
+Caused by error:
+! object 'outliers' not found
+library(ggplot2)
+
+layer_data <- data.frame(
+  Species = c("Adelie", "Chinstrap", "Gentoo"),
+  lower = c(2850, 2700, 3950),
+  q1 = c(3350, 3487.5, 4700),
+  median = c(3700, 3700, 5000),
+  q3 = c(4000, 3950, 5500),
+  upper = c(4775, 4800, 6300),
+  outliers = c(list(), c(2700, 4800), list()),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Species)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_segment(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = factor(Species), x = lower, xend = upper, yend = factor(Species))
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_linerange(
+  data = layer2_data,
+  mapping = ggplot2::aes(y = factor(Species), fill = factor(Species), xmin = q1, xmax = q3),
+  linewidth = 10
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(y = factor(Species), x = median),
+  colour = "white"
+)
+layer4_data <- layer_data
+# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(
+  data = layer4_data,
+  mapping = ggplot2::aes(y = factor(Species), x = outliers)
+)
+chart <- chart + ggplot2::labs(title = "Body Mass of Penguin Species (g)")
+# NOTE: height are set when saving/displaying, e.g. ggsave(..., height = 200)
+
+
+chart
+
+===== boxplot_preaggregated.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 4th layer.
+Caused by error:
+! object 'outliers' not found
+library(ggplot2)
+
+layer_data <- data.frame(
+  Species = c("Adelie", "Chinstrap", "Gentoo"),
+  lower = c(2850, 2700, 3950),
+  q1 = c(3350, 3487.5, 4700),
+  median = c(3700, 3700, 5000),
+  q3 = c(4000, 3950, 5500),
+  upper = c(4775, 4800, 6300),
+  outliers = c(list(), c(2700, 4800), list()),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Species)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_segment(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = factor(Species), x = lower, xend = upper, yend = factor(Species))
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_linerange(
+  data = layer2_data,
+  mapping = ggplot2::aes(y = factor(Species), fill = factor(Species), xmin = q1, xmax = q3),
+  linewidth = 10
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(y = factor(Species), x = median),
+  colour = "white",
+  size = 14
+)
+layer4_data <- layer_data
+# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(
+  data = layer4_data,
+  mapping = ggplot2::aes(y = factor(Species), x = outliers)
+)
+chart <- chart + ggplot2::labs(title = "Body Mass of Penguin Species (g)")
+
+
+chart
+
+===== circle_binned_maxbins_2.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_histogram(
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
+  bins = 2
+)
+
+
+chart
+
+===== circle_binned_maxbins_20.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_histogram(
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
+  bins = 20
+)
+
+
+chart
+
+===== circle_binned_maxbins_5.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_histogram(
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
+  bins = 5
+)
+
+
+chart
+
+===== circle_binned.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_histogram(
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
+  bins = 10
+)
+
+
+chart
+
+===== circle_flatten.vl.json [EXEC] =====
+arguments imply differing number of rows: 2, 5, 4
+library(ggplot2)
+
+chart_data <- data.frame(
+  key = c("alpha", "beta"),
+  foo = c(c(1, 2), c(3, 4, 5)),
+  bar = c(c("A", "B"), c("C", "D")),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_point(
+  mapping = ggplot2::aes(x = foo, y = factor(bar), colour = factor(key))
+)
+
+
+chart
+
+===== concat_weather.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+concat1_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+concat1_data <- dplyr::mutate(concat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+concat1_data <- dplyr::filter(concat1_data, location == 'Seattle')
+concat1 <- ggplot2::ggplot(concat1_data)
+concat1 <- concat1 + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = factor(date), y = precipitation),
+  stat = "summary",
+  fun = "mean"
+)
+concat2_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+concat2_data <- dplyr::mutate(concat2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+concat2_data <- dplyr::filter(concat2_data, location == 'Seattle')
+concat2 <- ggplot2::ggplot(concat2_data)
+concat2 <- concat2 + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = factor(date), y = precipitation),
+  stat = "summary",
+  fun = "median"
+)
+concat3_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+concat3_data <- dplyr::filter(concat3_data, location == 'Seattle')
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+concat3 <- ggplot2::ggplot(concat3_data)
+concat3 <- concat3 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = temp_min, y = temp_max), bins = 30)
+chart <- patchwork::wrap_plots(list(concat1, concat2, concat3), ncol = 2)
+
+
+chart
+
+===== facet_bullet.vl.json [TRANSLATE] =====
+Unsupported: bracket-indexed field reference "ranges[2]" is not supported
+
+
+===== geo_choropleth.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'rate' not found
+library(ggplot2)
+
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+chart_data <- data.frame()
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(colour = rate))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+
+
+chart
+
+===== geo_constant_value.vl.json [EXEC] =====
+Discrete value supplied to a continuous scale.
+ℹ Example values: "".
+library(ggplot2)
+
+layer_data <- read.csv("data/airports.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart <- ggplot2::ggplot(layer_data)
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = longitude, y = latitude),
+  size = 1,
+  colour = "gray"
+)
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer2_data,
+  mapping = ggplot2::aes(y = latitude, x = ""),
+  size = 1,
+  colour = "steelblue"
+)
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = longitude, y = ""),
+  size = 1,
+  colour = "firebrick"
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+
+
+chart
+
+===== geo_layer_line_london.vl.json [EXEC] =====
+ℹ In argument: `bLabel = ifelse(...)`.
+Caused by error in `indexof()`:
+! could not find function "indexof"
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+layer1_data <- data.frame()
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(data = layer1_data, colour = "#eee", linewidth = 2)
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer2_data <- jsonlite::fromJSON("data/londonCentroids.json")
+layer2_data <- dplyr::mutate(layer2_data, bLabel = ifelse(indexof (name,' ') > 0, substring(name,0,indexof(name, ' ')), name))
+chart <- chart + ggplot2::geom_text(
+  data = layer2_data,
+  mapping = ggplot2::aes(label = factor(bLabel), x = cx, y = cy),
+  size = 8,
+  alpha = 0.6
+)
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+layer3_data <- data.frame()
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(colour = factor(id)),
+  fill = FALSE,
+  colour = 2,
+  linewidth = 2
+)
+chart <- chart + ggplot2::scale_colour_manual(
+  breaks = c(
+  "Bakerloo",
+  "Central",
+  "Circle",
+  "District",
+  "DLR",
+  "Hammersmith & City",
+  "Jubilee",
+  "Metropolitan",
+  "Northern",
+  "Piccadilly",
+  "Victoria",
+  "Waterloo & City"
+),
+  values = c(
+  "rgb(137,78,36)",
+  "rgb(220,36,30)",
+  "rgb(255,206,0)",
+  "rgb(1,114,41)",
+  "rgb(0,175,173)",
+  "rgb(215,153,175)",
+  "rgb(106,114,120)",
+  "rgb(114,17,84)",
+  "rgb(0,0,0)",
+  "rgb(0,24,168)",
+  "rgb(0,160,226)",
+  "rgb(106,187,170)"
+)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 700, height = 500)
+
+
+chart
+
+===== geo_line.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 3rd layer.
+Caused by error:
+! object 'longitude' not found
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+layer1_data <- data.frame()
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(data = layer1_data, fill = "#eee", colour = "white")
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer2_data <- read.csv("data/airports.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart <- chart + ggplot2::geom_point(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = longitude, y = latitude),
+  size = 5,
+  colour = "gray"
+)
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+layer3_data <- data.frame(
+  airport = c("SEA", "SFO", "LAX", "LAS", "DFW", "DEN", "ORD", "JFK"),
+  order = c(1, 2, 3, 4, 5, 6, 7, 8),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = longitude, y = latitude)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 500)
+
+
+chart
+
+===== geo_repeat.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'geo' not found
+library(ggplot2)
+
+chart_plots <- list()
+# vl2ggplot: unsupported repeat row/column mapping, rendering each panel independently (no shared/aligned scales across panels) (ignore_unsupported)
+chart_rep1_data <- read.csv("data/population_engineers_hurricanes.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart_rep1 <- ggplot2::ggplot(chart_rep1_data)
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart_rep1 <- chart_rep1 + ggplot2::geom_point(mapping = ggplot2::aes(shape = geo, colour = population))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+chart_plots[[1]] <- chart_rep1
+chart_rep2_data <- read.csv("data/population_engineers_hurricanes.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart_rep2 <- ggplot2::ggplot(chart_rep2_data)
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart_rep2 <- chart_rep2 + ggplot2::geom_point(mapping = ggplot2::aes(shape = geo, colour = engineers))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+chart_plots[[2]] <- chart_rep2
+chart_rep3_data <- read.csv("data/population_engineers_hurricanes.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart_rep3 <- ggplot2::ggplot(chart_rep3_data)
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart_rep3 <- chart_rep3 + ggplot2::geom_point(mapping = ggplot2::aes(shape = geo, colour = hurricanes))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+chart_plots[[3]] <- chart_rep3
+chart <- patchwork::wrap_plots(chart_plots, ncol = 1)
+
+
+chart
+
+===== geo_trellis.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'geo' not found
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/income.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(shape = geo, colour = pct))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+chart <- chart + ggplot2::facet_grid(rows = dplyr::vars(group))
+
+
+chart
+
+===== hconcat_weather.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+hconcat1_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+hconcat1_data <- dplyr::mutate(hconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+hconcat1_data <- dplyr::filter(hconcat1_data, location == 'Seattle')
+hconcat1 <- ggplot2::ggplot(hconcat1_data)
+hconcat1 <- hconcat1 + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = factor(date), y = precipitation),
+  stat = "summary",
+  fun = "mean"
+)
+hconcat2_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+hconcat2_data <- dplyr::filter(hconcat2_data, location == 'Seattle')
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+hconcat2 <- ggplot2::ggplot(hconcat2_data)
+hconcat2 <- hconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = temp_min, y = temp_max), bins = 30)
+chart <- patchwork::wrap_plots(list(hconcat1, hconcat2), ncol = 2)
+
+
+chart
+
+===== histogram_log.vl.json [EXEC] =====
+Problem while setting up geom.
+ℹ Error occurred in the 1st layer.
+Caused by error in `compute_geom_1()`:
+! `geom_linerange()` requires the following missing aesthetics: ymin and
+  ymax or xmin and xmax.
+library(ggplot2)
+
+chart_data <- data.frame(
+  x = c(0.01, 0.1, 1, 1, 1, 1, 10, 10, 100, 500, 800),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, log_x = log(x)/log(10))
+chart_data <- dplyr::mutate(chart_data, .brks = list(pretty(log_x, 20)))
+chart_data <- dplyr::mutate(chart_data, bin_log_x = .brks[[1]][findInterval(log_x, .brks[[1]], all.inside = TRUE)], bin_log_x_end = .brks[[1]][findInterval(log_x, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)
+chart_data <- dplyr::mutate(chart_data, x1 = (10)^(bin_log_x))
+chart_data <- dplyr::mutate(chart_data, x2 = (10)^(bin_log_x_end))
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(xmin = x1, xmax = x2, y = ""),
+  stat = "count",
+  linewidth = 10
+)
+
+
+chart
+
+===== histogram_nonlinear.vl.json [EXEC] =====
+Discrete value supplied to a continuous scale.
+ℹ Example values: 0, 8.33, 12.50, 16.67, and 33.33.
+library(ggplot2)
+
+chart_data <- data.frame(
+  startTime = c("0", "8.33", "12.50", "16.67", "33.33", "50.00", "66.67", "83.33"),
+  endTime = c("8.33", "12.50", "16.67", "33.33", "50.00", "66.67", "83.33", "∞"),
+  residency = c(0, 0, 31.17, 38.96, 6.49, 2.9, 2.6, 16.88),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(y = residency, xmin = factor(startTime), xmax = endTime),
+  linewidth = 10
+)
+chart <- chart + ggplot2::scale_y_continuous(limits = c(0, 100))
+chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = list(step = 40), height = 100)
+
+
+chart
+
+===== histogram_rel_freq.vl.json [EXEC] =====
+ℹ In argument: `PercentOfTotal = Count/TotalCount`.
+Caused by error:
+! object 'TotalCount' not found
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/cars.json")
+chart_data <- dplyr::mutate(chart_data, .brks = list(pretty(Horsepower, 20)))
+chart_data <- dplyr::mutate(chart_data, bin_Horsepwoer = .brks[[1]][findInterval(Horsepower, .brks[[1]], all.inside = TRUE)], bin_Horsepwoer_end = .brks[[1]][findInterval(Horsepower, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)
+chart_data <- dplyr::group_by(chart_data, bin_Horsepwoer, bin_Horsepwoer_end)
+chart_data <- dplyr::summarise(chart_data, Count = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, PercentOfTotal = Count/TotalCount)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(y = PercentOfTotal, xmin = bin_Horsepwoer, xmax = bin_Horsepwoer_end),
+  linewidth = 10
+)
+
+
+chart
+
+===== interactive_airport_crossfilter.vl.json [EXEC] =====
+<text>:33:78: unexpected symbol
+32: vconcat2_rep12_data <- vconcat2_rep1_data
+33: vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, data('brush_store').length
+                                                                                 ^
+library(ggplot2)
+
+vconcat1 <- ggplot2::ggplot()
+# vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
+vconcat11_data <- data.frame()
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+vconcat1 <- vconcat1 + ggplot2::geom_point(data = vconcat11_data, fill = "lightgray", colour = "white")
+# vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
+vconcat12_data <- read.csv("data/flights-airport.csv", stringsAsFactors = FALSE, check.names = FALSE)
+vconcat12_data <- dplyr::group_by(vconcat12_data, origin)
+vconcat12_data <- dplyr::summarise(vconcat12_data, routes = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+vconcat12_data <- dplyr::filter(vconcat12_data, state != 'PR' & state != 'VI')
+vconcat1 <- vconcat1 + ggplot2::geom_point(
+  data = vconcat12_data,
+  mapping = ggplot2::aes(size = routes, x = longitude, y = latitude),
+  colour = "steelblue"
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
+vconcat2_plots <- list()
+# vl2ggplot: unsupported repeat row/column mapping, rendering each panel independently (no shared/aligned scales across panels) (ignore_unsupported)
+vconcat2_rep1_data <- jsonlite::fromJSON("data/flights-2k.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+vconcat2_rep1 <- ggplot2::ggplot(vconcat2_rep1_data)
+vconcat2_rep11_data <- vconcat2_rep1_data
+vconcat2_rep1 <- vconcat2_rep1 + ggplot2::geom_histogram(
+  data = vconcat2_rep11_data,
+  mapping = ggplot2::aes(x = distance),
+  fill = "steelblue",
+  bins = 20
+)
+vconcat2_rep12_data <- vconcat2_rep1_data
+vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, data('brush_store').length & isValid(brush))
+vconcat2_rep1 <- vconcat2_rep1 + ggplot2::geom_histogram(
+  data = vconcat2_rep12_data,
+  mapping = ggplot2::aes(x = distance),
+  fill = "goldenrod",
+  bins = 20
+)
+vconcat2_plots[[1]] <- vconcat2_rep1
+vconcat2_rep2_data <- jsonlite::fromJSON("data/flights-2k.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+vconcat2_rep2 <- ggplot2::ggplot(vconcat2_rep2_data)
+vconcat2_rep21_data <- vconcat2_rep2_data
+vconcat2_rep2 <- vconcat2_rep2 + ggplot2::geom_histogram(
+  data = vconcat2_rep21_data,
+  mapping = ggplot2::aes(x = delay),
+  fill = "steelblue",
+  bins = 20
+)
+vconcat2_rep22_data <- vconcat2_rep2_data
+vconcat2_rep22_data <- dplyr::filter(vconcat2_rep22_data, data('brush_store').length & isValid(brush))
+vconcat2_rep2 <- vconcat2_rep2 + ggplot2::geom_histogram(
+  data = vconcat2_rep22_data,
+  mapping = ggplot2::aes(x = delay),
+  fill = "goldenrod",
+  bins = 20
+)
+vconcat2_plots[[2]] <- vconcat2_rep2
+vconcat2 <- patchwork::wrap_plots(vconcat2_plots, ncol = 2)
+chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
+
+
+chart
+
+===== interactive_geo_earthquakes.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "geometry.coordinates" (dot-path into a sub-object) is not supported
+
+
+===== interactive_geo_facet_species.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'geo' not found
+library(ggplot2)
+
+chart_data <- read.csv("data/species.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+# vl2ggplot: unsupported mark type "geoshape", drawing as a point instead (ignore_unsupported)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(shape = geo, colour = habitat_yearround_pct))
+chart <- chart + ggplot2::scale_colour_viridis_c(option = "viridis")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 200)
+chart <- chart + ggplot2::facet_wrap(facets = dplyr::vars(common_name), ncol = 2)
+
+
+chart
+
+===== interactive_global_development.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 3rd layer.
+Caused by error:
+! object 'name' not found
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/gapminder.json")
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- jsonlite::fromJSON("data/gapminder.json")
+layer1_data <- dplyr::filter(layer1_data, country == "Afghanistan")
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer1_data <- dplyr::filter(layer1_data, TRUE)
+chart <- chart + ggplot2::geom_text(
+  data = layer1_data,
+  mapping = ggplot2::aes(label = year),
+  alpha = 0.06,
+  x = "",
+  y = ""
+)
+layer2_data <- jsonlite::fromJSON("data/gapminder.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(group = country),
+  colour = "round",
+  alpha = 0
+)
+layer3_data <- jsonlite::fromJSON("data/gapminder.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer3_data <- dplyr::filter(layer3_data, TRUE)
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(colour = name),
+  alpha = 0.9,
+  size = 100,
+  x = "",
+  y = ""
+)
+layer4_data <- jsonlite::fromJSON("data/gapminder.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer4_data <- dplyr::filter(layer4_data, (TRUE) & ((TRUE) | (TRUE)))
+chart <- chart + ggplot2::geom_text(
+  data = layer4_data,
+  mapping = ggplot2::aes(label = country, colour = name),
+  x = "",
+  y = ""
+)
+layer5_data <- jsonlite::fromJSON("data/gapminder.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer5_data <- dplyr::filter(layer5_data, TRUE)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer5_data <- dplyr::filter(layer5_data, !(TRUE))
+chart <- chart + ggplot2::geom_text(
+  data = layer5_data,
+  mapping = ggplot2::aes(label = year),
+  colour = "gray",
+  x = "",
+  y = ""
+)
+layer6_data <- jsonlite::fromJSON("data/gapminder.json")
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer6_data <- dplyr::filter(layer6_data, TRUE)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer6_data <- dplyr::filter(layer6_data, !(TRUE))
+chart <- chart + ggplot2::geom_point(data = layer6_data, colour = "gray", x = "", y = "")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 500)
+
+
+chart
+
+===== interactive_index_chart.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "index.price" (dot-path into a sub-object) is not supported
+
+
+===== interactive_multi_line_label.vl.json [EXEC] =====
+Problem while setting up geom.
+ℹ Error occurred in the 1st layer.
+Caused by error in `compute_geom_1()`:
+! `geom_line()` requires the following missing aesthetics: x and y.
+library(ggplot2)
+
+layer_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart <- chart + ggplot2::geom_line(data = layer1_data)
+layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+chart <- chart + ggplot2::geom_point(data = layer2_data, alpha = 0, x = "", y = "")
+layer3_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer3_data <- dplyr::filter(layer3_data, TRUE)
+layer3_data <- dplyr::summarise(layer3_data, min_date = min(date, na.rm = TRUE))
+chart <- chart + ggplot2::geom_vline(
+  data = layer3_data,
+  mapping = ggplot2::aes(xintercept = min_date),
+  colour = "gray"
+)
+layer4_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer4_data <- dplyr::filter(layer4_data, TRUE)
+chart <- chart + ggplot2::geom_text(data = layer4_data, colour = "white", linewidth = 2, x = "", y = "")
+layer5_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer5_data <- dplyr::filter(layer5_data, TRUE)
+chart <- chart + ggplot2::geom_text(
+  data = layer5_data,
+  mapping = ggplot2::aes(colour = factor(symbol)),
+  x = "",
+  y = ""
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 300)
+
+
+chart
+
+===== interactive_multi_line_pivot_tooltip.vl.json [EXEC] =====
+Problem while setting up geom.
+ℹ Error occurred in the 1st layer.
+Caused by error in `compute_geom_1()`:
+! `geom_line()` requires the following missing aesthetics: y.
+library(ggplot2)
+
+layer_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer_data <- dplyr::mutate(layer_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = date))
+layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- chart + ggplot2::geom_line(data = layer1_data, mapping = ggplot2::aes(x = date))
+layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer2_data <- dplyr::filter(layer2_data, TRUE)
+chart <- chart + ggplot2::geom_point(data = layer2_data, mapping = ggplot2::aes(x = date, y = ""))
+layer3_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_vline(
+  data = layer3_data,
+  mapping = ggplot2::aes(xintercept = date),
+  alpha = 0
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 300)
+
+
+chart
+
+===== interactive_stocks_nearest_index.vl.json [EXEC] =====
+ℹ In argument: `(index.date) & (TRUE)`.
+Caused by error:
+! object 'index.date' not found
+library(ggplot2)
+
+layer_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer_data <- dplyr::mutate(layer_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = date))
+layer1_data <- layer_data
+layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol))
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- chart + ggplot2::geom_point(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = date, y = price),
+  alpha = 0
+)
+layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer3_data <- dplyr::filter(layer3_data, (index.date) & (TRUE))
+chart <- chart + ggplot2::geom_vline(data = layer3_data, mapping = ggplot2::aes(xintercept = date))
+layer4_data <- layer_data
+layer4_data <- dplyr::mutate(layer4_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+layer4_data <- dplyr::filter(layer4_data, (index.date) & (TRUE))
+chart <- chart + ggplot2::geom_text(
+  data = layer4_data,
+  mapping = ggplot2::aes(x = date, label = date, y = ""),
+  y = 10
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 600, height = 300)
+
+
+chart
+
+===== isotype_bar_chart_emoji.vl.json [EXEC] =====
+<text>:9:63: unexpected ','
+8: )
+9: chart_data <- dplyr::mutate(chart_data, emoji = {'cattle': '🐄',
+                                                                 ^
+library(ggplot2)
+
+chart_data <- data.frame(
+  country = c("Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "Great Britain", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States", "United States"),
+  animal = c("pigs", "pigs", "cattle", "cattle", "cattle", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "pigs", "pigs", "pigs", "pigs", "pigs", "pigs", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "cattle", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep", "sheep"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, emoji = {'cattle': '🐄', 'pigs': '🐖', 'sheep': '🐏'}[animal])
+chart_data <- dplyr::group_by(chart_data, country, animal)
+chart_data <- dplyr::mutate(chart_data, .win_rn = dplyr::row_number(), .win_tie = dplyr::consecutive_id(dplyr::row_number()))
+chart_data <- dplyr::group_by(chart_data, country, animal, .win_tie)
+chart_data <- dplyr::mutate(chart_data, .win_rank = min(.win_rn))
+chart_data <- dplyr::group_by(chart_data, country, animal)
+chart_data <- dplyr::mutate(chart_data, rank = .win_rank)
+chart_data <- dplyr::select(chart_data, -.win_rn, -.win_tie)
+chart_data <- dplyr::ungroup(chart_data)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_text(
+  mapping = ggplot2::aes(x = factor(rank), y = factor(animal), label = factor(emoji)),
+  size = 65
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 200)
+chart <- chart + ggplot2::facet_grid(rows = dplyr::vars(country))
+
+
+chart
+
+===== joinaggregate_mean_difference_by_year.vl.json [EXEC] =====
+ℹ In argument: `(`IMDB Rating` - AverageYearRating) > 2.5`.
+Caused by error:
+! object 'AverageYearRating' not found
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/movies.json")
+layer_data <- dplyr::mutate(layer_data, `Release Date` = if (is.numeric(`Release Date`)) as.Date(`Release Date` / 86400000, origin = "1970-01-01") else as.Date(as.character(`Release Date`), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer_data <- dplyr::filter(layer_data, `IMDB Rating` != NA)
+layer_data <- dplyr::mutate(layer_data, year = as.Date(format(`Release Date`, "%Y-01-01")))
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+layer_data <- dplyr::filter(layer_data, (`IMDB Rating` - AverageYearRating) > 2.5)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_col(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = factor(Title))
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = AverageYearRating, y = factor(Title)),
+  colour = "red"
+)
+
+
+chart
+
+===== joinaggregate_mean_difference.vl.json [EXEC] =====
+ℹ In argument: `(`IMDB Rating` - AverageRating) > 2.5`.
+Caused by error:
+! object 'AverageRating' not found
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/movies.json")
+layer_data <- dplyr::filter(layer_data, `IMDB Rating` != NA)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+layer_data <- dplyr::filter(layer_data, (`IMDB Rating` - AverageRating) > 2.5)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_col(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = factor(Title))
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::summarise(layer2_data, average_AverageRating = mean(AverageRating, na.rm = TRUE))
+chart <- chart + ggplot2::geom_vline(
+  data = layer2_data,
+  mapping = ggplot2::aes(xintercept = average_AverageRating),
+  colour = "red"
+)
+
+
+chart
+
+===== joinaggregate_percent_of_total.vl.json [EXEC] =====
+ℹ In argument: `PercentOfTotal = Time/TotalTime * 100`.
+Caused by error:
+! object 'TotalTime' not found
+library(ggplot2)
+
+chart_data <- data.frame(
+  Activity = c("Sleeping", "Eating", "TV", "Work", "Exercise"),
+  Time = c(8, 2, 4, 8, 2),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, PercentOfTotal = Time/TotalTime * 100)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(mapping = ggplot2::aes(x = PercentOfTotal, y = factor(Activity)))
+# NOTE: height are set when saving/displaying, e.g. ggsave(..., height = list(step = 12))
+
+
+chart
+
+===== joinaggregate_residual_graph.vl.json [EXEC] =====
+ℹ In argument: `RatingDelta = `IMDB Rating` - AverageRating`.
+Caused by error:
+! object 'AverageRating' not found
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+chart_data <- dplyr::mutate(chart_data, `Release Date` = if (is.numeric(`Release Date`)) as.Date(`Release Date` / 86400000, origin = "1970-01-01") else as.Date(as.character(`Release Date`), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart_data <- dplyr::filter(chart_data, `IMDB Rating` != NA)
+chart_data <- dplyr::filter(chart_data, `Release Date` <= 2019)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, RatingDelta = `IMDB Rating` - AverageRating)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_point(
+  mapping = ggplot2::aes(x = `Release Date`, y = RatingDelta, colour = RatingDelta)
+)
+
+
+chart
+
+===== layer_bar_labels_grey.vl.json [EXEC] =====
+Column name `Major Genre` must not be duplicated.
+Use `.name_repair` to specify repair.
+Caused by error in `repaired_names()`:
+! Names must be unique.
+✖ These names are duplicated:
+  * "Major Genre" at locations 1 and 2.
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/movies.json")
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(`Major Genre`)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_col(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = factor(`Major Genre`), x = `IMDB Rating`),
+  fill = "#ddd",
+  stat = "summary",
+  fun = "mean",
+  orientation = "y"
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::group_by(layer2_data, `Major Genre`, `Major Genre`)
+layer2_data <- dplyr::summarise(layer2_data, count = dplyr::n(), .groups = "drop")
+chart <- chart + ggplot2::geom_text(
+  data = layer2_data,
+  mapping = ggplot2::aes(y = factor(`Major Genre`), label = `Major Genre`, group = count, x = "")
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 200, height = list(step = 16))
+
+
+chart
+
+===== layer_circle_independent_color.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/cars.json")
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- chart + ggplot2::geom_histogram(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = Acceleration, y = Horsepower),
+  bins = 30
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::filter(layer2_data, Origin == 'Japan')
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- chart + ggplot2::geom_histogram(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = Acceleration, y = Horsepower),
+  colour = "firebrick",
+  bins = 30
+)
+
+
+chart
+
+===== layer_falkensee.vl.json [EXEC] =====
+ℹ In argument: `start = if (...) NULL`.
+Caused by error in `charToDate()`:
+! character string is not in a standard unambiguous format
+library(ggplot2)
+
+layer_data <- data.frame(
+  year = c("1875", "1890", "1910", "1925", "1933", "1939", "1946", "1950", "1964", "1971", "1981", "1985", "1989", "1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014"),
+  population = c(1309, 1558, 4512, 8180, 15915, 24824, 28275, 29189, 29881, 26007, 24029, 23340, 22307, 22087, 22139, 22105, 22242, 22801, 24273, 25640, 27393, 29505, 32124, 33791, 35297, 36179, 36829, 37493, 38376, 39008, 39366, 39821, 40179, 40511, 40465, 40905, 41258, 41777),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- data.frame(
+  start = c("1933", "1948"),
+  end = c("1945", "1989"),
+  event = c("Nazi Rule", "GDR (East Germany)"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer1_data <- dplyr::mutate(layer1_data, start = if (is.numeric(start)) as.Date(start / 86400000, origin = "1970-01-01") else as.Date(as.character(start), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)), end = if (is.numeric(end)) as.Date(end / 86400000, origin = "1970-01-01") else as.Date(as.character(end), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer1_data <- dplyr::mutate(layer1_data, year_start = as.Date(format(start, "%Y-01-01")), year_end = as.Date(format(end, "%Y-01-01")))
+chart <- chart + ggplot2::geom_rect(
+  data = layer1_data,
+  mapping = ggplot2::aes(fill = factor(event), xmin = year_start, xmax = year_end),
+  ymin = -Inf,
+  ymax = Inf
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = year_year, y = population),
+  colour = "#333"
+)
+layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+layer3_data <- dplyr::mutate(layer3_data, year_year = as.Date(format(year, "%Y-01-01")))
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = year_year, y = population),
+  colour = "#333"
+)
+# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
+
+
+chart
+
+===== layer_likert.vl.json [EXEC] =====
+ℹ In argument: `name != "Toolbar_First"`.
+Caused by error:
+! object 'name' not found
+library(ggplot2)
+
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+layer_data <- data.frame()
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(name)))
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+layer1_data <- data.frame()
+layer1_data <- dplyr::filter(layer1_data, name != 'Toolbar_First')
+layer1_data <- dplyr::filter(layer1_data, name != 'Tablet_First')
+layer1_data <- dplyr::filter(layer1_data, name != 'Participant ID')
+layer1_data <- dplyr::group_by(layer1_data, name, value)
+layer1_data <- dplyr::summarise(layer1_data, count = dplyr::n(), .groups = "drop")
+chart <- chart + ggplot2::geom_point(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = factor(name), x = value, size = count),
+  colour = "#6EB4FD"
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer2_data,
+  mapping = ggplot2::aes(y = factor(name), x = median),
+  colour = "black"
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer3_data,
+  mapping = ggplot2::aes(y = factor(name), label = lo, x = "")
+)
+layer4_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer4_data,
+  mapping = ggplot2::aes(y = factor(name), label = hi, x = "")
+)
+chart <- chart + ggplot2::scale_x_continuous(limits = c(0, 6))
+chart <- chart + ggplot2::labs(title = "Questionnaire Ratings")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 250, height = 175)
+
+
+chart
+
+===== layer_line_co2_concentration.vl.json [TRANSLATE] =====
+Unsupported aggregate op: {"argmin":"scaled_date"} (compound argmin/argmax form not supported)
+
+
+===== layer_line_exponential.vl.json [TRANSLATE] =====
+Unsupported aggregate op: {"exponential":0.5} (compound argmin/argmax form not supported)
+
+
+===== layer_line_window.vl.json [EXEC] =====
+ℹ In argument: `fps = 1000/data`.
+Caused by error in `1000 / data`:
+! non-numeric argument to binary operator
+library(ggplot2)
+
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+layer_data <- data.frame()
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = row, y = fps, colour = factor(system)))
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+layer1_data <- data.frame()
+layer1_data <- dplyr::mutate(layer1_data, row = dplyr::row_number())
+layer1_data <- dplyr::ungroup(layer1_data)
+layer1_data <- dplyr::mutate(layer1_data, fps = 1000/data)
+layer1_data <- dplyr::mutate(layer1_data, system = 'Falcon')
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system)),
+  size = 1
+)
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+layer2_data <- data.frame()
+layer2_data <- dplyr::mutate(layer2_data, row = dplyr::row_number())
+layer2_data <- dplyr::ungroup(layer2_data)
+layer2_data <- dplyr::mutate(layer2_data, fps = 1000/data)
+layer2_data <- dplyr::mutate(layer2_data, system = 'Square Crossfilter (3M)')
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = row, y = fps, colour = factor(system)),
+  size = 1
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 400, height = 200)
+
+
+chart
+
+===== layer_point_line_regression.vl.json [EXEC] =====
+ℹ In argument: `R2 = paste0("R²: ", format(rSquared, ".2f"))`.
+Caused by error:
+! object 'rSquared' not found
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/movies.json")
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_point(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`),
+  fill = TRUE
+)
+layer2_data <- layer_data
+# vl2ggplot: skipped unsupported transform type "regression" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`),
+  colour = "firebrick"
+)
+layer3_data <- layer_data
+# vl2ggplot: skipped unsupported transform type "regression" (ignore_unsupported)
+layer3_data <- dplyr::mutate(layer3_data, R2 = paste0('R²: ', format(rSquared, '.2f')))
+chart <- chart + ggplot2::geom_text(
+  data = layer3_data,
+  mapping = ggplot2::aes(label = factor(R2)),
+  colour = "firebrick",
+  x = "",
+  y = ""
+)
+
+
+chart
+
+===== layer_text_heatmap_joinaggregate.vl.json [EXEC] =====
+ℹ In argument: `more_than_half = num_cars > 0.5 * max_num_cars`.
+Caused by error:
+! object 'max_num_cars' not found
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/cars.json")
+layer_data <- dplyr::group_by(layer_data, Origin, Cylinders)
+layer_data <- dplyr::summarise(layer_data, num_cars = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+layer_data <- dplyr::mutate(layer_data, more_than_half = num_cars > 0.5 * max_num_cars)
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Origin), x = factor(Cylinders)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_tile(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = factor(Origin), x = factor(Cylinders), fill = num_cars)
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer2_data,
+  mapping = ggplot2::aes(
+  y = factor(Origin),
+  x = factor(Cylinders),
+  label = num_cars,
+  colour = factor(more_than_half)
+)
+)
+chart <- chart + ggplot2::scale_colour_manual(breaks = c(FALSE, TRUE), values = c("black", "white"))
+
+
+chart
+
+===== line_color_halo.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'AAPL' not found
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = date, y = AAPL),
+  colour = "white",
+  linewidth = 4
+)
+layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = date, y = AAPL),
+  colour = "AAPL"
+)
+layer3_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = date, y = AMZN),
+  colour = "white",
+  linewidth = 4
+)
+layer4_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer4_data <- dplyr::mutate(layer4_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer4_data,
+  mapping = ggplot2::aes(x = date, y = AMZN),
+  colour = "AMZN"
+)
+layer5_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer5_data <- dplyr::mutate(layer5_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer5_data,
+  mapping = ggplot2::aes(x = date, y = GOOG),
+  colour = "white",
+  linewidth = 4
+)
+layer6_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer6_data <- dplyr::mutate(layer6_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer6_data,
+  mapping = ggplot2::aes(x = date, y = GOOG),
+  colour = "GOOG"
+)
+layer7_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer7_data <- dplyr::mutate(layer7_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer7_data,
+  mapping = ggplot2::aes(x = date, y = IBM),
+  colour = "white",
+  linewidth = 4
+)
+layer8_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer8_data <- dplyr::mutate(layer8_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer8_data,
+  mapping = ggplot2::aes(x = date, y = IBM),
+  colour = "IBM"
+)
+layer9_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer9_data <- dplyr::mutate(layer9_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer9_data,
+  mapping = ggplot2::aes(x = date, y = MSFT),
+  colour = "white",
+  linewidth = 4
+)
+layer10_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer10_data <- dplyr::mutate(layer10_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+chart <- chart + ggplot2::geom_line(
+  data = layer10_data,
+  mapping = ggplot2::aes(x = date, y = MSFT),
+  colour = "MSFT"
+)
+
+
+chart
+
+===== lookup.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'age' not found
+library(ggplot2)
+
+chart_data <- read.csv("data/lookup_groups.csv", stringsAsFactors = FALSE, check.names = FALSE)
+# vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = group, y = age),
+  stat = "summary",
+  fun = "mean"
+)
+
+
+chart
+
+===== parallel_coordinate.vl.json [TRANSLATE] =====
+argument is of length zero
+
+
+===== point_quantile_quantile.vl.json [EXEC] =====
+ℹ In argument: `unif = quantileUniform(p)`.
+Caused by error in `quantileUniform()`:
+! could not find function "quantileUniform"
+library(ggplot2)
+
+hconcat1_data <- jsonlite::fromJSON("data/normal-2d.json")
+# vl2ggplot: skipped unsupported transform type "quantile" (ignore_unsupported)
+hconcat1_data <- dplyr::mutate(hconcat1_data, unif = quantileUniform(p))
+hconcat1_data <- dplyr::mutate(hconcat1_data, norm = quantileNormal(p))
+hconcat1 <- ggplot2::ggplot(hconcat1_data)
+hconcat1 <- hconcat1 + ggplot2::geom_point(mapping = ggplot2::aes(x = unif, y = v))
+hconcat2_data <- jsonlite::fromJSON("data/normal-2d.json")
+# vl2ggplot: skipped unsupported transform type "quantile" (ignore_unsupported)
+hconcat2_data <- dplyr::mutate(hconcat2_data, unif = quantileUniform(p))
+hconcat2_data <- dplyr::mutate(hconcat2_data, norm = quantileNormal(p))
+hconcat2 <- ggplot2::ggplot(hconcat2_data)
+hconcat2 <- hconcat2 + ggplot2::geom_point(mapping = ggplot2::aes(x = norm, y = v))
+chart <- patchwork::wrap_plots(list(hconcat1, hconcat2), ncol = 2)
+
+
+chart
+
+===== rect_binned_heatmap.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/movies.json")
+chart_data <- dplyr::filter(chart_data, (!is.na(`IMDB Rating`)) & (!is.na(`Rotten Tomatoes Rating`)))
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_histogram(
+  mapping = ggplot2::aes(x = `IMDB Rating`, y = `Rotten Tomatoes Rating`),
+  bins = 60
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 200)
+
+
+chart
+
+===== rect_mosaic_labelled_with_offset.vl.json [TRANSLATE] =====
+values must be length 1,
+ but FUN(X[[4]]) result is length 0
+
+
+===== rect_mosaic_labelled.vl.json [EXEC] =====
+ℹ In argument: `xc = (x + x2)/2`.
+Caused by error:
+! object 'x' not found
+library(ggplot2)
+
+vconcat1_data <- jsonlite::fromJSON("data/cars.json")
+vconcat1_data <- dplyr::group_by(vconcat1_data, Origin, Cylinders)
+vconcat1_data <- dplyr::summarise(vconcat1_data, `count_*` = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+vconcat1_data <- dplyr::mutate(vconcat1_data, xc = (x+x2)/2)
+vconcat1_data <- dplyr::mutate(vconcat1_data, yc = (y+y2)/2)
+vconcat1 <- ggplot2::ggplot(vconcat1_data)
+vconcat1 <- vconcat1 + ggplot2::geom_text(
+  mapping = ggplot2::aes(x = xc, colour = Origin, label = Origin, y = ""),
+  stat = "summary",
+  fun = "min",
+  orientation = "y"
+)
+vconcat2_data <- jsonlite::fromJSON("data/cars.json")
+vconcat2_data <- dplyr::group_by(vconcat2_data, Origin, Cylinders)
+vconcat2_data <- dplyr::summarise(vconcat2_data, `count_*` = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+vconcat2_data <- dplyr::mutate(vconcat2_data, xc = (x+x2)/2)
+vconcat2_data <- dplyr::mutate(vconcat2_data, yc = (y+y2)/2)
+vconcat2 <- ggplot2::ggplot(vconcat2_data)
+vconcat21_data <- vconcat2_data
+vconcat2 <- vconcat2 + ggplot2::geom_rect(
+  data = vconcat21_data,
+  mapping = ggplot2::aes(
+  fill = factor(Origin),
+  alpha = Cylinders,
+  ymin = y,
+  ymax = y2,
+  xmin = x,
+  xmax = x2
+)
+)
+vconcat22_data <- vconcat2_data
+vconcat2 <- vconcat2 + ggplot2::geom_text(
+  data = vconcat22_data,
+  mapping = ggplot2::aes(x = xc, y = yc, label = factor(Cylinders))
+)
+chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
+
+
+chart
+
+===== rect_mosaic_simple.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'y' not found
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/cars.json")
+chart_data <- dplyr::group_by(chart_data, Origin, Cylinders)
+chart_data <- dplyr::summarise(chart_data, `count_*` = dplyr::n(), .groups = "drop")
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_rect(
+  mapping = ggplot2::aes(
+  fill = factor(Origin),
+  alpha = Cylinders,
+  ymin = y,
+  ymax = y2,
+  xmin = x,
+  xmax = x2
+)
+)
+
+
+chart
+
+===== sequence_line_fold.vl.json [EXEC] =====
+ℹ In argument: `sin(x) = sin(x)`.
+Caused by error:
+! object 'x' not found
+library(ggplot2)
+
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+chart_data <- data.frame()
+chart_data <- dplyr::mutate(chart_data, `sin(x)` = sin(x))
+chart_data <- dplyr::mutate(chart_data, `cos(x)` = cos(x))
+# vl2ggplot: skipped unsupported transform type "fold" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_line(mapping = ggplot2::aes(x = x, y = value, colour = factor(key)))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 150)
+
+
+chart
+
+===== sequence_line.vl.json [EXEC] =====
+ℹ In argument: `sin(x) = sin(x)`.
+Caused by error:
+! object 'x' not found
+library(ggplot2)
+
+# vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
+chart_data <- data.frame()
+chart_data <- dplyr::mutate(chart_data, `sin(x)` = sin(x))
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_line(mapping = ggplot2::aes(x = x, y = `sin(x)`))
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 150)
+
+
+chart
+
+===== stacked_bar_population_transform.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error:
+! object 'v1' not found
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/population.json")
+chart_data <- dplyr::filter(chart_data, year == 2000)
+chart_data <- dplyr::mutate(chart_data, gender = ifelse(sex == 2, 'Female', 'Male'))
+# vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_linerange(
+  mapping = ggplot2::aes(x = factor(age), fill = factor(gender), ymin = v1, ymax = v2)
+)
+chart <- chart + ggplot2::scale_fill_manual(values = c("#675193", "#ca8861"))
+# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = list(step = 17))
+
+
+chart
+
+===== ternary.vl.json [EXEC] =====
+ℹ In argument: `tooltip_high = paste0(...)`.
+Caused by error in `isValid()`:
+! could not find function "isValid"
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+layer1_data <- data.frame(
+  x = c(0.25, 0.75, 0.5),
+  y = c(0.433, 0.433, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#c8edf1a2",
+  colour = "#c8edf1a2",
+  linewidth = 0.2
+)
+layer2_data <- data.frame(
+  x = c(0, 0.25, 0.5),
+  y = c(0, 0.433, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#f7b7b7",
+  colour = "#f7b7b7",
+  linewidth = 0.2
+)
+layer3_data <- data.frame(
+  x = c(0, 0.1, 0.2),
+  y = c(0, 0.1732, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#ff7a7a",
+  colour = "#ff7a7a",
+  linewidth = 0.2
+)
+layer4_data <- data.frame(
+  x = c(1, 0.75, 0.5),
+  y = c(0, 0.433, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer4_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#d1ffdb",
+  colour = "#d1ffdb",
+  linewidth = 0.2
+)
+layer5_data <- data.frame(
+  x = c(1, 0.9, 0.8),
+  y = c(0, 0.1732, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer5_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#7cff98",
+  colour = "#7cff98",
+  linewidth = 0.2
+)
+layer6_data <- data.frame(
+  x = c(0.5, 0.25, 0.75),
+  y = c(0.866, 0.433, 0.433),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer6_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#ffd26f",
+  colour = "#ffd26f",
+  linewidth = 0.2
+)
+layer7_data <- data.frame(
+  x = c(0.5, 0.4, 0.6),
+  y = c(0.866, 0.6928, 0.6928),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_line(
+  data = layer7_data,
+  mapping = ggplot2::aes(x = x, y = y),
+  fill = "#fff0cf",
+  colour = "#fff0cf",
+  linewidth = 0.2
+)
+layer8_data <- data.frame(
+  x = c(-0.05, 1.05, 0.5),
+  y = c(-0.05, -0.05, 0.888),
+  label = c("High 100%", "Low 100%", "Medium 100%"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_text(
+  data = layer8_data,
+  mapping = ggplot2::aes(x = x, y = y, label = factor(label)),
+  colour = "#000000"
+)
+layer9_data <- data.frame(
+  x = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45),
+  y = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794),
+  x2 = c(0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55),
+  y2 = c(0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794, 0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794, 0.0866, 0.1732, 0.2598, 0.3464, 0.433, 0.5196, 0.6062, 0.6928, 0.7794),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: "rule" mark has neither x nor y encoding, drawing nothing (ignore_unsupported)
+chart <- chart + ggplot2::geom_blank()
+layer10_data <- data.frame(
+  City = c("Luminar", "Crystalport", "Stellaheim", "Mistral Heights", "Verdancia", "Aurelian City", "Solaris Bay", "Sandspire", "Azureon", "Goldcrest"),
+  High = c(5, 35, 115, 30, 120, 28, 32, 12, 40, 18),
+  Medium = c(50, 60, 40, 45, 35, 48, 458, 30, 50, 28),
+  Low = c(30, 20, 70, 252, 2, 32, 55, 55, 15, 35),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer10_data <- dplyr::mutate(layer10_data, TotalLevel = High + Medium + Low)
+layer10_data <- dplyr::mutate(layer10_data, high_percent = High/TotalLevel)
+layer10_data <- dplyr::mutate(layer10_data, medium_percent = Medium/TotalLevel)
+layer10_data <- dplyr::mutate(layer10_data, low_percent = Low/TotalLevel)
+layer10_data <- dplyr::mutate(layer10_data, x = 0.5 * (2 * low_percent + medium_percent))
+layer10_data <- dplyr::mutate(layer10_data, y = 0.866 * medium_percent)
+layer10_data <- dplyr::mutate(layer10_data, tooltip_high = paste0(toString(isValid(High) ? High : 0), ' (', toString(round((isValid(high_percent) ? high_percent : 0) * 100, 1)), '%)'))
+layer10_data <- dplyr::mutate(layer10_data, tooltip_medium = paste0(toString(isValid(Medium) ? Medium : 0), ' (', toString(round((isValid(medium_percent) ? medium_percent : 0) * 100, 1)), '%)'))
+layer10_data <- dplyr::mutate(layer10_data, tooltip_low = paste0(toString(isValid(Low) ? Low : 0), ' (', toString(round((isValid(low_percent) ? low_percent : 0) * 100, 1)), '%)'))
+layer10_data <- dplyr::filter(layer10_data, City != NA)
+layer10_data <- dplyr::mutate(layer10_data, leng = length(City))
+layer10_data <- dplyr::mutate(layer10_data, Xleng = (x*100 - length(City))/100)
+layer10_data <- dplyr::mutate(layer10_data, Xleng2 = (x*100 + length(City))/100)
+layer10_data <- dplyr::mutate(layer10_data, color = ifelse(high_percent > 0.8, '#FF0F0F', ifelse(medium_percent > 0.8, '#FFC333', ifelse(low_percent > 0.8, '#32F95D', ifelse(high_percent > 0.5 & medium_percent > low_percent, '#ff3c18', ifelse(high_percent > 0.5 & medium_percent < low_percent, '#cb4922', ifelse(medium_percent > 0.5 & high_percent > low_percent, '#ff962a', ifelse(medium_percent > 0.5 & high_percent < low_percent, '#cbd03d', ifelse(low_percent > 0.5 & medium_percent < high_percent, '#65be49', ifelse(low_percent > 0.5 & medium_percent > high_percent, '#65eb52', '#43c1ce'))))))))))
+layer10_data <- dplyr::mutate(layer10_data, dy_val = ifelse(medium_percent > 0.9, 15, -15))
+chart <- chart + ggplot2::geom_point(
+  data = layer10_data,
+  mapping = ggplot2::aes(x = x, y = y, fill = factor(color), size = TotalLevel),
+  colour = "#000000",
+  alpha = 1,
+  stroke = 1.5
+)
+layer11_data <- data.frame(
+  City = c("Luminar", "Crystalport", "Stellaheim", "Mistral Heights", "Verdancia", "Aurelian City", "Solaris Bay", "Sandspire", "Azureon", "Goldcrest"),
+  High = c(5, 35, 115, 30, 120, 28, 32, 12, 40, 18),
+  Medium = c(50, 60, 40, 45, 35, 48, 458, 30, 50, 28),
+  Low = c(30, 20, 70, 252, 2, 32, 55, 55, 15, 35),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer11_data <- dplyr::mutate(layer11_data, TotalLevel = High + Medium + Low)
+layer11_data <- dplyr::mutate(layer11_data, high_percent = High/TotalLevel)
+layer11_data <- dplyr::mutate(layer11_data, medium_percent = Medium/TotalLevel)
+layer11_data <- dplyr::mutate(layer11_data, low_percent = Low/TotalLevel)
+layer11_data <- dplyr::mutate(layer11_data, x = 0.5 * (2 * low_percent + medium_percent))
+layer11_data <- dplyr::mutate(layer11_data, y = 0.866 * medium_percent)
+layer11_data <- dplyr::mutate(layer11_data, tooltip_high = paste0(toString(isValid(High) ? High : 0), ' (', toString(round((isValid(high_percent) ? high_percent : 0) * 100, 1)), '%)'))
+layer11_data <- dplyr::mutate(layer11_data, tooltip_medium = paste0(toString(isValid(Medium) ? Medium : 0), ' (', toString(round((isValid(medium_percent) ? medium_percent : 0) * 100, 1)), '%)'))
+layer11_data <- dplyr::mutate(layer11_data, tooltip_low = paste0(toString(isValid(Low) ? Low : 0), ' (', toString(round((isValid(low_percent) ? low_percent : 0) * 100, 1)), '%)'))
+layer11_data <- dplyr::filter(layer11_data, City != NA)
+layer11_data <- dplyr::mutate(layer11_data, leng = length(City))
+layer11_data <- dplyr::mutate(layer11_data, Xleng = (x*100 - length(City))/100)
+layer11_data <- dplyr::mutate(layer11_data, Xleng2 = (x*100 + length(City))/100)
+layer11_data <- dplyr::mutate(layer11_data, color = ifelse(high_percent > 0.8, '#FF0F0F', ifelse(medium_percent > 0.8, '#FFC333', ifelse(low_percent > 0.8, '#32F95D', ifelse(high_percent > 0.5 & medium_percent > low_percent, '#ff3c18', ifelse(high_percent > 0.5 & medium_percent < low_percent, '#cb4922', ifelse(medium_percent > 0.5 & high_percent > low_percent, '#ff962a', ifelse(medium_percent > 0.5 & high_percent < low_percent, '#cbd03d', ifelse(low_percent > 0.5 & medium_percent < high_percent, '#65be49', ifelse(low_percent > 0.5 & medium_percent > high_percent, '#65eb52', '#43c1ce'))))))))))
+layer11_data <- dplyr::mutate(layer11_data, dy_val = ifelse(medium_percent > 0.9, 15, -15))
+chart <- chart + ggplot2::geom_text(
+  data = layer11_data,
+  mapping = ggplot2::aes(x = x, y = y, label = factor(City)),
+  colour = "#000000"
+)
+chart <- chart + ggplot2::scale_size(range = c(50, 500))
+chart <- chart + ggplot2::labs(title = "Population Distribution by Socioeconomic Level in Fictional Cities")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 625, height = 541.25)
+
+
+chart
+
+===== test_aggregate_nested.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "properties.variety" (dot-path into a sub-object) is not supported
+
+
+===== test_subobject_missing.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "options.price" (dot-path into a sub-object) is not supported
+
+
+===== test_subobject_nested.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "source.reco" (dot-path into a sub-object) is not supported
+
+
+===== test_subobject.vl.json [EXEC] =====
+'\.' is an unrecognized escape in character string (<input>:6:73)
+library(ggplot2)
+
+# vl2ggplot: unsupported data "format.property" (extracting a nested array from a larger JSON object), using an empty data.frame instead (ignore_unsupported)
+chart_data <- data.frame()
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(x = `source\.reco`, y = `source\.yes`))
+
+
+chart
+
+===== time_parse_local.vl.json [EXEC] =====
+ℹ In argument: `date = if (...) NULL`.
+Caused by error in `charToDate()`:
+! character string is not in a standard unambiguous format
+library(ggplot2)
+
+chart_data <- data.frame(
+  date = c("10 Oct 2011 22:48:00", "11 Oct 2022 23:00:00"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported timeUnit "hoursminutes", left untruncated (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, hoursminutes_date = date)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(y = factor(hoursminutes_date), x = ""))
+
+
+chart
+
+===== time_parse_utc_format.vl.json [EXEC] =====
+ℹ In argument: `date = if (...) NULL`.
+Caused by error in `charToDate()`:
+! character string is not in a standard unambiguous format
+library(ggplot2)
+
+chart_data <- data.frame(
+  date = c("10 Oct 2011 22:48:00", "11 Oct 2022 23:00:00"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart_data <- dplyr::mutate(chart_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+# vl2ggplot: unsupported timeUnit "hoursminutes", left untruncated (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, hoursminutes_date = date)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(y = factor(hoursminutes_date), x = ""))
+
+
+chart
+
+===== trail_comet.vl.json [EXEC] =====
+ℹ In argument: `year = toNumber(year)`.
+Caused by error in `toNumber()`:
+! could not find function "toNumber"
+library(ggplot2)
+
+chart_data <- jsonlite::fromJSON("data/barley.json")
+# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "fold" (ignore_unsupported)
+chart_data <- dplyr::mutate(chart_data, year = toNumber(year))
+chart_data <- dplyr::mutate(chart_data, delta = `1932` - `1931`)
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_line(
+  mapping = ggplot2::aes(x = year, y = variety, size = yield, colour = delta)
+)
+chart <- chart + ggplot2::scale_size(range = c(0, 12))
+chart <- chart + ggplot2::labs(title = "Barley Yield comparison between 1932 and 1931")
+chart <- chart + ggplot2::facet_grid(cols = dplyr::vars(site))
+
+
+chart
+
+===== trellis_cross_sort_array.vl.json [EXEC] =====
+ℹ In argument: `median_median_x_by_a = median(median_x_by_a, na.rm =
+  TRUE)`.
+Caused by error:
+! object 'median_x_by_a' not found
+library(ggplot2)
+
+view_data <- data.frame(
+  a = c("A", "A", "A", "B", "B", "B", "C", "C", "C"),
+  b = c("X", "Y", "Z", "X", "Y", "Z", "X", "Y", "Z"),
+  x = c(1, 3, 5, 2, 9, 8, 7, 6, 4),
+  y = c(4, 5, 6, 7, 8, 9, 1, 2, 3),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+view <- ggplot2::ggplot(view_data)
+view1_data <- view_data
+view <- view + ggplot2::geom_point(data = view1_data, mapping = ggplot2::aes(x = x, y = y))
+view2_data <- view_data
+view2_data <- dplyr::summarise(view2_data, median_median_x_by_a = median(median_x_by_a, na.rm = TRUE))
+view <- view + ggplot2::geom_vline(
+  data = view2_data,
+  mapping = ggplot2::aes(xintercept = median_median_x_by_a)
+)
+view3_data <- view_data
+view3_data <- dplyr::summarise(view3_data, median_median_y_by_b = median(median_y_by_b, na.rm = TRUE))
+view <- view + ggplot2::geom_hline(
+  data = view3_data,
+  mapping = ggplot2::aes(yintercept = median_median_y_by_b)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 50, height = 50)
+chart <- view + ggplot2::facet_grid(rows = dplyr::vars(b), cols = dplyr::vars(a))
+
+
+chart
+
+===== trellis_cross_sort.vl.json [EXEC] =====
+ℹ In argument: `median_median_x_by_a = median(median_x_by_a, na.rm =
+  TRUE)`.
+Caused by error:
+! object 'median_x_by_a' not found
+library(ggplot2)
+
+view_data <- data.frame(
+  a = c("A", "A", "A", "B", "B", "B", "C", "C", "C"),
+  b = c("X", "Y", "Z", "X", "Y", "Z", "X", "Y", "Z"),
+  x = c(1, 3, 5, 2, 9, 8, 7, 6, 4),
+  y = c(4, 5, 6, 7, 8, 9, 1, 2, 3),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+# vl2ggplot: skipped unsupported transform type "joinaggregate" (ignore_unsupported)
+view <- ggplot2::ggplot(view_data)
+view1_data <- view_data
+view <- view + ggplot2::geom_point(data = view1_data, mapping = ggplot2::aes(x = x, y = y))
+view2_data <- view_data
+view2_data <- dplyr::summarise(view2_data, median_median_x_by_a = median(median_x_by_a, na.rm = TRUE))
+view <- view + ggplot2::geom_vline(
+  data = view2_data,
+  mapping = ggplot2::aes(xintercept = median_median_x_by_a)
+)
+view3_data <- view_data
+view3_data <- dplyr::summarise(view3_data, median_median_y_by_b = median(median_y_by_b, na.rm = TRUE))
+view <- view + ggplot2::geom_hline(
+  data = view3_data,
+  mapping = ggplot2::aes(yintercept = median_median_y_by_b)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 50, height = 50)
+chart <- view + ggplot2::facet_grid(rows = dplyr::vars(b), cols = dplyr::vars(a))
+
+
+chart
+
+===== vconcat_flatten.vl.json [TRANSLATE] =====
+Unsupported: nested field reference "lc.time" (dot-path into a sub-object) is not supported
+
+
+===== vconcat_weather.vl.json [EXEC] =====
+Problem while computing stat.
+ℹ Error occurred in the 1st layer.
+Caused by error in `setup_params()`:
+! `stat_bin()` must only have an x or y aesthetic.
+library(ggplot2)
+
+vconcat1_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+vconcat1_data <- dplyr::mutate(vconcat1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+vconcat1_data <- dplyr::filter(vconcat1_data, location == 'Seattle')
+vconcat1 <- ggplot2::ggplot(vconcat1_data)
+vconcat1 <- vconcat1 + ggplot2::geom_col(
+  mapping = ggplot2::aes(x = factor(date), y = precipitation),
+  stat = "summary",
+  fun = "mean"
+)
+vconcat2_data <- read.csv("data/weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+vconcat2_data <- dplyr::filter(vconcat2_data, location == 'Seattle')
+# vl2ggplot: unsupported binning combined with additional groupby channels, keeping only the binned channel (ignore_unsupported)
+vconcat2 <- ggplot2::ggplot(vconcat2_data)
+vconcat2 <- vconcat2 + ggplot2::geom_histogram(mapping = ggplot2::aes(x = temp_min, y = temp_max), bins = 30)
+chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
+
+
+chart
+
+===== waterfall_chart.vl.json [EXEC] =====
+ℹ In argument: `text_amount = +...`.
+Caused by error in `"+":""`:
+! NA/NaN argument
+library(ggplot2)
+
+layer_data <- data.frame(
+  label = c("Begin", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "End"),
+  amount = c(4000, 1707, -1425, -1030, 1812, -1067, -1481, 1228, 1176, 1146, 1205, -1388, 1492, 0),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer_data <- dplyr::mutate(layer_data, sum = sum(amount, na.rm = TRUE))
+layer_data <- dplyr::ungroup(layer_data)
+layer_data <- dplyr::mutate(layer_data, lead = dplyr::lead(label, n = 1))
+layer_data <- dplyr::ungroup(layer_data)
+layer_data <- dplyr::mutate(layer_data, lead = ifelse(lead == NA, label, lead))
+layer_data <- dplyr::mutate(layer_data, previous_sum = ifelse(label == 'End', 0, sum - amount))
+layer_data <- dplyr::mutate(layer_data, amount = ifelse(label == 'End', sum, amount))
+layer_data <- dplyr::mutate(layer_data, text_amount = (label != 'Begin' & label != 'End' & amount > 0 ? '+' : '') + amount)
+layer_data <- dplyr::mutate(layer_data, center = (sum + previous_sum) / 2)
+chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = factor(label)))
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_linerange(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = factor(label), ymin = previous_sum, ymax = sum),
+  fill = "#93c4aa"
+)
+layer2_data <- layer_data
+chart <- chart + ggplot2::geom_segment(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = factor(label), y = sum, xend = lead, yend = sum),
+  colour = 2,
+  alpha = 1,
+  linewidth = 2
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = factor(label), y = sum, label = factor(sum))
+)
+layer4_data <- layer_data
+chart <- chart + ggplot2::geom_text(
+  data = layer4_data,
+  mapping = ggplot2::aes(x = factor(label), y = center, label = factor(text_amount)),
+  colour = "white"
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 450)
+
+
+chart
+
+===== wheat_wages.vl.json [EXEC] =====
+<text>:47:76: unexpected input
+46: layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+47: layer6_data <- dplyr::mutate(layer6_data, offset = ((!commonwealth & index % 2) ? -1: 1) * 2 + 95)
+                                                                               ^
+library(ggplot2)
+
+layer_data <- jsonlite::fromJSON("data/wheat.json")
+layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- layer_data
+chart <- chart + ggplot2::geom_linerange(
+  data = layer1_data,
+  mapping = ggplot2::aes(y = wheat, xmin = year, xmax = year_end),
+  fill = "#aaa",
+  colour = "#999",
+  linewidth = 10
+)
+layer2_data <- data.frame(
+  year = c("1600", "1650", "1700", "1750", "1800"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- chart + ggplot2::geom_vline(
+  data = layer2_data,
+  mapping = ggplot2::aes(xintercept = year),
+  colour = "#000",
+  alpha = 0.5,
+  linewidth = 0.6
+)
+layer3_data <- layer_data
+chart <- chart + ggplot2::geom_area(
+  data = layer3_data,
+  mapping = ggplot2::aes(y = wages, x = year),
+  fill = "#a4cedb",
+  alpha = 0.7
+)
+layer4_data <- layer_data
+chart <- chart + ggplot2::geom_line(
+  data = layer4_data,
+  mapping = ggplot2::aes(y = wages, x = year),
+  colour = "#000",
+  alpha = 0.7
+)
+layer5_data <- layer_data
+chart <- chart + ggplot2::geom_line(
+  data = layer5_data,
+  mapping = ggplot2::aes(y = wages, x = year),
+  colour = "#EE8182"
+)
+layer6_data <- jsonlite::fromJSON("data/monarchs.json")
+layer6_data <- dplyr::mutate(layer6_data, offset = ((!commonwealth & index % 2) ? -1: 1) * 2 + 95)
+layer6_data <- dplyr::mutate(layer6_data, y = 95)
+chart <- chart + ggplot2::geom_rect(
+  data = layer6_data,
+  mapping = ggplot2::aes(fill = commonwealth, ymin = y, ymax = offset, xmin = start, xmax = end),
+  colour = "#000"
+)
+layer7_data <- jsonlite::fromJSON("data/monarchs.json")
+layer7_data <- dplyr::mutate(layer7_data, off2 = ((!commonwealth & index % 2) ? -1: 1) + 95)
+layer7_data <- dplyr::mutate(layer7_data, x = +start + (+end - +start)/2)
+chart <- chart + ggplot2::geom_text(
+  data = layer7_data,
+  mapping = ggplot2::aes(y = off2, x = x, label = name)
+)
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 900, height = 400)
+
+
+chart
+
