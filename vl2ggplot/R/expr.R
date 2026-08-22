@@ -15,23 +15,6 @@
 
 .identifier_re <- "[A-Za-z_.][A-Za-z0-9_.]*"
 
-#' JS-style truthiness for a Vega-Lite string-expression filter
-#'
-#' A Vega-Lite `"filter": "datum.field"` expression (no comparison at all)
-#' relies on JS's truthy/falsy coercion -- `0`, `""`, `null`/`undefined`, and
-#' `NaN` are dropped, everything else kept. `dplyr::filter()` requires a
-#' strict logical vector, so every translated string-filter expression is
-#' wrapped in this at generated-code run time (a bare comparison already
-#' yields a logical, which this passes through unchanged modulo NA-as-FALSE).
-#' Exported (not just internal) because it is referenced by name from the
-#' standalone R code this package generates, which runs after `library(vl2ggplot)`.
-#' @export
-vl_truthy <- function(x) {
-  if (is.logical(x)) return(!is.na(x) & x)
-  if (is.character(x)) return(!is.na(x) & x != "")
-  !is.na(x) & x != 0
-}
-
 # R already has abs/sqrt/log/exp/sign/cos/sin/tan/atan under the same name;
 # these few differ from their Vega/JS spelling. toNumber/toBoolean/toString
 # are 1-argument type coercions with an exact base-R equivalent (unlike
@@ -74,6 +57,13 @@ field_ref <- function(field) {
   if (grepl("(?<!\\\\)\\.", field, perl = TRUE)) {
     stop(sprintf('Unsupported: nested field reference "%s" (dot-path into a sub-object) is not supported', field))
   }
+  # Now that every remaining dot is known to be an escaped, literal one,
+  # undo the escaping -- the real column name has no backslash in it at
+  # all, and R's own backtick-quoted-name syntax parses backslash escapes
+  # the same way a string literal does, so a bare `\.` left in (not a
+  # recognized escape like `\n`/`\\`) is an R *parse error*, not just a
+  # lookup miss.
+  field <- gsub("\\\\(.)", "\\1", field, perl = TRUE)
   if (grepl(paste0("^", .identifier_re, "$"), field)) field else paste0("`", field, "`")
 }
 

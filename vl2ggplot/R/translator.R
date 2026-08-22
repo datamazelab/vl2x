@@ -88,6 +88,25 @@ extract_date_function_fields <- function(expr) {
 # inherited data, not destructively to the shared variable every sibling
 # layer also reads, so a copy (`data2 <- data1`) is made first rather than
 # reassigning `inherited_data_var` in place.
+# Vega-Lite escapes a literal special character inside a field NAME (most
+# commonly `.`, to distinguish "a.b" the column from a nested-path access
+# into column "a"'s "b" property) with a leading backslash. field_ref()
+# undoes this for its own callers, but a couple of other places
+# (collect_temporal_fields()'s output, used both as a field_ref() input AND
+# as a bare render_name()'d assignment target in render_temporal_coercion())
+# read `$field` directly rather than through field_ref() -- so this is
+# applied once, up front, to every channel's `field` in a view's own
+# encoding, before anything else (including field_ref()) ever sees it.
+unescape_encoding_fields <- function(encoding) {
+  for (ch in names(encoding)) {
+    field <- encoding[[ch]]$field
+    if (is.character(field) && length(field) == 1 && grepl("\\\\", field)) {
+      encoding[[ch]]$field <- gsub("\\\\(.)", "\\1", field, perl = TRUE)
+    }
+  }
+  encoding
+}
+
 # A Vega-Lite field name is normally a plain (possibly dotted/escaped)
 # property path, but a compound aggregate result (`argmin`/`argmax`, which
 # stores the *whole matching row* under its `as` name -- see aggops.R) is
@@ -129,7 +148,7 @@ flatten_bracket_fields <- function(encoding, work_var) {
 }
 
 prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL) {
-  node_encoding <- node$encoding %||% list()
+  node_encoding <- unescape_encoding_fields(node$encoding %||% list())
   geo_channel <- intersect(names(node_encoding), .geo_channels)
   if (length(geo_channel) > 0) {
     if (!ignore_unsupported) {
@@ -403,7 +422,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   base_hint <- if (identical(hint, "chart")) "layer" else hint
   plot_var <- new_var(emitter, hint)
 
-  wrapper_encoding <- spec$encoding %||% list()
+  wrapper_encoding <- unescape_encoding_fields(spec$encoding %||% list())
   has_nested_layer <- any(vapply(spec$layer, function(c) !is.null(c$layer), logical(1)))
   if (has_nested_layer && !ignore_unsupported) {
     stop("Unsupported: nested layer-of-layers is not yet supported by vl2ggplot")
@@ -704,8 +723,16 @@ vegalite_to_ggplot <- function(spec, chart_var = "chart", ignore_unsupported = F
   emitter <- new_emitter()
   final_var <- translate_spec(spec, emitter, chart_var, ignore_unsupported)
 
-  header <- c("library(ggplot2)", "")
   body <- emitter$lines
+  # A shared vl2ggplot-exported helper (vl_truthy/vl_pivot/...) is only
+  # referenced by name in the generated body -- rather than thread a "which
+  # helpers were used" value through every render function that might need
+  # one, just check the finished text for each known helper's call syntax
+  # and load the package only when at least one is actually present (a
+  # plain generated script otherwise depends on nothing beyond ggplot2/dplyr).
+  body_text <- paste(body, collapse = "\n")
+  needs_vl2ggplot <- any(vapply(RUNTIME_EXPORTS, function(fn) grepl(paste0(fn, "("), body_text, fixed = TRUE), logical(1)))
+  header <- c("library(ggplot2)", if (needs_vl2ggplot) "library(vl2ggplot)", "")
   tail <- if (!identical(final_var, chart_var)) sprintf("%s <- %s", chart_var, final_var) else NULL
 
   paste(c(header, body, "", tail, "", chart_var), collapse = "\n")

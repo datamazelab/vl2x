@@ -37,8 +37,22 @@
 normalize_timeunit <- function(unit) {
   name <- if (is.list(unit)) unit$unit else unit
   if (!is.character(name)) return(name)
-  if (startsWith(name, "utc")) name <- substring(name, 4)
-  if (startsWith(name, "binned")) name <- substring(name, 7)
+  # The two prefixes can appear in either order (e.g. "binnedutcyearmonthdate"
+  # as well as a hypothetical "utcbinnedyearmonthdate") -- strip both,
+  # repeating until neither matches, rather than only checking each once in
+  # a fixed order (which would leave "binnedutc..." only half-stripped).
+  repeat {
+    stripped <- FALSE
+    if (startsWith(name, "utc")) {
+      name <- substring(name, 4)
+      stripped <- TRUE
+    }
+    if (startsWith(name, "binned")) {
+      name <- substring(name, 7)
+      stripped <- TRUE
+    }
+    if (!stripped) break
+  }
   name
 }
 

@@ -175,6 +175,25 @@ test('top-level aggregate transform', async () => {
   assert.equal(document.querySelectorAll('rect').length, 2);
 });
 
+test('pivot transform', async () => {
+  const {document, code} = await renderSpec({
+    data: {
+      values: [
+        {date: '2020-01-01', symbol: 'A', price: 1},
+        {date: '2020-01-01', symbol: 'B', price: 2},
+        {date: '2020-01-02', symbol: 'A', price: 3},
+        {date: '2020-01-02', symbol: 'B', price: 4},
+      ],
+    },
+    transform: [{pivot: 'symbol', value: 'price', groupby: ['date']}],
+    mark: 'line',
+    encoding: {x: {field: 'date', type: 'nominal'}, y: {field: 'A', type: 'quantitative'}},
+  });
+  assert.match(code, /from "\.\/vl2d3-runtime\.js"/);
+  assert.match(code, /vlPivot\(/);
+  assert.equal(marksOf(document, 'path').length, 1);
+});
+
 test('layered bar + rule sharing scales', async () => {
   const {document} = await renderSpec({
     data: {values: [{a: 'A', b: 10}, {a: 'B', b: 20}]},

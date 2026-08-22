@@ -21,6 +21,7 @@ Suggests:
 Config/testthat/edition: 3
 Collate:
     'literals.R'
+    'runtime.R'
     'timeunit.R'
     'aggops.R'
     'expr.R'

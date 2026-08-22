@@ -91,6 +91,9 @@ render_one_transform <- function(t, var_name, ignore_unsupported = FALSE) {
   if (!is.null(t$fold)) {
     return(render_fold_transform(t, var_name))
   }
+  if (!is.null(t$pivot)) {
+    return(render_pivot_transform(t, var_name))
+  }
   if (ignore_unsupported) {
     # Skip this one step -- the rest of the transform pipeline (and the
     # chart as a whole) still runs on whatever data shape existed before it,
@@ -331,6 +334,24 @@ render_fold_transform <- function(t, var_name) {
     "%s <- do.call(rbind, lapply(c(%s), function(.f) { .d <- %s; .d[[%s]] <- .f; .d[[%s]] <- .d[[.f]]; .d }))",
     var_name, fields_vec, var_name, key_str, value_str
   )
+}
+
+# `pivot` (fold's inverse: rows -> columns) needs real per-group
+# bookkeeping (collect duplicates, aggregate them, keep a stable, possibly
+# limited column ordering) that would be error-prone to re-derive inline on
+# every call site -- delegated to the shared vl_pivot() runtime helper
+# instead (see runtime.R); vegalite_to_ggplot()'s header adds the
+# `library(vl2ggplot)` this needs whenever the generated code actually calls it.
+render_pivot_transform <- function(t, var_name) {
+  args <- c(
+    var_name,
+    render_string(t$pivot),
+    render_string(t$value),
+    sprintf("groupby = %s", format_value(t$groupby %||% list()))
+  )
+  if (!is.null(t$op)) args <- c(args, sprintf("op = %s", render_string(t$op)))
+  if (!is.null(t$limit)) args <- c(args, sprintf("limit = %s", format_value(t$limit)))
+  sprintf("%s <- vl_pivot(%s)", var_name, paste(args, collapse = ", "))
 }
 
 # ---- 2. inline encoding aggregate/bin/timeUnit ----

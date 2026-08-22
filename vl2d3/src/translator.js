@@ -133,6 +133,27 @@ function collectInvalidFilterFields(encoding, transformList) {
   return [...fields];
 }
 
+// Vega-Lite escapes a literal special character inside a field NAME (most
+// commonly `.`, to distinguish "a.b" the column from a nested-path access
+// into column "a"'s "b" property) with a leading backslash. Every mark/
+// scale accessor in this codebase reads a channel's `field` directly as an
+// object-property key, so that escaping must be undone before use -- the
+// real property name in the loaded data has no backslash in it at all.
+function unescapeFieldPath(field) {
+  return typeof field === 'string' ? field.replace(/\\(.)/g, '$1') : field;
+}
+
+function unescapeEncodingFields(encoding) {
+  const rewritten = {...encoding};
+  for (const ch of Object.keys(encoding)) {
+    const def = encoding[ch];
+    if (def && typeof def === 'object' && typeof def.field === 'string' && def.field.includes('\\')) {
+      rewritten[ch] = {...def, field: unescapeFieldPath(def.field)};
+    }
+  }
+  return rewritten;
+}
+
 // A Vega-Lite field name is normally a plain (possibly dotted/escaped)
 // property path, but a compound aggregate result (`argmin`/`argmax`, which
 // stores the *whole matching row* under its `as` name) is instead
@@ -218,7 +239,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
 
   // -- per-child data preparation --
   const prepared = children.map((child, i) => {
-    let encodingIn = child.encoding || {};
+    let encodingIn = unescapeEncodingFields(child.encoding || {});
     const geoChannel = GEO_CHANNELS.find(k => k in encodingIn);
     if (geoChannel) {
       if (!ignoreUnsupported) {

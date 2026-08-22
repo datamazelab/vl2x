@@ -3,6 +3,7 @@
 Caused by error:
 ! object 'state' not found
 library(ggplot2)
+library(vl2ggplot)
 
 chart <- ggplot2::ggplot()
 # vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
@@ -32,25 +33,6 @@ chart <- chart + ggplot2::geom_point(
 
 chart
 
-===== bar_argmax_transform.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 1st layer.
-Caused by error:
-! object 'argmax_US_Gross['Production Budget']' not found
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/movies.json")
-# vl2ggplot: unsupported aggregate op "argmax", using mean instead (ignore_unsupported)
-chart_data <- dplyr::group_by(chart_data, `Major Genre`)
-chart_data <- dplyr::summarise(chart_data, argmax_US_Gross = mean(`US Gross`, na.rm = TRUE), .groups = "drop")
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_col(
-  mapping = ggplot2::aes(x = `argmax_US_Gross['Production Budget']`, y = factor(`Major Genre`))
-)
-
-
-chart
-
 ===== bar_argmax.vl.json [TRANSLATE] =====
 Unsupported aggregate op: {"argmax":"US Gross"} (compound argmin/argmax form not supported)
 
@@ -58,27 +40,6 @@ Unsupported aggregate op: {"argmax":"US Gross"} (compound argmin/argmax form not
 ===== bar_bullet_expr_bind.vl.json [TRANSLATE] =====
 Unsupported: bracket-indexed field reference "ranges[2]" is not supported
 
-
-===== bar_column_pivot.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 1st layer.
-Caused by error:
-! object 'gold' not found
-library(ggplot2)
-
-chart_data <- data.frame(
-  country = c("Norway", "Norway", "Norway", "Germany", "Germany", "Germany", "Canada", "Canada", "Canada"),
-  type = c("gold", "silver", "bronze", "gold", "silver", "bronze", "gold", "silver", "bronze"),
-  count = c(14, 14, 11, 14, 10, 7, 11, 8, 10),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_col(mapping = ggplot2::aes(x = factor(country), y = gold))
-
-
-chart
 
 ===== bar_diverging_stack_transform.vl.json [EXEC] =====
 <text>:11:121: unexpected ','
@@ -571,11 +532,12 @@ chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)"
 chart
 
 ===== interactive_airport_crossfilter.vl.json [EXEC] =====
-<text>:33:88: unexpected symbol
-32: vconcat2_rep12_data <- vconcat2_rep1_data
-33: vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, vl_truthy(data('brush_store').length
+<text>:34:88: unexpected symbol
+33: vconcat2_rep12_data <- vconcat2_rep1_data
+34: vconcat2_rep12_data <- dplyr::filter(vconcat2_rep12_data, vl_truthy(data('brush_store').length
                                                                                            ^
 library(ggplot2)
+library(vl2ggplot)
 
 vconcat1 <- ggplot2::ggplot()
 # vl2ggplot: unsupported data format "topojson", using an empty data.frame instead (ignore_unsupported)
@@ -891,6 +853,7 @@ Problem while setting up geom.
 Caused by error in `compute_geom_1()`:
 ! `geom_line()` requires the following missing aesthetics: y.
 library(ggplot2)
+library(vl2ggplot)
 
 layer_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 layer_data <- dplyr::mutate(layer_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
@@ -945,7 +908,7 @@ layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(d
   "%Y-%m-%dT%H:%M:%S",
   "%a, %d %b %Y %H:%M:%S"
 )))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
+layer3_data <- vl_pivot(layer3_data, "symbol", "price", groupby = c("date"))
 chart <- chart + ggplot2::geom_vline(
   data = layer3_data,
   mapping = ggplot2::aes(xintercept = date),
@@ -961,6 +924,7 @@ chart
 Caused by error:
 ! object 'index.date' not found
 library(ggplot2)
+library(vl2ggplot)
 
 layer_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 layer_data <- dplyr::mutate(layer_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
@@ -1206,6 +1170,7 @@ chart
 Caused by error:
 ! object 'name' not found
 library(ggplot2)
+library(vl2ggplot)
 
 # vl2ggplot: unsupported data source (expected inline "values" or a "url"), using an empty data.frame instead (ignore_unsupported)
 layer_data <- data.frame()
@@ -1319,203 +1284,6 @@ chart <- chart + ggplot2::geom_text(
   colour = "firebrick",
   x = "",
   y = ""
-)
-
-
-chart
-
-===== line_color_halo.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 1st layer.
-Caused by error:
-! object 'AAPL' not found
-library(ggplot2)
-
-chart <- ggplot2::ggplot()
-layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer1_data,
-  mapping = ggplot2::aes(x = date, y = AAPL),
-  colour = "white",
-  linewidth = 4
-)
-layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer2_data,
-  mapping = ggplot2::aes(x = date, y = AAPL),
-  colour = "AAPL"
-)
-layer3_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer3_data <- dplyr::mutate(layer3_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer3_data,
-  mapping = ggplot2::aes(x = date, y = AMZN),
-  colour = "white",
-  linewidth = 4
-)
-layer4_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer4_data <- dplyr::mutate(layer4_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer4_data,
-  mapping = ggplot2::aes(x = date, y = AMZN),
-  colour = "AMZN"
-)
-layer5_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer5_data <- dplyr::mutate(layer5_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer5_data,
-  mapping = ggplot2::aes(x = date, y = GOOG),
-  colour = "white",
-  linewidth = 4
-)
-layer6_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer6_data <- dplyr::mutate(layer6_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer6_data,
-  mapping = ggplot2::aes(x = date, y = GOOG),
-  colour = "GOOG"
-)
-layer7_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer7_data <- dplyr::mutate(layer7_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer7_data,
-  mapping = ggplot2::aes(x = date, y = IBM),
-  colour = "white",
-  linewidth = 4
-)
-layer8_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer8_data <- dplyr::mutate(layer8_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer8_data,
-  mapping = ggplot2::aes(x = date, y = IBM),
-  colour = "IBM"
-)
-layer9_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer9_data <- dplyr::mutate(layer9_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer9_data,
-  mapping = ggplot2::aes(x = date, y = MSFT),
-  colour = "white",
-  linewidth = 4
-)
-layer10_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-layer10_data <- dplyr::mutate(layer10_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
-  "%Y-%m-%d",
-  "%Y/%m/%d",
-  "%m/%d/%Y",
-  "%d/%m/%Y",
-  "%b %d %Y",
-  "%B %d, %Y",
-  "%B %d %Y",
-  "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
-)))
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart <- chart + ggplot2::geom_line(
-  data = layer10_data,
-  mapping = ggplot2::aes(x = date, y = MSFT),
-  colour = "MSFT"
 )
 
 
@@ -1695,6 +1463,7 @@ Problem while computing aesthetics.
 Caused by error:
 ! object 'v1' not found
 library(ggplot2)
+library(vl2ggplot)
 
 chart_data <- jsonlite::fromJSON("data/population.json")
 chart_data <- dplyr::filter(chart_data, vl_truthy(year == 2000))
@@ -1715,6 +1484,7 @@ chart
 Caused by error in `isValid()`:
 ! could not find function "isValid"
 library(ggplot2)
+library(vl2ggplot)
 
 chart <- ggplot2::ggplot()
 layer1_data <- data.frame(
@@ -1975,28 +1745,6 @@ chart_data <- dplyr::mutate(chart_data, date = if (is.numeric(date)) as.Date(dat
 chart_data <- dplyr::mutate(chart_data, hoursminutes_date = date)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(y = factor(hoursminutes_date), x = ""))
-
-
-chart
-
-===== trail_comet.vl.json [EXEC] =====
-ℹ In argument: `delta = `1932` - `1931``.
-Caused by error:
-! object '1932' not found
-library(ggplot2)
-
-chart_data <- jsonlite::fromJSON("data/barley.json")
-# vl2ggplot: skipped unsupported transform type "pivot" (ignore_unsupported)
-chart_data <- do.call(rbind, lapply(c("1931", "1932"), function(.f) { .d <- chart_data; .d[["year"]] <- .f; .d[["yield"]] <- .d[[.f]]; .d }))
-chart_data <- dplyr::mutate(chart_data, year = as.numeric(year))
-chart_data <- dplyr::mutate(chart_data, delta = `1932` - `1931`)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_line(
-  mapping = ggplot2::aes(x = year, y = variety, size = yield, colour = delta)
-)
-chart <- chart + ggplot2::scale_size(range = c(0, 12))
-chart <- chart + ggplot2::labs(title = "Barley Yield comparison between 1932 and 1931")
-chart <- chart + ggplot2::facet_grid(cols = dplyr::vars(site))
 
 
 chart

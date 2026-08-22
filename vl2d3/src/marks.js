@@ -356,18 +356,29 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
       lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
     }
+  } else if (encoding.x && encoding.y) {
+    // Both position channels are continuous (no band/ordinal axis, no
+    // temporal axis, no x2/y2 range) -- e.g. a Q-Q-style bar chart with two
+    // quantitative fields. Vega-Lite still draws real bars here: a
+    // fixed-width bar per row at the x position, from the y-zero baseline
+    // up to the row's y value, using its own `config.bar.continuousBandSize`
+    // default (5px) since there's no data-driven band width to derive one
+    // from on either axis.
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - 2.5)`);
+    lines.push(`    .attr("width", 5)`);
+    lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
+    lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
   } else if (ignoreUnsupported) {
-    // Neither axis is a band and there's no x2/y2 range -- e.g. two plain
-    // quantitative axes with nothing to size a box against. A point per row
-    // at least shows where the data is, rather than nothing.
+    // Not even both x and y are present (e.g. only one position channel
+    // and nothing else to size a box against) -- a point per row at least
+    // shows where the data is, rather than nothing.
     return (
-      `// vl2d3: unsupported bar orientation (no band axis or x2/y2 range), drawing a point per row instead (--ignore-unsupported)\n` +
+      `// vl2d3: unsupported bar orientation (band axis with no value channel), drawing a point per row instead (--ignore-unsupported)\n` +
       renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported)
     );
   } else {
     throw new Error(
-      'Unsupported bar orientation: expected one ordinal/band position channel and one quantitative, ' +
-        'or a quantitative range via x2/y2'
+      'Unsupported bar orientation: expected both an x and a y position channel, or a quantitative range via x2/y2'
     );
   }
   appendTitle(lines, '    ', encoding);

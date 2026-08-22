@@ -37,8 +37,22 @@ const local = {
 function normalize(unit) {
   let name = typeof unit === 'object' && unit !== null ? unit.unit : unit;
   if (typeof name !== 'string') return name;
-  if (name.startsWith('utc')) name = name.slice(3);
-  if (name.startsWith('binned')) name = name.slice(6);
+  // The two prefixes can appear in either order (e.g. "binnedutcyearmonthdate"
+  // as well as a hypothetical "utcbinnedyearmonthdate") -- strip both,
+  // repeating until neither matches, rather than only checking each once in
+  // a fixed order (which would leave "binnedutc..." only half-stripped).
+  let stripped = true;
+  while (stripped) {
+    stripped = false;
+    if (name.startsWith('utc')) {
+      name = name.slice(3);
+      stripped = true;
+    }
+    if (name.startsWith('binned')) {
+      name = name.slice(6);
+      stripped = true;
+    }
+  }
   return name;
 }
 
