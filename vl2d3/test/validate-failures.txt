@@ -15,17 +15,25 @@ export default async function chart(container, options = {}) {
   const marginLeft = options.marginLeft ?? 50;
 
   let data1 = [{x: 0.25, y: 0.433}, {x: 0.75, y: 0.433}, {x: 0.5, y: 0}];
+  data1 = data1.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data2 = [{x: 0, y: 0}, {x: 0.25, y: 0.433}, {x: 0.5, y: 0}];
+  data2 = data2.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data3 = [{x: 0, y: 0}, {x: 0.1, y: 0.1732}, {x: 0.2, y: 0}];
+  data3 = data3.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data4 = [{x: 1, y: 0}, {x: 0.75, y: 0.433}, {x: 0.5, y: 0}];
+  data4 = data4.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data5 = [{x: 1, y: 0}, {x: 0.9, y: 0.1732}, {x: 0.8, y: 0}];
+  data5 = data5.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data6 = [{x: 0.5, y: 0.866}, {x: 0.25, y: 0.433}, {x: 0.75, y: 0.433}];
+  data6 = data6.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data7 = [{x: 0.5, y: 0.866}, {x: 0.4, y: 0.6928}, {x: 0.6, y: 0.6928}];
+  data7 = data7.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data8 = [
   {x: -0.05, y: -0.05, label: "High 100%"},
   {x: 1.05, y: -0.05, label: "Low 100%"},
   {x: 0.5, y: 0.888, label: "Medium 100%"},
 ];
+  data8 = data8.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data9 = [
   {x: 0.1, y: 0, x2: 0.05, y2: 0.0866},
   {x: 0.2, y: 0, x2: 0.1, y2: 0.1732},
@@ -55,6 +63,7 @@ export default async function chart(container, options = {}) {
   {x: 0.4, y: 0.6928, x2: 0.6, y2: 0.6928},
   {x: 0.45, y: 0.7794, x2: 0.55, y2: 0.7794},
 ];
+  data9 = data9.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]));
   let data10 = [
   {City: "Luminar", High: 5, Medium: 50, Low: 30},
   {City: "Crystalport", High: 35, Medium: 60, Low: 20},

@@ -121,6 +121,12 @@ function rewriteIfCalls(s) {
   return rewriteIfCalls(rewritten);
 }
 
+// Vega expression type-coercion functions that are plain JS globals, just
+// under a different name (a 1-argument call in both cases, so a bare
+// rename is exact -- unlike e.g. toDate(), which has no simple built-in
+// equivalent and is deliberately left untranslated).
+const RENAME_FUNCS = {toNumber: 'Number', toBoolean: 'Boolean', toString: 'String'};
+
 export function translateExpr(expr, rowVar = 'd') {
   if (typeof expr !== 'string') return expr;
   let out = expr.replace(DATE_FUNC_RE, (_, fn, arg) => `(${arg}).${DATE_FUNCS[fn]}()`);
@@ -129,6 +135,7 @@ export function translateExpr(expr, rowVar = 'd') {
     const isCall = /^\s*\(/.test(str.slice(offset + token.length));
     if (isCall && MATH_FUNCS.has(token)) return `Math.${token}`;
     if (isCall && token === 'now') return 'Date.now';
+    if (isCall && RENAME_FUNCS[token]) return RENAME_FUNCS[token];
     return token;
   });
   out = rewriteIfCalls(out);

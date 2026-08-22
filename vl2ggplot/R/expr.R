@@ -16,8 +16,13 @@
 .identifier_re <- "[A-Za-z_.][A-Za-z0-9_.]*"
 
 # R already has abs/sqrt/log/exp/sign/cos/sin/tan/atan under the same name;
-# these few differ from their Vega/JS spelling.
-.math_rename <- c(ceil = "ceiling", pow = NA, random = NA)
+# these few differ from their Vega/JS spelling. toNumber/toBoolean/toString
+# are 1-argument type coercions with an exact base-R equivalent (unlike
+# e.g. toDate(), which has none and is deliberately left untranslated).
+.math_rename <- c(
+  ceil = "ceiling", pow = NA, random = NA,
+  toNumber = "as.numeric", toBoolean = "as.logical", toString = "as.character"
+)
 
 .date_funcs <- list(
   year = function(a) sprintf('as.integer(format(%s, "%%Y"))', a),
@@ -71,17 +76,64 @@ replace_tokens <- function(text, pattern, replace_fn, perl = FALSE) {
 # ternaries.
 translate_ternary <- function(s) {
   qpos <- .find_top_level_char(s, "?")
-  if (is.na(qpos)) return(s)
-  cond <- substr(s, 1, qpos - 1)
-  rest <- substr(s, qpos + 1, nchar(s))
-  cpos <- .find_matching_colon(rest)
-  if (is.na(cpos)) return(s) # malformed; leave as-is rather than guess
-  true_branch <- substr(rest, 1, cpos - 1)
-  false_branch <- substr(rest, cpos + 1, nchar(rest))
-  sprintf(
-    "ifelse(%s, %s, %s)",
-    trimws(cond), translate_ternary(trimws(true_branch)), translate_ternary(trimws(false_branch))
-  )
+  if (!is.na(qpos)) {
+    cond <- substr(s, 1, qpos - 1)
+    rest <- substr(s, qpos + 1, nchar(s))
+    cpos <- .find_matching_colon(rest)
+    if (is.na(cpos)) return(s) # malformed; leave as-is rather than guess
+    true_branch <- substr(rest, 1, cpos - 1)
+    false_branch <- substr(rest, cpos + 1, nchar(rest))
+    return(sprintf(
+      "ifelse(%s, %s, %s)",
+      trimws(cond), translate_ternary(trimws(true_branch)), translate_ternary(trimws(false_branch))
+    ))
+  }
+  # No BARE top-level ternary -- but a very common shape is one wrapped in
+  # its own grouping parens for precedence, e.g. `(cond ? a : b) + c`
+  # (`?` sits at depth 1, not 0, so the check above never finds it).
+  # Recurse into each top-level paren group's own inner content instead;
+  # text outside every group is left untouched (if it held a bare ternary,
+  # the check above would already have found it).
+  groups <- .find_top_level_groups(s)
+  if (length(groups) == 0) return(s)
+  result <- ""
+  pos <- 1
+  for (g in groups) {
+    result <- paste0(result, substr(s, pos, g$open))
+    inner <- substr(s, g$open + 1, g$close - 1)
+    result <- paste0(result, translate_ternary(inner), ")")
+    pos <- g$close + 1
+  }
+  paste0(result, substr(s, pos, nchar(s)))
+}
+
+# Every top-level (depth-0) `(...)` group in `s`, as a list of
+# `list(open, close)` character positions (of the parens themselves).
+.find_top_level_groups <- function(s) {
+  chars <- strsplit(s, "")[[1]]
+  depth <- 0
+  in_quote <- FALSE
+  quote_char <- ""
+  groups <- list()
+  open_pos <- NA
+  for (i in seq_along(chars)) {
+    ch <- chars[i]
+    if (in_quote) {
+      if (ch == quote_char) in_quote <- FALSE
+      next
+    }
+    if (ch %in% c("'", '"')) {
+      in_quote <- TRUE
+      quote_char <- ch
+    } else if (ch == "(") {
+      if (depth == 0) open_pos <- i
+      depth <- depth + 1
+    } else if (ch == ")") {
+      depth <- depth - 1
+      if (depth == 0) groups[[length(groups) + 1]] <- list(open = open_pos, close = i)
+    }
+  }
+  groups
 }
 
 .find_top_level_char <- function(s, target) {
@@ -145,7 +197,12 @@ rewrite_string_concat <- function(s) {
   parts <- vapply(seq_len(length(bounds) - 1), function(i) {
     trimws(substr(s, bounds[i] + 1, bounds[i + 1] - 1))
   }, character(1))
-  if (!any(grepl("^['\"]", parts))) return(s)
+  # A quote *anywhere* in a part, not just at its very start: a ternary
+  # (`cond ? '+' : ''`) already became `ifelse(cond, '+', '')` by this
+  # point (translate_ternary() runs before this), so the string literal
+  # that actually signals "this whole `+` is concatenation, not addition"
+  # is nested inside that call, not a bare literal operand.
+  if (!any(grepl("['\"]", parts))) return(s)
   sprintf("paste0(%s)", paste(parts, collapse = ", "))
 }
 

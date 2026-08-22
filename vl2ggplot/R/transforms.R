@@ -74,6 +74,23 @@ render_one_transform <- function(t, var_name, ignore_unsupported = FALSE) {
     }
     return(render_window_transform(t, var_name, ignore_unsupported))
   }
+  if (!is.null(t$joinaggregate)) {
+    # A `joinaggregate` transform is exactly a `window` transform's own
+    # aggregate ops (sum/mean/count/min/max/...) with no `sort` and no
+    # `frame` -- i.e. always the "whole partition, broadcast to every row"
+    # case render_window_transform() already implements -- so this is a
+    # thin reshape into that same shape rather than a separate
+    # implementation.
+    supported <- all(vapply(t$joinaggregate, function(w) is_supported_window_op(w$op), logical(1)))
+    if (!supported && !ignore_unsupported) {
+      bad <- Filter(Negate(is_supported_window_op), vapply(t$joinaggregate, function(w) w$op, character(1)))
+      stop(sprintf('Unsupported aggregate op: "%s"', bad[1]))
+    }
+    return(render_window_transform(list(window = t$joinaggregate, groupby = t$groupby), var_name, ignore_unsupported))
+  }
+  if (!is.null(t$fold)) {
+    return(render_fold_transform(t, var_name))
+  }
   if (ignore_unsupported) {
     # Skip this one step -- the rest of the transform pipeline (and the
     # chart as a whole) still runs on whatever data shape existed before it,
@@ -199,7 +216,10 @@ is_supported_window_op <- function(op) op %in% c(.window_positional_ops, .window
 # The R expression (evaluated inside a dplyr::mutate() on the already
 # sorted/grouped data) for one frame-bounded aggregate window field.
 window_aggregate_expr <- function(op, field, frame) {
-  f <- field_ref(field)
+  # `count` has no `field` (it counts rows, not a column) -- every branch
+  # below that actually uses `f` is for a different op, so it's safe to
+  # leave it NULL rather than call field_ref() on a nonexistent field.
+  f <- if (is.null(field)) NULL else field_ref(field)
   whole_partition <- is.null(frame) || (is.null(frame[[1]]) && is.null(frame[[2]]))
   cumulative <- !is.null(frame) && is.null(frame[[1]]) && identical(frame[[2]], 0)
 
@@ -292,6 +312,25 @@ render_window_transform <- function(t, var_name, ignore_unsupported = FALSE) {
   }
   stmts <- c(stmts, sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name))
   stmts
+}
+
+# Vega-Lite's `fold` transform: unpivot a fixed list of fields into one
+# (key, value) pair of columns, producing one output row per (original row
+# x folded field) -- every other column is copied through unchanged. `.f`
+# needs a plain string (the field name itself) for `[[<-`, not the
+# backtick-quoted-if-needed bare symbol render_name()/field_ref() return
+# for aes()/mutate() use, so the "as" column names are inserted via `[[`
+# with render_string() (a real R string literal) instead.
+render_fold_transform <- function(t, var_name) {
+  fields <- t$fold
+  as_names <- if (!is.null(t$as) && length(t$as) == 2) t$as else c("key", "value")
+  key_str <- render_string(as_names[1])
+  value_str <- render_string(as_names[2])
+  fields_vec <- paste(vapply(fields, render_string, character(1)), collapse = ", ")
+  sprintf(
+    "%s <- do.call(rbind, lapply(c(%s), function(.f) { .d <- %s; .d[[%s]] <- .f; .d[[%s]] <- .d[[.f]]; .d }))",
+    var_name, fields_vec, var_name, key_str, value_str
+  )
 }
 
 # ---- 2. inline encoding aggregate/bin/timeUnit ----

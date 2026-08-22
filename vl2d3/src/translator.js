@@ -55,6 +55,80 @@ function isBarOrArea(mark) {
   return type === 'bar' || type === 'area';
 }
 
+// Vega-Lite's default handling of a null/undefined/NaN value on a
+// continuous (quantitative/temporal) channel is to *filter the whole row
+// out* before any other transform runs (`mark.invalid` -- or, more
+// commonly, `config.mark.invalid` -- default: `"filter"`), which is why a
+// single bad row in real-world data doesn't normally break a line/area
+// path or a bar/point's position into `NaN`. This project only reproduces
+// that *default* case (`"filter"`, or the property absent entirely) --
+// the other documented modes (`"show"`, `null`, `"break-paths-*"`, which
+// keep/re-route invalid values instead of dropping their row) are a
+// deliberately narrower, less common feature this doesn't attempt to
+// match, so a spec that explicitly asks for one of those still behaves as
+// before (own risk of `NaN` output, same as always).
+const INVALID_FILTER_CHANNELS = ['x', 'y', 'x2', 'y2', 'theta', 'theta2', 'radius', 'radius2', 'color', 'size', 'opacity'];
+
+function invalidHandlingMode(root, mark) {
+  const markProps = typeof mark === 'string' ? {} : mark || {};
+  if ('invalid' in markProps) return markProps.invalid;
+  if (root.config && root.config.mark && 'invalid' in root.config.mark) return root.config.mark.invalid;
+  return 'filter';
+}
+
+// Field names a top-level `transform` array *produces* (calculate/
+// timeUnit/bin/aggregate/window/density's own `as`) rather than reads from
+// the raw loaded data -- an encoding channel naming one of these can't be
+// invalid-filtered against the raw, pre-transform rows (the field doesn't
+// exist there yet at all, which previously filtered out *every* row: see
+// collectInvalidFilterFields()'s own doc comment).
+function collectProducedFields(transformList = []) {
+  const produced = new Set();
+  for (const t of transformList) {
+    if ((t.calculate !== undefined || t.timeUnit !== undefined) && t.as) produced.add(t.as);
+    if (t.bin) {
+      (Array.isArray(t.as) ? t.as : [t.as, `${t.as}2`]).forEach(a => produced.add(a));
+    }
+    if (t.aggregate) {
+      for (const a of t.aggregate) if (a.as) produced.add(a.as);
+    }
+    if (t.window) {
+      for (const w of t.window) if (w.as) produced.add(w.as);
+    }
+    if (t.density) {
+      (Array.isArray(t.as) && t.as.length === 2 ? t.as : ['value', 'density']).forEach(a => produced.add(a));
+    }
+  }
+  return produced;
+}
+
+// Fields to null/NaN-filter a view's raw data on, before any other
+// transform runs -- every continuous-typed position/color/size/opacity
+// channel's own source `field` (whether or not it's also aggregated/
+// binned/timeUnit'd inline on the channel: the *source* field is what can
+// hold an invalid value, and an aggregate already skips non-finite inputs
+// on its own, so filtering the row upstream too is never wrong, just
+// occasionally redundant) -- excluding any field a top-level `transform`
+// produces rather than one the raw data actually has (see
+// collectProducedFields()).
+function collectInvalidFilterFields(encoding, transformList) {
+  const produced = collectProducedFields(transformList);
+  const fields = new Set();
+  for (const ch of INVALID_FILTER_CHANNELS) {
+    const def = encoding[ch];
+    if (def && typeof def === 'object' && def.field && !produced.has(def.field) && (def.type === 'quantitative' || def.type === 'temporal')) {
+      fields.add(def.field);
+    }
+  }
+  return [...fields];
+}
+
+function renderInvalidFilter(dataVar, fields) {
+  if (fields.length === 0) return [];
+  const cond = fields.map(f => `d[${JSON.stringify(f)}] != null && !Number.isNaN(d[${JSON.stringify(f)}])`).join(' && ');
+  return [`${dataVar} = ${dataVar}.filter(d => ${cond});`];
+}
+
 // Vega-Lite allows a `layer` entry to itself be a nested layer composition
 // (a layer of layers) -- flatten this recursively into a single list of
 // unit-view specs, applying `mergeDown` at each level so shared
@@ -123,6 +197,10 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
     const dataVar = `data${i + 1}`;
     const {statements: loadStmts} = renderDataLoad(child.data, dataVar, ignoreUnsupported);
     loadStmts.forEach(b);
+
+    if (invalidHandlingMode(root, child.mark) === 'filter') {
+      renderInvalidFilter(dataVar, collectInvalidFilterFields(encodingIn, child.transform)).forEach(b);
+    }
 
     const temporalFields = collectTemporalFields(encodingIn, child.transform || []);
     renderTemporalCoercion(dataVar, temporalFields).forEach(b);

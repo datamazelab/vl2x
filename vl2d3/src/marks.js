@@ -133,10 +133,11 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       // A genuine box on both axes (e.g. prepare.js's 2D-bin heatmap case)
       // is fully well-defined, not an approximation -- draw it the same
       // way "bar" draws its own x2/y2 range, without needing
-      // ignoreUnsupported. Anything narrower (one axis only, or no range
-      // at all) is still only handled as a best-effort approximation, via
-      // the default case below.
-      if (encoding.x2 && encoding.y2) {
+      // ignoreUnsupported. Requires all four corners to be plain field
+      // references (not a `datum`/`value`/param-bound box, which renderBar
+      // doesn't resolve): anything narrower is still only handled as a
+      // best-effort approximation, via the default case below.
+      if (encoding.x2 && encoding.y2 && encoding.x.field && encoding.x2.field && encoding.y.field && encoding.y2.field) {
         return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
       }
       if (ignoreUnsupported) {

@@ -86,6 +86,23 @@ function renderOne(t, dataVar, ignoreUnsupported) {
     // produce a data shape the rest of the chart doesn't actually expect).
     return [`// vl2d3: skipped unsupported window op "${unsupportedOp}" (--ignore-unsupported)`];
   }
+  if ('joinaggregate' in t) {
+    // A `joinaggregate` transform is exactly a `window` transform's own
+    // aggregate ops (sum/mean/count/min/max/...) with no `sort` and no
+    // `frame` -- i.e. always the "whole partition, broadcast to every row"
+    // case renderWindowTransform() already implements -- so this is a
+    // thin reshape into that same shape rather than a separate
+    // implementation.
+    const unsupportedOp = t.joinaggregate.map(w => w.op).find(op => !isSupportedWindowOp(op));
+    if (unsupportedOp && !ignoreUnsupported) {
+      throw new Error(`Unsupported aggregate op: "${unsupportedOp}"`);
+    }
+    if (!unsupportedOp) return renderWindowTransform({window: t.joinaggregate, groupby: t.groupby}, dataVar);
+    return [`// vl2d3: skipped unsupported joinaggregate op "${unsupportedOp}" (--ignore-unsupported)`];
+  }
+  if ('fold' in t) {
+    return renderFoldTransform(t, dataVar);
+  }
   const kind = Object.keys(t)[0];
   if (ignoreUnsupported) {
     // Skip this one step -- the rest of the transform pipeline (and the
@@ -274,4 +291,15 @@ function renderWindowTransform(t, dataVar) {
   lines.push(`return rows.map((d, i) => ({...d, ${assigns.join(', ')}}));`);
 
   return [`${dataVar} = Array.from(d3.group(${dataVar}, ${keyExpr}).values()).flatMap(rows => {\n  ${lines.join('\n  ')}\n});`];
+}
+
+// Vega-Lite's `fold` transform: unpivot a fixed list of fields into one
+// (key, value) pair of columns, producing one output row per (original
+// row x folded field) -- every other column is copied through unchanged.
+function renderFoldTransform(t, dataVar) {
+  const fields = JSON.stringify(t.fold);
+  const [keyName, valueName] = Array.isArray(t.as) && t.as.length === 2 ? t.as : ['key', 'value'];
+  return [
+    `${dataVar} = ${dataVar}.flatMap(d => ${fields}.map(f => ({...d, ${JSON.stringify(keyName)}: f, ${JSON.stringify(valueName)}: d[f]})));`,
+  ];
 }
