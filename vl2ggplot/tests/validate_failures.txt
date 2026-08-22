@@ -269,7 +269,7 @@ layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(y
 layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
-  mapping = ggplot2::aes(x = year_year, y = population),
+  mapping = ggplot2::aes(x = year_year, y = population, group = 1),
   colour = "#333"
 )
 layer3_data <- layer_data
@@ -291,6 +291,33 @@ chart <- chart + ggplot2::geom_point(
   colour = "#333"
 )
 # NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
+
+
+chart
+
+===== layer_line_datum_rule_datetime.vl.json [EXEC] =====
+`transform_date()` works with objects of class <Date> only
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S"
+)))
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
+)
+layer2_data <- data.frame(stringsAsFactors = FALSE, check.names = FALSE)
+chart <- chart + ggplot2::geom_vline(xintercept = list(year = 2006), size = 2)
 
 
 chart
@@ -327,21 +354,21 @@ chart <- chart + ggplot2::geom_vline(
 layer3_data <- layer_data
 chart <- chart + ggplot2::geom_area(
   data = layer3_data,
-  mapping = ggplot2::aes(y = wages, x = year),
+  mapping = ggplot2::aes(y = wages, x = year, group = 1),
   fill = "#a4cedb",
   alpha = 0.7
 )
 layer4_data <- layer_data
 chart <- chart + ggplot2::geom_line(
   data = layer4_data,
-  mapping = ggplot2::aes(y = wages, x = year),
+  mapping = ggplot2::aes(y = wages, x = year, group = 1),
   colour = "#000",
   alpha = 0.7
 )
 layer5_data <- layer_data
 chart <- chart + ggplot2::geom_line(
   data = layer5_data,
-  mapping = ggplot2::aes(y = wages, x = year),
+  mapping = ggplot2::aes(y = wages, x = year, group = 1),
   colour = "#EE8182"
 )
 layer6_data <- jsonlite::fromJSON("data/monarchs.json")

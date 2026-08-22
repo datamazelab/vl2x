@@ -41,7 +41,15 @@ function renderOne(t, dataVar, ignoreUnsupported) {
   }
   if ('bin' in t) {
     const thresholds = typeof t.bin === 'object' && t.bin.maxbins ? t.bin.maxbins : 20;
-    const [as0, as1] = Array.isArray(t.as) ? t.as : [t.as, `${t.as}2`];
+    // Vega-Lite's own naming convention for a top-level `bin` transform's
+    // second (upper) boundary field, when `as` is a single string rather
+    // than an explicit 2-element array, is `<as>_end` -- not `<as>2` (that
+    // was this project's own guess, and doesn't match what a later step of
+    // the *same* transform pipeline commonly already references by name,
+    // e.g. a subsequent `aggregate` transform's `groupby: ["bin_x",
+    // "bin_x_end"]`, silently producing a second, useless, never-actually-
+    // referenced `bin_x2` field instead while `bin_x_end` stayed undefined).
+    const [as0, as1] = Array.isArray(t.as) ? t.as : [t.as, `${t.as}_end`];
     const field = JSON.stringify(t.field);
     return [
       `${dataVar} = d3.bin().value(d => d[${field}]).thresholds(${thresholds})(${dataVar})` +

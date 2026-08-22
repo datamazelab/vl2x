@@ -66,7 +66,7 @@ chart_data <- dplyr::mutate(chart_data, nx = v1 - offset)
 chart_data <- dplyr::mutate(chart_data, nx2 = v2 - offset)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_linerange(
-  mapping = ggplot2::aes(y = factor(question), fill = factor(type), xmin = nx, xmax = nx2),
+  mapping = ggplot2::aes(y = factor(question), xmin = nx, xmax = nx2, colour = factor(type)),
   linewidth = 10
 )
 chart <- chart + ggplot2::scale_fill_manual(
@@ -114,7 +114,7 @@ chart <- chart + ggplot2::geom_segment(
 layer2_data <- layer_data
 chart <- chart + ggplot2::geom_linerange(
   data = layer2_data,
-  mapping = ggplot2::aes(y = factor(Species), fill = factor(Species), xmin = q1, xmax = q3),
+  mapping = ggplot2::aes(y = factor(Species), xmin = q1, xmax = q3, colour = factor(Species)),
   linewidth = 10
 )
 layer3_data <- layer_data
@@ -162,7 +162,7 @@ chart <- chart + ggplot2::geom_segment(
 layer2_data <- layer_data
 chart <- chart + ggplot2::geom_linerange(
   data = layer2_data,
-  mapping = ggplot2::aes(y = factor(Species), fill = factor(Species), xmin = q1, xmax = q3),
+  mapping = ggplot2::aes(y = factor(Species), xmin = q1, xmax = q3, colour = factor(Species)),
   linewidth = 10
 )
 layer3_data <- layer_data
@@ -287,8 +287,6 @@ layer3_data <- data.frame()
 chart <- chart + ggplot2::geom_point(
   data = layer3_data,
   mapping = ggplot2::aes(colour = factor(id)),
-  fill = FALSE,
-  colour = 2,
   linewidth = 2
 )
 chart <- chart + ggplot2::scale_colour_manual(
@@ -356,7 +354,7 @@ layer3_data <- data.frame(
 # vl2ggplot: skipped unsupported transform type "lookup" (ignore_unsupported)
 chart <- chart + ggplot2::geom_line(
   data = layer3_data,
-  mapping = ggplot2::aes(x = longitude, y = latitude)
+  mapping = ggplot2::aes(x = longitude, y = latitude, group = 1)
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 800, height = 500)
 
@@ -678,7 +676,7 @@ layer2_data <- jsonlite::fromJSON("data/gapminder.json")
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
   mapping = ggplot2::aes(group = country),
-  colour = "round",
+  colour = "lightgray",
   alpha = 0
 )
 layer3_data <- jsonlite::fromJSON("data/gapminder.json")
@@ -742,7 +740,7 @@ library(ggplot2)
 layer_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
-chart <- chart + ggplot2::geom_line(data = layer1_data)
+chart <- chart + ggplot2::geom_line(data = layer1_data, mapping = ggplot2::aes(group = 1))
 layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 chart <- chart + ggplot2::geom_point(data = layer2_data, alpha = 0, x = "", y = "")
 layer3_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
@@ -816,7 +814,7 @@ layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(d
   "%Y-%m-%dT%H:%M:%S",
   "%a, %d %b %Y %H:%M:%S"
 )))
-chart <- chart + ggplot2::geom_line(data = layer1_data, mapping = ggplot2::aes(x = date))
+chart <- chart + ggplot2::geom_line(data = layer1_data, mapping = ggplot2::aes(x = date, group = 1))
 layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
   "%Y-%m-%d",
@@ -1075,7 +1073,7 @@ layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(y
 layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
-  mapping = ggplot2::aes(x = year_year, y = population),
+  mapping = ggplot2::aes(x = year_year, y = population, group = 1),
   colour = "#333"
 )
 layer3_data <- layer_data
@@ -1172,8 +1170,7 @@ chart <- chart + ggplot2::geom_line(
   mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
 )
 layer2_data <- data.frame(stringsAsFactors = FALSE, check.names = FALSE)
-# vl2ggplot: unsupported gradient fill/stroke definition, using "steelblue" instead (ignore_unsupported)
-chart <- chart + ggplot2::geom_vline(xintercept = list(year = 2006), colour = "steelblue", size = 2)
+chart <- chart + ggplot2::geom_vline(xintercept = list(year = 2006), size = 2)
 
 
 chart
@@ -1229,14 +1226,13 @@ chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
 chart <- chart + ggplot2::geom_point(
   data = layer1_data,
-  mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`),
-  fill = TRUE
+  mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`)
 )
 layer2_data <- layer_data
 # vl2ggplot: skipped unsupported transform type "regression" (ignore_unsupported)
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
-  mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`),
+  mapping = ggplot2::aes(x = `Rotten Tomatoes Rating`, y = `IMDB Rating`, group = 1),
   colour = "firebrick"
 )
 layer3_data <- layer_data
@@ -1401,7 +1397,7 @@ chart_data <- dplyr::mutate(chart_data, gender = ifelse(sex == 2, 'Female', 'Mal
 # vl2ggplot: skipped unsupported transform type "stack" (ignore_unsupported)
 chart <- ggplot2::ggplot(chart_data)
 chart <- chart + ggplot2::geom_linerange(
-  mapping = ggplot2::aes(x = factor(age), fill = factor(gender), ymin = v1, ymax = v2)
+  mapping = ggplot2::aes(x = factor(age), ymin = v1, ymax = v2, colour = factor(gender))
 )
 chart <- chart + ggplot2::scale_fill_manual(values = c("#675193", "#ca8861"))
 # NOTE: width are set when saving/displaying, e.g. ggsave(..., width = list(step = 17))
@@ -1532,21 +1528,21 @@ chart <- chart + ggplot2::geom_vline(
 layer3_data <- layer_data
 chart <- chart + ggplot2::geom_area(
   data = layer3_data,
-  mapping = ggplot2::aes(y = wages, x = year),
+  mapping = ggplot2::aes(y = wages, x = year, group = 1),
   fill = "#a4cedb",
   alpha = 0.7
 )
 layer4_data <- layer_data
 chart <- chart + ggplot2::geom_line(
   data = layer4_data,
-  mapping = ggplot2::aes(y = wages, x = year),
+  mapping = ggplot2::aes(y = wages, x = year, group = 1),
   colour = "#000",
   alpha = 0.7
 )
 layer5_data <- layer_data
 chart <- chart + ggplot2::geom_line(
   data = layer5_data,
-  mapping = ggplot2::aes(y = wages, x = year),
+  mapping = ggplot2::aes(y = wages, x = year, group = 1),
   colour = "#EE8182"
 )
 layer6_data <- jsonlite::fromJSON("data/monarchs.json")

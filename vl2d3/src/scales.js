@@ -78,10 +78,35 @@ function ordinalDomainFromData(dataVar, field, sort) {
   return `${base}.sort((a, b) => d3.ascending(a, b))`;
 }
 
+// Same three domain shapes as above, but over an already-flat array of
+// values (`valuesExpr`, e.g. a `[].concat(...)` combining each layer's own
+// field lookup individually) rather than a single (dataVar, field) pair --
+// needed when a shared scale's channel is declared with a *different*
+// source field per layer (e.g. a reference-band layer's `x: {field:
+// "start"}` sharing an axis with the main series' `x: {field: "year"}`):
+// one common field name applied uniformly across every layer's rows would
+// silently find nothing (`undefined`) for every layer except whichever one
+// happened to supply that exact field name, extent-ing over only that
+// layer's own range instead of the true union.
+function extentDomain(valuesExpr) {
+  return `d3.extent(${valuesExpr})`;
+}
+
+function zeroExtentDomain(valuesExpr) {
+  return `[Math.min(0, d3.min(${valuesExpr})), Math.max(0, d3.max(${valuesExpr}))]`;
+}
+
+function ordinalExtentDomain(valuesExpr, sort) {
+  const base = `Array.from(new Set(${valuesExpr}))`;
+  if (sort === 'descending') return `${base}.sort((a, b) => d3.descending(a, b))`;
+  if (sort === null || sort === false) return base;
+  return `${base}.sort((a, b) => d3.ascending(a, b))`;
+}
+
 // Resolve the position scale for `x` or `y`. `zeroBaseline` should be true
 // when this is the "value" axis of a bar/area mark (Vega-Lite's default of
 // including zero in that case).
-export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBaseline, ignoreUnsupported = false}) {
+export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBaseline, ignoreUnsupported = false, combinedValuesExpr = null}) {
   const varName = channel;
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
@@ -89,7 +114,7 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
   const scaleType = def.scale && def.scale.type;
 
   if (def.type === 'temporal') {
-    const domain = explicitDomain ?? domainFromData(dataVar, field);
+    const domain = explicitDomain ?? (combinedValuesExpr ? extentDomain(combinedValuesExpr) : domainFromData(dataVar, field));
     return {
       varName,
       decl: `const ${varName} = d3.scaleTime(${domain}, ${rangeExpr});${domainNote}`,
@@ -98,7 +123,7 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
   }
 
   if (def.type === 'ordinal' || def.type === 'nominal') {
-    const domain = explicitDomain ?? ordinalDomainFromData(dataVar, field, def.sort);
+    const domain = explicitDomain ?? (combinedValuesExpr ? ordinalExtentDomain(combinedValuesExpr, def.sort) : ordinalDomainFromData(dataVar, field, def.sort));
     const isBand = scaleType !== 'point';
     const ctor = isBand ? 'scaleBand' : 'scalePoint';
     const padding = isBand ? '.padding(0.1)' : '.padding(0.5)';
@@ -144,7 +169,15 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
   }
 
   // quantitative (default)
-  const domain = explicitDomain ?? (zeroBaseline ? zeroDomainFromData(dataVar, field) : domainFromData(dataVar, field));
+  const domain =
+    explicitDomain ??
+    (combinedValuesExpr
+      ? zeroBaseline
+        ? zeroExtentDomain(combinedValuesExpr)
+        : extentDomain(combinedValuesExpr)
+      : zeroBaseline
+        ? zeroDomainFromData(dataVar, field)
+        : domainFromData(dataVar, field));
   const ctor = {log: 'scaleLog', pow: 'scalePow', sqrt: 'scaleSqrt', symlog: 'scaleSymlog'}[scaleType] || 'scaleLinear';
   const nice = explicitDomain ? '' : '.nice()';
   return {

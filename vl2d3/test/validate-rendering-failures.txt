@@ -22,17 +22,9 @@
 
 ===== facet_bullet.vl.json [NaN geometry: 25 shape(s), tags=rect] =====
 
-===== histogram_log.vl.json [NaN geometry: 7 shape(s), tags=rect] =====
-
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
-===== histogram_rel_freq.vl.json [NaN geometry: 20 shape(s), tags=rect] =====
-
 ===== interactive_histogram_full_height_hover.vl.json [NaN geometry: 213 shape(s), tags=rect] =====
-
-===== layer_bar_line_union.vl.json [NaN geometry: 1 shape(s), tags=path] =====
-
-===== layer_cumulative_histogram.vl.json [NaN geometry: 34 shape(s), tags=rect] =====
 
 ===== line_color_binned.vl.json [NaN geometry: 17 shape(s), tags=path] =====
 

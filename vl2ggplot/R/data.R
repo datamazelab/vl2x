@@ -149,7 +149,12 @@ render_data_load <- function(data, var_name, ignore_unsupported = FALSE) {
 .date_try_formats <- c(
   "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y",
   "%b %d %Y", "%B %d, %Y", "%B %d %Y", "%Y-%m-%dT%H:%M:%S",
-  "%a, %d %b %Y %H:%M:%S"
+  "%a, %d %b %Y %H:%M:%S",
+  # A bare 4-digit year (e.g. "1933") -- last, since it's the most
+  # permissive/ambiguous pattern (as.Date() picks the *first* format in
+  # this list that parses every value in the vector without NA, so a more
+  # specific format earlier never gets shadowed by this one).
+  "%Y"
 )
 
 render_temporal_coercion <- function(var_name, fields) {

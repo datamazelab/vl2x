@@ -32,6 +32,26 @@ const RUNTIME_EXPORTS = ['vlPivot'];
 const UNSUPPORTED_COMPOSITIONS = ['facet', 'repeat', 'concat', 'hconcat', 'vconcat'];
 const GEO_CHANNELS = ['longitude', 'latitude', 'longitude2', 'latitude2'];
 
+// Resolve top-level `datasets: {name: [...rows]}` reusable named datasets --
+// any `data: {name: "...", ...}` reference anywhere in the tree (the root
+// view or any layer/concat child) is replaced with that dataset's rows as
+// if they'd been inlined directly (`data: {values: [...rows], ...rest}`).
+function resolveDatasetRefs(node, datasets) {
+  if (!node || typeof node !== 'object') return node;
+  const result = {...node};
+  if (result.data && typeof result.data === 'object' && result.data.name && result.data.name in datasets) {
+    const {name, ...rest} = result.data;
+    result.data = {values: datasets[name], ...rest};
+  }
+  for (const key of ['layer', 'hconcat', 'vconcat', 'concat']) {
+    if (Array.isArray(result[key])) {
+      result[key] = result[key].map(child => resolveDatasetRefs(child, datasets));
+    }
+  }
+  if (result.spec) result.spec = resolveDatasetRefs(result.spec, datasets);
+  return result;
+}
+
 function mergeDown(child, wrapper) {
   const merged = {...child};
   if (!merged.data && wrapper.data) merged.data = wrapper.data;
@@ -310,11 +330,29 @@ function buildUnitOrLayerBody(root, ignoreUnsupported) {
   for (const channel of ['x', 'y']) {
     const def = prepared.map(p => p.encoding[channel]).find(Boolean);
     if (!def || 'value' in def) continue;
+    // Layers sharing this scale can each declare the channel against a
+    // *different* source field (e.g. a reference-band layer's own `x:
+    // {field: "start"}` sharing an axis with the main series' `x: {field:
+    // "year"}`) -- applying one layer's field name across every layer's
+    // combined rows (the plain `dataVar: allDataExpr` path below) would
+    // silently find `undefined` for every row except that one layer's own,
+    // extent-ing over only its range rather than the true union. Detected
+    // generally (not just "do the field names differ"): whenever more than
+    // one prepared child actually declares this channel with a field, each
+    // is mapped down to its own values *before* combining, so the
+    // resulting domain always spans every layer correctly regardless of
+    // whether their field names happen to match.
+    const declaringChildren = prepared.filter(p => p.encoding[channel] && p.encoding[channel].field);
+    const combinedValuesExpr =
+      declaringChildren.length > 1
+        ? `[].concat(${declaringChildren.map(p => `${p.dataVar}.map(d => d[${JSON.stringify(p.encoding[channel].field)}])`).join(', ')})`
+        : null;
     const scale = resolvePositionScale(channel, def, {
       dataVar: allDataExpr,
       rangeExpr: dims[`${channel}RangeExpr`],
       zeroBaseline: zeroBaseline && def.type === 'quantitative',
       ignoreUnsupported,
+      combinedValuesExpr,
     });
     b(scale.decl);
     scales[channel] = scale;
@@ -564,8 +602,12 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
 
 export function specToCode(spec, options = {}) {
   const {ignoreUnsupported = false} = options;
-  const root = {...spec};
+  let root = {...spec};
   delete root.$schema;
+  if (root.datasets) {
+    root = resolveDatasetRefs(root, root.datasets);
+    delete root.datasets;
+  }
 
   const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in root);
   if (compositionKey && !ignoreUnsupported) {
