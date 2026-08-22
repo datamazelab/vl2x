@@ -38,12 +38,17 @@ def slugify(text: str) -> str:
 
 
 def rewrite_urls(obj):
-    """Point every relative data.url reference at the site-root /data/ copy
-    (absolute, so it resolves the same regardless of page nesting depth)."""
+    """Point every relative data.url reference at the local showcase/data/
+    copy, relative to *this page's own location* (examples/<name>/index.html,
+    two directories below showcase/) rather than domain-root-absolute --
+    the previous "/data/..." form only worked when the site happened to be
+    served from a server's actual root, breaking as soon as it's deployed
+    under a subpath (e.g. https://host/vl2x/showcase/...). A genuine
+    external URL (http/https) is left untouched and used directly."""
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k == "url" and isinstance(v, str) and not v.startswith(("http://", "https://")):
-                obj[k] = "/" + v.lstrip("/")
+                obj[k] = "../../" + v.lstrip("/")
             else:
                 rewrite_urls(v)
     elif isinstance(obj, list):

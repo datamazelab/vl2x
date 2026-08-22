@@ -130,7 +130,10 @@
   import chart from './d3.js';
   const el = document.getElementById('vis-d3');
   try {
-    const baseURL = new URL('/', location.origin).href;
+    // Relative to *this page's own URL* (examples/<name>/index.html), not
+    // domain-root -- so this still resolves to showcase/ when the site is
+    // deployed under a subpath (e.g. https://host/vl2x/showcase/...).
+    const baseURL = new URL('../../', location.href).href;
     const node = await chart(el, {baseURL});
     if (node) el.appendChild(node);
   } catch (e) {
