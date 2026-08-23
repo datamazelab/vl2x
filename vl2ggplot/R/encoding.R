@@ -18,6 +18,27 @@
 
 color_channel_aes <- function(mark_type) if (mark_type %in% .fill_marks) "fill" else "colour"
 
+# color_channel_aes()'s own answer, but also accounting for the runtime
+# fill/stroke swap render_geom_layer_code() (geoms.R) applies to a
+# point/circle/square/tick mark with `filled: true` or a mark-level
+# `stroke` -- that swap moves the color encoding from "colour" onto "fill"
+# for the geom_point() call itself, but apply_common()'s own scale_*() call
+# (translator.R) is built entirely separately, from mark_type alone, with
+# no visibility into that swap at all. Left unsynced, it kept generating a
+# `scale_colour_manual()`/`scale_colour_brewer()`/etc. customizing an
+# aesthetic the geom no longer actually uses (colour, cleared by the swap)
+# -- silently ineffective, not an error, so easy to miss (e.g.
+# isotype_bar_chart.vl.json's own `"filled": true` point mark with a
+# color `scale.range`).
+effective_color_aes <- function(mark_type, mark_props) {
+  base <- color_channel_aes(mark_type)
+  if (base == "colour" && mark_type %in% c("point", "circle", "square", "tick") &&
+      (isTRUE(mark_props[["filled"]]) || !is.null(mark_props[["stroke"]]))) {
+    return("fill")
+  }
+  base
+}
+
 # channel key -> aes() name, for channels that always map the same way
 # regardless of mark type. `x2`/`y2` are deliberately excluded: their aes()
 # name depends on the mark (xend/yend for a segment, ymin/ymax for a

@@ -473,7 +473,17 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   extra_aes <- plan$extra_aes
   if (!is.null(offset_field)) {
     extra_fixed <- dodge_extra_fixed(extra_fixed)
-    extra_aes <- dodge_extra_aes(extra_aes, offset_field)
+    # geom_boxplot() (unlike geom_bar()/geom_col()/geom_point(), which
+    # dodge_extra_aes()'s own `group` override exists for) already groups
+    # correctly on its own: it forms one box per *combination* of every
+    # discrete aesthetic present (x AND fill/colour together) by default.
+    # Forcing `group` to the offset field ALONE overrides that default and
+    # actively breaks it -- every row sharing the same xOffset/color value
+    # gets pooled into one box's statistics regardless of its own x
+    # (Cylinders, in boxplot_groupped.vl.json's own case), producing the
+    # wrong number of boxes (and outlier points) entirely, not just a
+    # cosmetic difference.
+    if (mark_type != "boxplot") extra_aes <- dodge_extra_aes(extra_aes, offset_field)
   }
 
   list(
@@ -557,7 +567,9 @@ apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_u
       def <- enc[[channel]]
       if (!is.null(def)) {
         mark_type <- attr(enc, "mark_type") %||% "point"
-        calls <- build_scale_calls(channel, def, mark_type, ignore_unsupported, notes_env)
+        invalid_override <- spec$config$scale$invalid[[channel]]$value
+        color_aes <- if (channel == "color") effective_color_aes(mark_type, attr(enc, "mark_props") %||% list())
+        calls <- build_scale_calls(channel, def, mark_type, ignore_unsupported, notes_env, invalid_override, color_aes)
         if (length(calls)) {
           emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, calls))
           break
@@ -616,6 +628,7 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 
   enc_for_scale <- prepared$encoding
   attr(enc_for_scale, "mark_type") <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
+  attr(enc_for_scale, "mark_props") <- if (is.character(prepared$mark)) list() else prepared$mark[names(prepared$mark) != "type"]
   apply_common(plot_var, spec, emitter, list(enc_for_scale), ignore_unsupported)
 
   facet_def <- extract_facet_channels(prepared$original_encoding)
@@ -818,6 +831,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     mark_type_i <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
     enc <- prepared$encoding
     attr(enc, "mark_type") <- mark_type_i
+    attr(enc, "mark_props") <- if (is.character(resolved_mark)) list() else resolved_mark[names(resolved_mark) != "type"]
     encodings_for_scales[[length(encodings_for_scales) + 1]] <- enc
     if (is.null(facet_def)) facet_def <- extract_facet_channels(prepared$original_encoding)
   }
@@ -948,6 +962,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
       if (identical(mark_type_i, "arc")) has_arc <- TRUE
       enc <- prepared$encoding
       attr(enc, "mark_type") <- mark_type_i
+      attr(enc, "mark_props") <- if (is.character(prepared$mark)) list() else prepared$mark[names(prepared$mark) != "type"]
       encodings_for_scales[[length(encodings_for_scales) + 1]] <- enc
       if (is.null(facet_def)) facet_def <- extract_facet_channels(prepared$original_encoding)
     }

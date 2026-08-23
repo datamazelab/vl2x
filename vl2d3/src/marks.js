@@ -1199,6 +1199,30 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
       ? encoding.shape.value
       : null;
 
+  if (encoding.shape && shape && shape.isRawPaths) {
+    // A literal per-category SVG path (isotype_bar_chart.vl.json's own
+    // pictograms) -- unlike the d3.symbol() case below, this *is* already
+    // a real `d` attribute value, just scaled up from its own small
+    // (roughly -2..2 unit) coordinate space; `r / 3` is a rough visual
+    // match to that d3.symbol() branch's own pi*r^2-area sizing, not an
+    // attempt at Vega-Lite's own exact custom-path scale factor.
+    const symLines = [];
+    symLines.push(`svg.append("g")`);
+    if (!rowDependent) symLines.push(`  .attr("fill", ${fill})`);
+    symLines.push(`  .attr("fill-opacity", ${markProps.filled === false ? 0 : 0.8})`);
+    symLines.push(`  .selectAll("path")`);
+    symLines.push(`  .data(${dataVar})`);
+    symLines.push(`  .join("path")`);
+    if (rowDependent) symLines.push(`    .attr("fill", d => ${fill})`);
+    symLines.push(
+      `    .attr("transform", d => "translate(" + (${cx}) + "," + (${cy}) + ") scale(" + (${r} / 3) + ")")`
+    );
+    symLines.push(`    .attr("d", d => shape(d[${JSON.stringify(encoding.shape.field)}]))`);
+    if (opacity) symLines.push(`    .attr("opacity", d => ${opacity})`);
+    appendTitle(symLines, '    ', encoding);
+    return symLines.join('\n');
+  }
+
   if ((encoding.shape && shape) || constShapeName) {
     // A distinct marker shape per category (not just a plain circle) --
     // SVG has no built-in "draw this shape" primitive, so this needs

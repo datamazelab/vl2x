@@ -569,7 +569,15 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // "no scale resolved for this channel" case -- a bare field reference --
     // which is exactly this behavior, with no separate code path needed.
     if (!def || 'value' in def || def.scale === null) continue;
-    const scale = resolver(def, {dataVar: allDataExpr, ignoreUnsupported});
+    // `config.scale.invalid.<channel>.value` (e.g.
+    // bar_invalid_color_show_override.vl.json) overrides what a null raw
+    // value maps to for this channel -- only reachable when
+    // `config.mark.invalid` is "show" (the default "filter" drops that row
+    // before any scale sees it, making this a harmless no-op either way).
+    const invalidOverride = root.config && root.config.scale && root.config.scale.invalid && root.config.scale.invalid[channel]
+      ? root.config.scale.invalid[channel].value
+      : undefined;
+    const scale = resolver(def, {dataVar: allDataExpr, ignoreUnsupported, invalidOverride});
     b(scale.decl);
     scales[channel] = scale;
   }
@@ -769,6 +777,14 @@ function getCompositionChildren(root, compositionKey) {
 function normalizeFacetDef(facetDef) {
   if (!facetDef) return null;
   if (facetDef.field) return {def: facetDef, direction: 'wrap'};
+  // Both row AND column at once (trellis_row_column.vl.json's own shape) --
+  // a real two-dimensional grid, not just a single-dimension strip. Kept
+  // distinct from the single-axis cases below (each wants its own row def
+  // as `def`, not a {row, column} pair) since buildRuntimeFacetPanels()
+  // needs to know up front which shape it's building.
+  if (facetDef.row && facetDef.row.field && facetDef.column && facetDef.column.field) {
+    return {def: {row: facetDef.row, column: facetDef.column}, direction: 'grid'};
+  }
   if (facetDef.row && facetDef.row.field && !facetDef.column) return {def: facetDef.row, direction: 'column'};
   if (facetDef.column && facetDef.column.field && !facetDef.row) return {def: facetDef.column, direction: 'row'};
   return null;
@@ -785,6 +801,7 @@ function normalizeFacetDef(facetDef) {
 // header (labelExpr, format, title, ...).
 function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, prefix = '') {
   const {def: facetDef, direction} = facetInfo;
+  if (direction === 'grid') return buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix);
   const lines = [];
 
   // The shared per-panel template: one real function, called once per
@@ -809,7 +826,7 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   // facet data as an extra parameter, so every panel's scale agrees on the
   // same value -> output mapping (see sharedChannelDomainExpr in scales.js
   // and its `__vl2dRawExpr` marker, read by explicitDomainCode()).
-  const sharedDomainChannels = ['color', 'size', 'opacity'].filter(ch => {
+  const sharedDomainChannels = ['color', 'shape', 'size', 'opacity'].filter(ch => {
     const def = templateSpec.encoding && templateSpec.encoding[ch];
     return def && def.field && !(def.scale && def.scale.domain !== undefined);
   });
@@ -932,6 +949,145 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   b(`  panelWrap.appendChild(panel);`);
   const domainArgs = sharedDomainChannels.map(ch => sharedDomainVars[ch]);
   b(`  await ${templateName}(panel, ${panelOptionsExpr}, rows${domainArgs.length ? ', ' + domainArgs.join(', ') : ''});`);
+  b(`}`);
+
+  lines.push(...buildFunction(fnName, body, prefix));
+  return lines;
+}
+
+// A true two-dimensional facet grid (both `row` and `column` given at
+// once, e.g. trellis_row_column.vl.json) -- normalizeFacetDef() only
+// recognizes a *single* axis for buildRuntimeFacetPanels()'s own flex-strip
+// layout above, so a spec giving both used to fall through unrecognized
+// entirely (silently rendered as one plain, unfaceted panel with every
+// row overlaid together -- not just a layout gap, but a materially wrong
+// chart). Mirrors that function's own shared-scale-domain and per-panel
+// dims handling, but groups by (row key, column key) pairs and lays the
+// result out as a real CSS grid: one blank corner cell, one column-label
+// row across the top, one row-label column down the left, and one panel
+// per actual (row, column) combination present in the data (a combination
+// with no rows at all is left blank rather than calling the template on
+// empty data, which several mark renderers -- e.g. d3.extent() -- assume
+// never happens). Custom `sort` (a `{field: ...}` sort-by-another-column
+// form specifically) isn't supported for either axis here -- only ascending/
+// descending by the facet value itself -- a narrower feature than the
+// single-axis case above; no example in this project's own test suite
+// needs more.
+function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix = '') {
+  const {row: rowDef, column: colDef} = facetDef;
+  const lines = [];
+
+  const templateSpec = {...root.spec};
+  if (root.encoding) templateSpec.encoding = {...root.encoding, ...(templateSpec.encoding || {})};
+
+  const sharedDomainChannels = ['color', 'shape', 'size', 'opacity'].filter(ch => {
+    const def = templateSpec.encoding && templateSpec.encoding[ch];
+    return def && def.field && !(def.scale && def.scale.domain !== undefined);
+  });
+  const sharedDomainVars = {};
+  const sharedDomainDefs = {};
+  for (const ch of sharedDomainChannels) {
+    const varName = `__facet${ch[0].toUpperCase()}${ch.slice(1)}Domain`;
+    sharedDomainVars[ch] = varName;
+    const def = templateSpec.encoding[ch];
+    sharedDomainDefs[ch] = def;
+    templateSpec.encoding = {
+      ...templateSpec.encoding,
+      [ch]: {...def, scale: {...(def.scale || {}), domain: {__vl2dRawExpr: varName}}},
+    };
+  }
+
+  const templateName = `${fnName}_facetTemplate`;
+  lines.push(
+    ...buildFunction(templateName, buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows'), '', [
+      '__facetRows',
+      ...sharedDomainChannels.map(ch => sharedDomainVars[ch]),
+    ])
+  );
+
+  const body = [];
+  const b = s => body.push('  ' + s);
+  b(
+    `// vl2d3: unsupported top-level composition "facet", splitting the shared data by facet value at ` +
+      `runtime instead of code-generation time -- each panel shows a plain text header (the raw/timeUnit'd ` +
+      `facet value), not Vega-Lite's own fully templated header (--ignore-unsupported)`
+  );
+  const {statements: loadStmts} = renderDataLoad(root.data, 'facetData', ignoreUnsupported);
+  loadStmts.forEach(b);
+
+  const wrapperTransform = root.transform || [];
+  const transformTemporalFields = collectTemporalFields({}, wrapperTransform);
+  const rowIsTemporal = Boolean(rowDef.timeUnit) || rowDef.type === 'temporal';
+  const colIsTemporal = Boolean(colDef.timeUnit) || colDef.type === 'temporal';
+  const temporalFields = [
+    ...new Set([...transformTemporalFields, ...(rowIsTemporal ? [rowDef.field] : []), ...(colIsTemporal ? [colDef.field] : [])]),
+  ];
+  renderTemporalCoercion('facetData', temporalFields).forEach(b);
+  if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
+
+  for (const ch of sharedDomainChannels) {
+    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData')};`);
+  }
+
+  const rowKeyExpr = rowDef.timeUnit
+    ? timeUnitExpr(rowDef.timeUnit, `d[${JSON.stringify(rowDef.field)}]`, ignoreUnsupported)
+    : `d[${JSON.stringify(rowDef.field)}]`;
+  const colKeyExpr = colDef.timeUnit
+    ? timeUnitExpr(colDef.timeUnit, `d[${JSON.stringify(colDef.field)}]`, ignoreUnsupported)
+    : `d[${JSON.stringify(colDef.field)}]`;
+  b(`facetData = facetData.map(d => ({...d, "__facetRowKey": ${rowKeyExpr}, "__facetColKey": ${colKeyExpr}}));`);
+  b(`const __facetRowValues = Array.from(new Set(facetData.map(d => d["__facetRowKey"])));`);
+  b(`const __facetColValues = Array.from(new Set(facetData.map(d => d["__facetColKey"])));`);
+  b(`__facetRowValues.sort((a, b) => ${rowDef.sort === 'descending' ? 'd3.descending(a, b)' : 'd3.ascending(a, b)'});`);
+  b(`__facetColValues.sort((a, b) => ${colDef.sort === 'descending' ? 'd3.descending(a, b)' : 'd3.ascending(a, b)'});`);
+
+  const panelDims = [];
+  if (typeof root.spec.width === 'number') panelDims.push(`width: ${formatValue(root.spec.width)}`);
+  if (typeof root.spec.height === 'number') panelDims.push(`height: ${formatValue(root.spec.height)}`);
+  if (typeof root.spec.height === 'number' && root.spec.height < 50) {
+    panelDims.push(`marginTop: ${Math.max(1, Math.round(root.spec.height * 0.3))}`);
+    panelDims.push(`marginBottom: ${Math.max(1, Math.round(root.spec.height * 0.4))}`);
+  }
+  if (typeof root.spec.width === 'number' && root.spec.width < 80) {
+    panelDims.push(`marginLeft: ${Math.max(1, Math.round(root.spec.width * 0.3))}`);
+    panelDims.push(`marginRight: ${Math.max(1, Math.round(root.spec.width * 0.1))}`);
+  }
+  const panelOptionsExpr = panelDims.length > 0 ? `{...options, ${panelDims.join(', ')}}` : 'options';
+
+  const rowLabelExpr = rowIsTemporal
+    ? `rowKey instanceof Date ? d3.timeFormat(${rowDef.timeUnit && String(rowDef.timeUnit).match(/hours|minutes|seconds/) ? '"%-I:%M %p"' : '"%b %-d, %Y"'})(rowKey) : String(rowKey)`
+    : 'String(rowKey)';
+  const colLabelExpr = colIsTemporal
+    ? `colKey instanceof Date ? d3.timeFormat(${colDef.timeUnit && String(colDef.timeUnit).match(/hours|minutes|seconds/) ? '"%-I:%M %p"' : '"%b %-d, %Y"'})(colKey) : String(colKey)`
+    : 'String(colKey)';
+
+  b(`const doc = container.ownerDocument;`);
+  b(`const grid = doc.createElement("div");`);
+  b(
+    `grid.style.cssText = "display: grid; grid-template-columns: auto repeat(" + __facetColValues.length + ", auto); gap: 4px; align-items: center;";`
+  );
+  b(`container.appendChild(grid);`);
+  b(`grid.appendChild(doc.createElement("div"));`);
+  b(`for (const colKey of __facetColValues) {`);
+  b(`  const colLabel = doc.createElement("div");`);
+  b(`  colLabel.style.cssText = "font-size: 11px; font-family: sans-serif; text-align: center;";`);
+  b(`  colLabel.textContent = ${colLabelExpr};`);
+  b(`  grid.appendChild(colLabel);`);
+  b(`}`);
+  const domainArgs = sharedDomainChannels.map(ch => sharedDomainVars[ch]);
+  b(`for (const rowKey of __facetRowValues) {`);
+  b(`  const rowLabel = doc.createElement("div");`);
+  b(`  rowLabel.style.cssText = "font-size: 11px; font-family: sans-serif; writing-mode: vertical-rl; text-align: center;";`);
+  b(`  rowLabel.textContent = ${rowLabelExpr};`);
+  b(`  grid.appendChild(rowLabel);`);
+  b(`  for (const colKey of __facetColValues) {`);
+  b(`    const panel = doc.createElement("div");`);
+  b(`    grid.appendChild(panel);`);
+  b(`    const __cellRows = facetData.filter(d => d["__facetRowKey"] === rowKey && d["__facetColKey"] === colKey);`);
+  b(
+    `    if (__cellRows.length > 0) await ${templateName}(panel, ${panelOptionsExpr}, __cellRows${domainArgs.length ? ', ' + domainArgs.join(', ') : ''});`
+  );
+  b(`  }`);
   b(`}`);
 
   lines.push(...buildFunction(fnName, body, prefix));

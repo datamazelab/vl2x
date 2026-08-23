@@ -45,10 +45,29 @@ render_facet_call <- function(facet_def, columns = NULL, scales = NULL) {
   scales_arg <- if (!is.null(scales)) sprintf("scales = %s", render_string(scales)) else NULL
 
   if (has_row || has_column) {
+    # facet_grid()'s own free-scale support does NOT actually retrain
+    # coord_polar()'s theta/radius mapping per panel -- verified directly:
+    # facet_grid(scales = "free_y") still shows every panel's radial axis
+    # ticks/labels (and, in turn, its theta domain) identical to the first
+    # panel's, leaving the exact same "doesn't close into a full circle"
+    # gap free_y was meant to fix, while facet_wrap(scales = "free_y")
+    # handles the identical polar chart correctly. So whenever a real
+    # `scales` override is needed at all (currently: only an "arc" mark),
+    # this uses facet_wrap() with both row/column fields combined into one
+    # `vars(...)` list instead of facet_grid() -- not quite the same
+    # strict row-vs-column grid layout facet_grid() itself guarantees, but
+    # every example this project's own test suite covers uses only one of
+    # row/column at a time, where the two are equivalent anyway.
+    if (!is.null(scales)) {
+      vars_list <- character(0)
+      if (has_row) vars_list <- c(vars_list, facet_side_ref(facet_def[["row"]], .facet_row_field))
+      if (has_column) vars_list <- c(vars_list, facet_side_ref(facet_def[["column"]], .facet_column_field))
+      args <- c(sprintf("facets = dplyr::vars(%s)", paste(vars_list, collapse = ", ")), scales_arg)
+      return(format_call("ggplot2::facet_wrap", args))
+    }
     args <- character(0)
     if (has_row) args <- c(args, sprintf("rows = dplyr::vars(%s)", facet_side_ref(facet_def[["row"]], .facet_row_field)))
     if (has_column) args <- c(args, sprintf("cols = dplyr::vars(%s)", facet_side_ref(facet_def[["column"]], .facet_column_field)))
-    args <- c(args, scales_arg)
     return(format_call("ggplot2::facet_grid", args))
   }
 

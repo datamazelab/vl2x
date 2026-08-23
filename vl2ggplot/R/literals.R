@@ -29,6 +29,24 @@ render_string <- function(x) {
   paste0("\"", escaped, "\"")
 }
 
+# Vega-Lite color values are ordinary CSS strings -- almost always either a
+# hex code or an R-recognized named color (both already valid R color
+# strings as-is), but sometimes CSS's `rgb(r, g, b)`/`rgba(r, g, b, a)`
+# *function* syntax instead (e.g. isotype_bar_chart.vl.json's own color
+# scale range), which R's own graphics device does NOT accept literally --
+# `grDevices::col2rgb()`/every ggplot2 color aesthetic errors outright with
+# "Unknown colour name" on a raw "rgb(...)" string. Converted to a real hex
+# code here so every downstream color-literal call site (simple_color_value()
+# in geoms.R, build_color_scale()'s manual range in scales.R) can keep
+# treating a color value as a plain string, with no color-specific handling
+# of its own needed.
+normalize_css_color <- function(x) {
+  if (!is.character(x) || length(x) != 1) return(x)
+  m <- regmatches(x, regexec("^\\s*rgba?\\(\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*,\\s*([0-9]+)\\s*(?:,\\s*[0-9.]+\\s*)?\\)\\s*$", x))[[1]]
+  if (length(m) == 0) return(x)
+  grDevices::rgb(as.integer(m[2]), as.integer(m[3]), as.integer(m[4]), maxColorValue = 255)
+}
+
 render_scalar <- function(x) {
   if (is.null(x)) return("NULL")
   # A non-scalar value here means a JSON array/object cell (e.g. a "flatten"

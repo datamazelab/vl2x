@@ -19,7 +19,7 @@ axis_kind <- function(def) {
 
 # Build the scale_*() call(s) for one channel, or character(0) if the
 # defaults suffice.
-build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
+build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALSE, .notes = NULL, invalid_override = NULL, color_aes = NULL) {
   if (is.null(def)) return(character(0))
   # A color field commonly has no explicit "type" at all (Vega-Lite infers
   # it from the data instead, e.g. a plain string-valued field defaults to
@@ -27,13 +27,22 @@ build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALS
   # with that itself (an explicit `scale.range` array is discrete-only
   # regardless of type, so it doesn't even need to know), so it mustn't be
   # screened out here the same way a missing type silently drops every
-  # other channel's customization.
-  if (channel != "color" && is.null(def$type)) return(character(0))
+  # other channel's customization. An `invalid_override` alone (no other
+  # customization at all) is a real reason to still build a scale call too.
+  if (channel != "color" && is.null(def$type) && is.null(invalid_override)) return(character(0))
 
   if (channel %in% c("x", "y")) return(build_position_scale(channel, def))
-  if (channel == "color") return(build_color_scale(color_channel_aes(mark_type), def))
-  if (channel == "size") return(build_size_scale(def, ignore_unsupported, .notes))
-  if (channel == "opacity") return(build_opacity_scale(def, ignore_unsupported, .notes))
+  # `color_aes` (effective_color_aes(), encoding.R): the aes() name this
+  # layer's geom call actually ends up using for its color encoding, which
+  # can differ from color_channel_aes()'s own mark-type-only answer -- a
+  # point/circle/square/tick mark with `filled: true` (or a mark-level
+  # `stroke`) swaps its color encoding onto "fill" at the geom_point() call
+  # itself (see render_geom_layer_code()'s own comment on that swap,
+  # geoms.R), and a scale_*() call customizing the *other* aesthetic would
+  # silently do nothing at all.
+  if (channel == "color") return(build_color_scale(color_aes %||% color_channel_aes(mark_type), def, invalid_override))
+  if (channel == "size") return(build_size_scale(def, ignore_unsupported, .notes, invalid_override))
+  if (channel == "opacity") return(build_opacity_scale(def, ignore_unsupported, .notes, invalid_override))
   character(0)
 }
 
@@ -83,7 +92,7 @@ build_position_scale <- function(channel, def) {
   format_call(fn, args)
 }
 
-build_color_scale <- function(aes_name, def) {
+build_color_scale <- function(aes_name, def, invalid_override = NULL) {
   # `"scale": null` is Vega-Lite's own "use the raw field value directly as
   # the visual channel value, no mapping at all" escape hatch (e.g. a
   # `color` field that already holds real CSS color strings) -- distinct
@@ -97,6 +106,14 @@ build_color_scale <- function(aes_name, def) {
   scheme <- def$scale$scheme
   domain <- def$scale[["domain"]]
   range <- def$scale[["range"]]
+  # `config.scale.invalid.<channel>.value` (e.g.
+  # bar_invalid_color_show_override.vl.json) -- what a null/invalid raw
+  # value maps to instead of whatever the real scale produces for it, via
+  # ggplot2's own native `na.value` scale argument. Only reachable at all
+  # when `config.mark.invalid` is "show" (this project's usual "filter"
+  # default drops that row, and its NA, long before any scale sees it) --
+  # a harmless no-op otherwise.
+  na_arg <- if (!is.null(invalid_override)) sprintf("na.value = %s", format_value(invalid_override))
 
   # An array of literal color values (e.g. ["red", "blue"]) selects a manual
   # discrete scale; a bare scheme-name string (e.g. "diverging", "ordinal")
@@ -123,7 +140,7 @@ build_color_scale <- function(aes_name, def) {
     # doesn't attempt to reproduce exactly (see build_position_scale's
     # identical `is.null(names(domain))` guard).
     if (!is.null(domain) && is.null(names(domain))) args <- c(args, sprintf("breaks = %s", format_value(domain)))
-    args <- c(args, sprintf("values = %s", format_value(range)))
+    args <- c(args, sprintf("values = %s", format_value(lapply(range, normalize_css_color))), na_arg)
     return(format_call(sprintf("ggplot2::scale_%s_manual", aes_name), args))
   }
 
@@ -137,26 +154,32 @@ build_color_scale <- function(aes_name, def) {
 
   if (kind == "continuous" || kind == "date") {
     if (!is.null(scheme) && scheme %in% .viridis_schemes) {
-      return(format_call(sprintf("ggplot2::scale_%s_viridis_c", aes_name), sprintf('option = "%s"', scheme)))
+      return(format_call(sprintf("ggplot2::scale_%s_viridis_c", aes_name), c(sprintf('option = "%s"', scheme), na_arg)))
     }
+    if (!is.null(na_arg)) return(format_call(sprintf("ggplot2::scale_%s_continuous", aes_name), na_arg))
     return(character(0))
   }
 
   # discrete color
   if (!is.null(scheme) && scheme %in% .viridis_schemes) {
-    return(format_call(sprintf("ggplot2::scale_%s_viridis_d", aes_name), sprintf('option = "%s"', scheme)))
+    return(format_call(sprintf("ggplot2::scale_%s_viridis_d", aes_name), c(sprintf('option = "%s"', scheme), na_arg)))
   }
   if (!is.null(scheme) && scheme %in% .brewer_schemes) {
-    return(format_call(sprintf("ggplot2::scale_%s_brewer", aes_name), sprintf('palette = "%s"', scheme)))
+    return(format_call(sprintf("ggplot2::scale_%s_brewer", aes_name), c(sprintf('palette = "%s"', scheme), na_arg)))
   }
+  if (!is.null(na_arg)) return(format_call(sprintf("ggplot2::scale_%s_discrete", aes_name), na_arg))
   character(0)
 }
 
 .discretizing_scale_types <- c("quantile", "quantize", "threshold")
 
-build_size_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
+build_size_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL, invalid_override = NULL) {
   range <- def$scale[["range"]]
-  if (is.null(range)) return(character(0))
+  na_arg <- if (!is.null(invalid_override)) sprintf("na.value = %s", format_value(invalid_override))
+  if (is.null(range)) {
+    if (!is.null(na_arg)) return(format_call("ggplot2::scale_size", na_arg))
+    return(character(0))
+  }
   # scale_size()'s range is a 2-element continuous interval, unlike Vega-Lite's
   # discretizing scale types (quantile/quantize/threshold), whose range is a
   # list of discrete output values -- passing one through crashes scale_size().
@@ -168,25 +191,31 @@ build_size_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
         'unsupported scale type "%s" for a size channel, using the default size scale instead (ignore_unsupported)',
         def$scale$type %||% "range"
       ))
+      if (!is.null(na_arg)) return(format_call("ggplot2::scale_size", na_arg))
       return(character(0))
     }
     stop(sprintf('Unsupported: scale type "%s" for a size channel is not yet supported', def$scale$type %||% "range"))
   }
-  format_call("ggplot2::scale_size", sprintf("range = %s", format_value(range)))
+  format_call("ggplot2::scale_size", c(sprintf("range = %s", format_value(range)), na_arg))
 }
 
-build_opacity_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL) {
+build_opacity_scale <- function(def, ignore_unsupported = FALSE, .notes = NULL, invalid_override = NULL) {
   range <- def$scale[["range"]]
-  if (is.null(range)) return(character(0))
+  na_arg <- if (!is.null(invalid_override)) sprintf("na.value = %s", format_value(invalid_override))
+  if (is.null(range)) {
+    if (!is.null(na_arg)) return(format_call("ggplot2::scale_alpha", na_arg))
+    return(character(0))
+  }
   if (length(range) > 2 || (!is.null(def$scale$type) && def$scale$type %in% .discretizing_scale_types)) {
     if (ignore_unsupported) {
       .push_note(.notes, sprintf(
         'unsupported scale type "%s" for an opacity channel, using the default opacity scale instead (ignore_unsupported)',
         def$scale$type %||% "range"
       ))
+      if (!is.null(na_arg)) return(format_call("ggplot2::scale_alpha", na_arg))
       return(character(0))
     }
     stop(sprintf('Unsupported: scale type "%s" for an opacity channel is not yet supported', def$scale$type %||% "range"))
   }
-  format_call("ggplot2::scale_alpha", sprintf("range = %s", format_value(range)))
+  format_call("ggplot2::scale_alpha", c(sprintf("range = %s", format_value(range)), na_arg))
 }

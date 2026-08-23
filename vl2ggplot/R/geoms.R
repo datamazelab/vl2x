@@ -33,7 +33,7 @@ simple_color_value <- function(value, ignore_unsupported = FALSE, .notes = NULL)
     }
     stop("Unsupported: gradient fill/stroke definitions are not supported")
   }
-  format_value(value)
+  format_value(normalize_css_color(value))
 }
 
 # A mark-level scalar property (size/opacity/strokeWidth) can be
@@ -308,7 +308,16 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       (isTRUE(mark_props[["filled"]]) || !is.null(mark_props[["stroke"]])) && !is.null(aes_pairs[["colour"]])) {
     aes_pairs[["fill"]] <- aes_pairs[["colour"]]
     aes_pairs[["colour"]] <- NULL
-    fixed[["shape"]] <- fixed[["shape"]] %||% "21"
+    # Only forced to a fixed fillable shape (21) when there's no real
+    # `shape` ENCODING of its own -- a literal (non-aes) layer argument for
+    # an aesthetic silently *replaces* that same aesthetic's own aes()
+    # mapping wholesale in ggplot2 (the exact same trap `stroke`'s own
+    # comment above describes for colour), so unconditionally setting this
+    # was discarding a genuine `shape: {"field": ...}` encoding outright --
+    # every row rendered as the same plain filled circle regardless of its
+    # own category (e.g. isotype_bar_chart.vl.json's `filled: true` point
+    # mark, alongside its own `shape: {"field": "animal"}`).
+    if (is.null(aes_pairs[["shape"]])) fixed[["shape"]] <- fixed[["shape"]] %||% "21"
   }
 
   # x2/y2/xError/yError: meaning depends on the geom, and either axis can

@@ -271,20 +271,52 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
   };
 }
 
-// The "auto-computed domain" a color/size/opacity scale would build for
-// itself from `dataVar` -- exposed standalone so a facet template function
-// (whose own data var only ever holds one panel's rows, see
+// The "auto-computed domain" a color/shape/size/opacity scale would build
+// for itself from `dataVar` -- exposed standalone so a facet template
+// function (whose own data var only ever holds one panel's rows, see
 // buildRuntimeFacetPanels() in translator.js) can compute the SAME domain
 // once from the full, unsplit data instead, keeping a consistent
-// value->color/size/opacity mapping across every panel.
+// value->color/shape/size/opacity mapping across every panel. Shape is
+// always ordinal (a fixed array of symbol types, never a continuous
+// interpolation), same as color's own non-quantitative/temporal case --
+// matters most exactly when the facet's own row/column field *is* the
+// shape field too (e.g. trellis_row_column.vl.json's `column: {field:
+// "Origin"}` alongside `shape: {field: "Origin"}`): every panel's own data
+// then has only ONE distinct Origin value, which an unshared domain would
+// map to the same first symbol type in every column regardless of which
+// Origin it actually is.
 export function sharedChannelDomainExpr(channel, def, dataVar) {
-  if (channel === 'color' && def.type !== 'quantitative' && def.type !== 'temporal') {
+  if ((channel === 'color' || channel === 'shape') && def.type !== 'quantitative' && def.type !== 'temporal') {
     return ordinalDomainFromData(dataVar, def.field, def.sort);
   }
   return domainFromData(dataVar, def.field);
 }
 
-export function resolveColorScale(def, {dataVar, ignoreUnsupported = false}) {
+// `config.scale.invalid.<channel>.value` (e.g. bar_invalid_color_show_override.vl.json's
+// own `{"color": {"value": "red"}}`) overrides what a null/invalid raw
+// value maps to for this channel, *instead of* whatever the real scale
+// would otherwise produce for it -- only reachable at all when
+// `config.mark.invalid` is "show" (this project's usual "filter" default
+// drops that row entirely, long before any scale ever sees it). Wrapping
+// the constructor here, in one place, means every caller elsewhere in this
+// project that already just calls `color(v)`/`size(v)`/`opacity(v)`
+// benefits automatically, with no changes needed at any of those call sites.
+function scaleDecl(varName, scaleExpr, domainNote, invalidOverride) {
+  if (invalidOverride === undefined) {
+    return `const ${varName} = ${scaleExpr};${domainNote}`;
+  }
+  // `Object.assign` (not a bare arrow function) so the wrapper keeps every
+  // one of the real scale's own methods too (`.domain()`, `.range()`, ...) --
+  // this project's own legend code, e.g., still calls `color.domain()`
+  // directly, which a plain `v => ...` replacement would have no such
+  // method for at all.
+  return (
+    `const ${varName} = (() => { const __scale = ${scaleExpr}; ` +
+    `return Object.assign(v => (v == null ? ${formatValue(invalidOverride)} : __scale(v)), __scale); })();${domainNote}`
+  );
+}
+
+export function resolveColorScale(def, {dataVar, ignoreUnsupported = false, invalidOverride} = {}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
@@ -295,7 +327,7 @@ export function resolveColorScale(def, {dataVar, ignoreUnsupported = false}) {
     const interp = SCHEME_SEQUENTIAL[scheme] || 'interpolateBlues';
     return {
       varName: 'color',
-      decl: `const color = d3.scaleSequential(${domain}, d3.${interp});${domainNote}`,
+      decl: scaleDecl('color', `d3.scaleSequential(${domain}, d3.${interp})`, domainNote, invalidOverride),
       kind: 'sequential',
     };
   }
@@ -303,7 +335,7 @@ export function resolveColorScale(def, {dataVar, ignoreUnsupported = false}) {
   const range = def.scale && def.scale.range ? formatValue(def.scale.range) : `d3.${SCHEME_ORDINAL[scheme] || 'schemeTableau10'}`;
   return {
     varName: 'color',
-    decl: `const color = d3.scaleOrdinal(${domain}, ${range});${domainNote}`,
+    decl: scaleDecl('color', `d3.scaleOrdinal(${domain}, ${range})`, domainNote, invalidOverride),
     kind: 'ordinal',
   };
 }
@@ -330,14 +362,27 @@ export function resolveShapeScale(def, {dataVar, ignoreUnsupported = false}) {
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
   const domain = explicitDomain ?? ordinalDomainFromData(dataVar, field, def.sort);
+  // An explicit `scale.range` overrides the default symbol palette -- most
+  // often a set of literal SVG path strings per category (e.g.
+  // isotype_bar_chart.vl.json's own person/cattle/pig/sheep silhouettes),
+  // Vega-Lite's own "custom path shape" convention. `isRawPaths` (detected
+  // by every range value starting with an SVG path's own "M"/"m" moveto
+  // command) tells renderPoint (marks.js) to use each row's own resolved
+  // value directly as the mark's `d` attribute instead of running it
+  // through d3.symbol() (which only knows its own fixed built-in symbol
+  // *types*, not an arbitrary path string).
+  const explicitRange = def.scale && Array.isArray(def.scale.range) ? def.scale.range : null;
+  const isRawPaths = Boolean(explicitRange) && explicitRange.every(v => typeof v === 'string' && /^\s*[Mm]/.test(v));
+  const rangeExpr = explicitRange ? formatValue(explicitRange) : `[${SHAPE_SYMBOLS.join(', ')}]`;
   return {
     varName: 'shape',
-    decl: `const shape = d3.scaleOrdinal(${domain}, [${SHAPE_SYMBOLS.join(', ')}]);${domainNote}`,
+    decl: `const shape = d3.scaleOrdinal(${domain}, ${rangeExpr});${domainNote}`,
     kind: 'ordinal',
+    isRawPaths,
   };
 }
 
-export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false}) {
+export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false, invalidOverride} = {}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
@@ -345,12 +390,12 @@ export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false}) {
   const range = def.scale && def.scale.range ? formatValue(def.scale.range) : '[2, 20]';
   return {
     varName: 'size',
-    decl: `const size = d3.scaleSqrt(${domain}, ${range});${domainNote}`,
+    decl: scaleDecl('size', `d3.scaleSqrt(${domain}, ${range})`, domainNote, invalidOverride),
     kind: 'continuous',
   };
 }
 
-export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false}) {
+export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false, invalidOverride} = {}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
@@ -358,7 +403,7 @@ export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false}) {
   const range = def.scale && def.scale.range ? formatValue(def.scale.range) : '[0.1, 1]';
   return {
     varName: 'opacity',
-    decl: `const opacity = d3.scaleLinear(${domain}, ${range});${domainNote}`,
+    decl: scaleDecl('opacity', `d3.scaleLinear(${domain}, ${range})`, domainNote, invalidOverride),
     kind: 'continuous',
   };
 }

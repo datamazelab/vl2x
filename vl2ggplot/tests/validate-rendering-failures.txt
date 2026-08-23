@@ -182,18 +182,18 @@ chart <- chart + ggplot2::scale_colour_manual(
   "Waterloo & City"
 ),
   values = c(
-  "rgb(137,78,36)",
-  "rgb(220,36,30)",
-  "rgb(255,206,0)",
-  "rgb(1,114,41)",
-  "rgb(0,175,173)",
-  "rgb(215,153,175)",
-  "rgb(106,114,120)",
-  "rgb(114,17,84)",
-  "rgb(0,0,0)",
-  "rgb(0,24,168)",
-  "rgb(0,160,226)",
-  "rgb(106,187,170)"
+  "#894E24",
+  "#DC241E",
+  "#FFCE00",
+  "#017229",
+  "#00AFAD",
+  "#D799AF",
+  "#6A7278",
+  "#721154",
+  "#000000",
+  "#0018A8",
+  "#00A0E2",
+  "#6ABBAA"
 )
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 700, height = 500)
