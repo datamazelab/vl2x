@@ -107,7 +107,22 @@ build_color_scale <- function(aes_name, def) {
   # type, and a color field commonly has no explicit type at all.
   if (!is.null(range) && is.null(names(range)) && is.list(range)) {
     args <- character(0)
-    if (!is.null(domain)) args <- c(args, sprintf("breaks = %s", format_value(domain)))
+    # A plain array is a literal, ordered list of domain values -- but
+    # Vega-Lite also allows a domain *object* here (e.g. `{"unionWith":
+    # [...]}`, unioning the auto-inferred domain with a few extra explicit
+    # values), which format_value() would otherwise happily (and wrongly)
+    # serialize as an R list -- `breaks = list(unionWith = c(...))` isn't a
+    # valid vector of factor levels, so scale_fill_manual() silently maps
+    # every value to NA instead of a real color. Skipped instead: ggplot2's
+    # own auto-inferred breaks (the data's actual factor levels) still line
+    # up positionally against `values` below in the common case where the
+    # union target(s) already occur in the data (e.g. this file's own
+    # `unionWith: [5, 6]`, already within category's 1-6 domain) -- only a
+    # union value that *never* actually appears in the data would be
+    # silently dropped, same as any other domain-object shape this project
+    # doesn't attempt to reproduce exactly (see build_position_scale's
+    # identical `is.null(names(domain))` guard).
+    if (!is.null(domain) && is.null(names(domain))) args <- c(args, sprintf("breaks = %s", format_value(domain)))
     args <- c(args, sprintf("values = %s", format_value(range)))
     return(format_call(sprintf("ggplot2::scale_%s_manual", aes_name), args))
   }

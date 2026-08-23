@@ -90,6 +90,74 @@ function isBarOrArea(mark) {
   return type === 'bar' || type === 'area';
 }
 
+// A top-level `params` entry can bind a mark/encoding property to a live,
+// interactive value (`{"bind": {"input": "range", ...}}`) -- this project
+// has no interactivity to speak of, so the only thing worth reproducing is
+// its *static default* (`value`), which is what every mark/encoding
+// property bound via `{"expr": "<param name>"}` actually shows on first
+// render anyway. A derived param (`{"expr": "otherParam / 2"}`, e.g. a
+// bullet chart's own `innerBarSize`) is resolved the same way, substituting
+// each already-resolved param's numeric value into the expression text and
+// evaluating the (now-plain-arithmetic) result -- params later in the array
+// commonly depend on ones earlier in it, never the reverse, so a single
+// left-to-right pass is enough.
+function resolveStaticParams(params = []) {
+  const values = new Map();
+  for (const p of params) {
+    if (!p || !p.name) continue;
+    if (typeof p.value === 'number') {
+      values.set(p.name, p.value);
+    } else if (typeof p.expr === 'string') {
+      const resolved = evalSimpleParamExpr(p.expr, values);
+      if (resolved !== null) values.set(p.name, resolved);
+    }
+  }
+  return values;
+}
+
+// Substitutes every already-resolved param name in `expr` with its numeric
+// value, then evaluates the result -- but only if what's left is safe,
+// plain arithmetic (a whitelist of digits/operators/parens/whitespace, no
+// identifiers at all): this deliberately refuses anything referencing an
+// unresolved param, a signal, or a Vega expression function, returning
+// `null` for the caller to fall back on rather than guessing.
+function evalSimpleParamExpr(expr, paramValues) {
+  let substituted = expr;
+  for (const [name, value] of paramValues) {
+    substituted = substituted.replace(new RegExp(`\\b${name}\\b`, 'g'), `(${value})`);
+  }
+  if (!/^[\d\s+\-*/().]+$/.test(substituted)) return null;
+  try {
+    // eslint-disable-next-line no-new-func
+    const result = Function(`"use strict"; return (${substituted});`)();
+    return typeof result === 'number' && Number.isFinite(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolves any mark property bound to a *static* param (`{"expr": "<param
+// name or simple arithmetic over param names>"}`) into the literal number
+// it would show on first render -- everything downstream (simpleMarkProp()
+// et al.) already handles a plain literal, so this needs no further
+// plumbing once the substitution happens here, up front. A prop already a
+// plain literal, or bound to something evalSimpleParamExpr() can't resolve
+// (a live signal expression, a non-arithmetic string), passes through
+// unchanged for that existing "unsupported, fall back to a default" path
+// to handle as before.
+function resolveMarkPropExprs(markProps, paramValues) {
+  if (paramValues.size === 0) return markProps;
+  const resolved = {...markProps};
+  for (const key of Object.keys(resolved)) {
+    const value = resolved[key];
+    if (value && typeof value === 'object' && typeof value.expr === 'string') {
+      const num = evalSimpleParamExpr(value.expr, paramValues);
+      if (num !== null) resolved[key] = num;
+    }
+  }
+  return resolved;
+}
+
 // Vega-Lite's default handling of a null/undefined/NaN value on a
 // continuous (quantitative/temporal) channel is to *filter the whole row
 // out* before any other transform runs (`mark.invalid` -- or, more
@@ -215,12 +283,23 @@ function collectInvalidFilterFields(encoding, transformList) {
     // own to already skip a null/missing raw value the way build_layer_*
     // aggregation paths do.
     if (!def || typeof def !== 'object' || !def.field || !(def.type === 'quantitative' || def.type === 'temporal' || def.type === undefined)) continue;
-    // A bracket-indexed compound-aggregate reference (`argmax_x['y']`) reads
-    // out of a *produced* field (its base), even though the whole string
-    // isn't itself a key `collectProducedFields` ever added -- same "doesn't
-    // exist on the raw, pre-transform rows" trap as a plain produced field.
+    // A bracket-indexed field path (`argmax_x['y']`, or a bare numeric
+    // index into a genuine array-valued raw column like a bullet chart's
+    // `ranges[2]`, see parseBracketFieldPath()) is never itself a real,
+    // literal property key on any row -- `d["ranges[2]"]` (the naive
+    // lookup renderInvalidFilter() below would otherwise emit) is simply
+    // `undefined` on every row, regardless of whether the base is a
+    // produced field or a genuine raw one, so this always filtered every
+    // row out before flattenBracketFields() ever got a chance to run and
+    // create the real flattened field this filter would need to target
+    // instead. Skipped entirely here (same as a produced field) rather
+    // than attempting a nested-access filter expression of its own --
+    // flattenBracketFields()'s own `== null ? null : ...` chain already
+    // produces `null` (not a crash) for a genuinely missing/short array,
+    // so the one gap this leaves is a real `NaN`/non-array value at that
+    // exact index slipping through unfiltered, not a broken chart.
     const bracketBase = parseBracketFieldPath(def.field)?.base;
-    if (produced.has(def.field) || (bracketBase && produced.has(bracketBase))) continue;
+    if (bracketBase || produced.has(def.field)) continue;
     fields.add(def.field);
   }
   return [...fields];
@@ -311,6 +390,7 @@ function flattenLayers(node, wrapper) {
 // already-indented lines ending in `return svg.node();`.
 function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   const children = flattenLayers(root, {});
+  const paramValues = resolveStaticParams(root.params);
 
   const lines = [];
   const b = s => lines.push('  ' + s);
@@ -323,17 +403,27 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   b('const marginLeft = options.marginLeft ?? 50;');
   lines.push('');
 
+  // Clamped (not bare `height - marginBottom` / `width - marginRight`):
+  // a facet's own per-panel `width`/`height` (buildRuntimeFacetPanels)
+  // can be small enough -- e.g. trellis_area_seattle's 25px-tall row
+  // strips -- that the default 20/30px top/bottom margins alone exceed
+  // it. Unclamped, `height - marginBottom` then comes out *less* than
+  // `marginTop`, silently reversing the y-scale's own range order (low
+  // values now map to the smaller pixel coordinate, at the top) and
+  // flipping the whole plot upside down. Clamping keeps the range
+  // degenerate (a single point) in that extreme case rather than
+  // inverted -- a squashed plot, not a mirrored one.
   const dims = {
-    xRangeExpr: '[marginLeft, width - marginRight]',
-    yRangeExpr: '[height - marginBottom, marginTop]',
+    xRangeExpr: '[marginLeft, Math.max(marginLeft, width - marginRight)]',
+    yRangeExpr: '[Math.max(marginTop, height - marginBottom), marginTop]',
     innerWidthExpr: '(width - marginLeft - marginRight)',
     innerHeightExpr: '(height - marginTop - marginBottom)',
     centerXExpr: 'width / 2',
     centerYExpr: 'height / 2',
     marginTopExpr: 'marginTop',
     marginLeftExpr: 'marginLeft',
-    heightMinusBottomExpr: 'height - marginBottom',
-    widthMinusRightExpr: 'width - marginRight',
+    heightMinusBottomExpr: 'Math.max(marginTop, height - marginBottom)',
+    widthMinusRightExpr: 'Math.max(marginLeft, width - marginRight)',
   };
 
   // -- per-child data preparation --
@@ -561,7 +651,9 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
   // -- marks --
   for (const p of prepared) {
-    let markCode = renderMark(p.mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
+    const mark =
+      typeof p.mark === 'string' ? p.mark : {...p.mark, ...resolveMarkPropExprs(p.mark, paramValues)};
+    let markCode = renderMark(mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
     if (!/[;}]\s*$/.test(markCode)) markCode += ';';
     lines.push(markCode.replace(/^/gm, '  '));
     lines.push('');
@@ -798,6 +890,25 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   const panelDims = [];
   if (typeof root.spec.width === 'number') panelDims.push(`width: ${formatValue(root.spec.width)}`);
   if (typeof root.spec.height === 'number') panelDims.push(`height: ${formatValue(root.spec.height)}`);
+  // A small explicit per-panel height (e.g. trellis_area_seattle's 25px-
+  // tall row strips) can be smaller than the chart function's own DEFAULT
+  // top+bottom margins (20+30) combined -- left at their defaults, the
+  // clamp in buildUnitOrLayerBody's own dims.yRangeExpr (which stops the
+  // y-scale's range from *inverting*, flipping the plot upside down when
+  // the margins alone exceed the height) would otherwise squash the panel
+  // down to a single-pixel sliver instead. Scaling the margins down
+  // proportionally to the given height keeps a usable plot area without
+  // reintroducing the inversion; not an attempt at Vega-Lite's own exact
+  // per-axis-config margin sizing (out of scope here, same simplification
+  // this project already makes everywhere else).
+  if (typeof root.spec.height === 'number' && root.spec.height < 50) {
+    panelDims.push(`marginTop: ${Math.max(1, Math.round(root.spec.height * 0.3))}`);
+    panelDims.push(`marginBottom: ${Math.max(1, Math.round(root.spec.height * 0.4))}`);
+  }
+  if (typeof root.spec.width === 'number' && root.spec.width < 80) {
+    panelDims.push(`marginLeft: ${Math.max(1, Math.round(root.spec.width * 0.3))}`);
+    panelDims.push(`marginRight: ${Math.max(1, Math.round(root.spec.width * 0.1))}`);
+  }
   const panelOptionsExpr = panelDims.length > 0 ? `{...options, ${panelDims.join(', ')}}` : 'options';
   b(`const doc = container.ownerDocument;`);
   b(`const wrap = doc.createElement("div");`);

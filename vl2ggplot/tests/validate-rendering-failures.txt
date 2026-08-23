@@ -33,10 +33,6 @@ chart <- chart + ggplot2::geom_point(
 
 chart
 
-===== bar_bullet_expr_bind.vl.json [TRANSLATE] =====
-Unsupported: bracket-indexed field reference "ranges[2]" is not supported
-
-
 ===== bar_layered_weather.vl.json [TRANSLATE] =====
 Unsupported: nested field reference "record.low" (dot-path into a sub-object) is not supported
 
@@ -61,116 +57,17 @@ chart <- chart + ggplot2::geom_boxplot(mapping = ggplot2::aes(x = a, y = b))
 
 chart
 
-===== boxplot_preaggregated_with_height.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 4th layer.
-Caused by error:
-! object 'outliers' not found
-library(ggplot2)
-
-layer_data <- data.frame(
-  Species = c("Adelie", "Chinstrap", "Gentoo"),
-  lower = c(2850, 2700, 3950),
-  q1 = c(3350, 3487.5, 4700),
-  median = c(3700, 3700, 5000),
-  q3 = c(4000, 3950, 5500),
-  upper = c(4775, 4800, 6300),
-  outliers = c(list(), c(2700, 4800), list()),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Species)))
-layer1_data <- layer_data
-layer1_data <- dplyr::mutate(layer1_data, lower = if (is.character(lower)) suppressWarnings(as.numeric(lower)) else lower)
-chart <- chart + ggplot2::geom_segment(
-  data = layer1_data,
-  mapping = ggplot2::aes(y = factor(Species), x = lower, xend = upper, yend = factor(Species))
-)
-layer2_data <- layer_data
-layer2_data <- dplyr::mutate(layer2_data, q1 = if (is.character(q1)) suppressWarnings(as.numeric(q1)) else q1)
-chart <- chart + ggplot2::geom_linerange(
-  data = layer2_data,
-  mapping = ggplot2::aes(y = factor(Species), xmin = q1, xmax = q3, colour = factor(Species)),
-  linewidth = 10
-)
-layer3_data <- layer_data
-layer3_data <- dplyr::mutate(layer3_data, median = if (is.character(median)) suppressWarnings(as.numeric(median)) else median)
-chart <- chart + ggplot2::geom_point(
-  data = layer3_data,
-  mapping = ggplot2::aes(y = factor(Species), x = median),
-  colour = "white"
-)
-layer4_data <- layer_data
-# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
-chart <- chart + ggplot2::geom_point(
-  data = layer4_data,
-  mapping = ggplot2::aes(y = factor(Species), x = outliers)
-)
-chart <- chart + ggplot2::labs(title = "Body Mass of Penguin Species (g)")
-# NOTE: height are set when saving/displaying, e.g. ggsave(..., height = 200)
-
-
-chart
-
-===== boxplot_preaggregated.vl.json [EXEC] =====
-Problem while computing aesthetics.
-ℹ Error occurred in the 4th layer.
-Caused by error:
-! object 'outliers' not found
-library(ggplot2)
-
-layer_data <- data.frame(
-  Species = c("Adelie", "Chinstrap", "Gentoo"),
-  lower = c(2850, 2700, 3950),
-  q1 = c(3350, 3487.5, 4700),
-  median = c(3700, 3700, 5000),
-  q3 = c(4000, 3950, 5500),
-  upper = c(4775, 4800, 6300),
-  outliers = c(list(), c(2700, 4800), list()),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart <- ggplot2::ggplot(layer_data, ggplot2::aes(y = factor(Species)))
-layer1_data <- layer_data
-layer1_data <- dplyr::mutate(layer1_data, lower = if (is.character(lower)) suppressWarnings(as.numeric(lower)) else lower)
-chart <- chart + ggplot2::geom_segment(
-  data = layer1_data,
-  mapping = ggplot2::aes(y = factor(Species), x = lower, xend = upper, yend = factor(Species))
-)
-layer2_data <- layer_data
-layer2_data <- dplyr::mutate(layer2_data, q1 = if (is.character(q1)) suppressWarnings(as.numeric(q1)) else q1)
-chart <- chart + ggplot2::geom_linerange(
-  data = layer2_data,
-  mapping = ggplot2::aes(y = factor(Species), xmin = q1, xmax = q3, colour = factor(Species)),
-  linewidth = 10
-)
-layer3_data <- layer_data
-layer3_data <- dplyr::mutate(layer3_data, median = if (is.character(median)) suppressWarnings(as.numeric(median)) else median)
-chart <- chart + ggplot2::geom_point(
-  data = layer3_data,
-  mapping = ggplot2::aes(y = factor(Species), x = median),
-  colour = "white",
-  size = 14
-)
-layer4_data <- layer_data
-# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
-chart <- chart + ggplot2::geom_point(
-  data = layer4_data,
-  mapping = ggplot2::aes(y = factor(Species), x = outliers)
-)
-chart <- chart + ggplot2::labs(title = "Body Mass of Penguin Species (g)")
-
-
-chart
-
 ===== circle_flatten.vl.json [EXEC] =====
-arguments imply differing number of rows: 2, 5, 4
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error in `order()`:
+! unimplemented type 'list' in 'orderVector1'
 library(ggplot2)
 
 chart_data <- data.frame(
   key = c("alpha", "beta"),
-  foo = c(c(1, 2), c(3, 4, 5)),
-  bar = c(c("A", "B"), c("C", "D")),
+  foo = I(list(c(1, 2), c(3, 4, 5))),
+  bar = I(list(c("A", "B"), c("C", "D"))),
   stringsAsFactors = FALSE,
   check.names = FALSE
 )
@@ -182,10 +79,6 @@ chart <- chart + ggplot2::geom_point(
 
 
 chart
-
-===== facet_bullet.vl.json [TRANSLATE] =====
-Unsupported: bracket-indexed field reference "ranges[2]" is not supported
-
 
 ===== geo_choropleth.vl.json [EXEC] =====
 Problem while computing aesthetics.

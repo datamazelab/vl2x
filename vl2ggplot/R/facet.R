@@ -15,7 +15,7 @@
 # `facet_def` is either a top-level facet operator's `facet` value
 # ({"field":...} or {"row":..., "column":...}) or the encoding-level
 # facet/row/column channel(s), normalized to the same shape by the caller.
-render_facet_call <- function(facet_def, columns = NULL) {
+render_facet_call <- function(facet_def, columns = NULL, scales = NULL) {
   # Exact (not partial) name matches: `$`/`[[` on a list would otherwise
   # silently partial-match e.g. a FacetFieldDef's own "columns" (a wrap
   # count, an integer) as if it were "column" (a FacetMapping sub-field, an
@@ -32,16 +32,30 @@ render_facet_call <- function(facet_def, columns = NULL) {
     if (!is.null(side_def[["timeUnit"]])) render_name(derived_name) else field_ref(side_def[["field"]])
   }
 
+  # `scales` (e.g. "free_y", for an "arc" mark -- see render_geom_layer_code()'s
+  # own caller in translator.R) overrides ggplot2's own default of sharing
+  # every panel's axes ("fixed"). A pie chart is the one case this project
+  # actually needs that for: its "radius"/theta axis (mapped onto ggplot2's
+  # y, then wrapped in coord_polar()) has to span exactly that one panel's
+  # own total to close into a full circle -- shared across panels instead,
+  # a panel whose own total falls short of the largest panel's leaves a
+  # visible gap (an incomplete circle) rather than a proper wedge-only
+  # difference, since the *shared* upper bound never lets that panel's own
+  # values reach all the way around.
+  scales_arg <- if (!is.null(scales)) sprintf("scales = %s", render_string(scales)) else NULL
+
   if (has_row || has_column) {
     args <- character(0)
     if (has_row) args <- c(args, sprintf("rows = dplyr::vars(%s)", facet_side_ref(facet_def[["row"]], .facet_row_field)))
     if (has_column) args <- c(args, sprintf("cols = dplyr::vars(%s)", facet_side_ref(facet_def[["column"]], .facet_column_field)))
+    args <- c(args, scales_arg)
     return(format_call("ggplot2::facet_grid", args))
   }
 
   args <- sprintf("facets = dplyr::vars(%s)", facet_side_ref(facet_def, .facet_wrap_field))
   ncol_value <- if (!is.null(columns)) columns else facet_def[["columns"]]
   if (!is.null(ncol_value)) args <- c(args, sprintf("ncol = %s", format_value(ncol_value)))
+  args <- c(args, scales_arg)
   format_call("ggplot2::facet_wrap", args)
 }
 

@@ -1,7 +1,5 @@
 ===== area_invalid_null.vl.json [NaN geometry: 1 shape(s), tags=path] =====
 
-===== area_overlay_with_y2.vl.json [NaN geometry: 1 shape(s), tags=path] =====
-
 ===== area_ranged_offset_quantitative.vl.json [NaN geometry: 2 shape(s), tags=path] =====
 
 ===== bar_grouped_thin.vl.json [NaN geometry: 880 shape(s), tags=rect] =====

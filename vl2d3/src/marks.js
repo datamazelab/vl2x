@@ -132,17 +132,17 @@ const SKIP_COMMENT = reason => `// vl2d3: mark not drawn (${reason}, --ignore-un
 // Marks with no renderer of their own get approximated by the nearest
 // supported one when `ignoreUnsupported` is set, rather than refusing to
 // render at all:
-//  - `rect`/`errorbar`/`errorband` with an x2/y2 range -> drawn as a bar
-//    (renderBar already handles the ranged-box case); without a range,
-//    falls through to a point per row (still shows the underlying data,
-//    just not the summary/band shape).
-//  - `boxplot` -> a tick/strip per row (raw values, not the quartile
-//    summary -- computing quantiles isn't implemented).
+//  - `rect` with an x2/y2 range -> drawn as a bar (renderBar already
+//    handles the ranged-box case); without a range, falls through to a
+//    point per row (still shows the underlying data, just not the
+//    summary/band shape). `errorbar`/`errorband`/`boxplot` have their own
+//    real renderers (renderErrorbar/renderErrorband/renderBoxplot) and
+//    never reach this function at all.
 //  - `trail` -> a plain line (drops the width-by-`size` encoding).
 //  - `square`/anything else unrecognized -> a point.
 function renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported) {
   const note = asType => `// vl2d3: unsupported mark type "${type}", drawing as "${asType}" instead (--ignore-unsupported)`;
-  if ((type === 'rect' || type === 'errorbar' || type === 'errorband') && (encoding.x2 || encoding.y2)) {
+  if (type === 'rect' && (encoding.x2 || encoding.y2)) {
     return note('bar') + '\n' + renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
   }
   if (type === 'trail') {
@@ -530,6 +530,104 @@ function renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, err
   return lines.join('\n');
 }
 
+// An "errorband" is errorbar's filled-area sibling: same per-group summary
+// stat (mean +/- extent, see errorExtentBounds()), but instead of one rule
+// per category, a single continuous band connecting every distinct
+// along-axis value's own (lower, upper) pair -- so unlike renderErrorbar
+// (whose category axis is normally nominal/banded), this one is normally
+// continuous or temporal (one point per distinct x, not one box per
+// category), the same shape renderArea() draws for a real "area" mark.
+// With no along-axis field at all (e.g. a scatterplot's shared 1D
+// reference band), there's nothing to connect, so it falls back to a
+// single full-width/height rect instead -- the band equivalent of
+// renderBoxplot's own "no category channel" case.
+function renderErrorband(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
+  const xIsValue = encoding.x && encoding.x.type === 'quantitative';
+  const yIsValue = encoding.y && encoding.y.type === 'quantitative';
+  if (!xIsValue && !yIsValue) {
+    if (ignoreUnsupported) {
+      return `// vl2d3: unsupported "errorband" orientation (no quantitative x or y encoding), skipping (--ignore-unsupported)`;
+    }
+    throw new Error('"errorband" mark requires a quantitative x or y encoding');
+  }
+  const valueChannel = yIsValue ? 'y' : 'x';
+  const catChannel = valueChannel === 'y' ? 'x' : 'y';
+  const valueField = encoding[valueChannel].field;
+  const catDef = encoding[catChannel];
+
+  const {lower, upper} = errorExtentBounds(markProps.extent);
+  const statBody =
+    `const values = ${'{{DATA}}'}.map(d => d[${JSON.stringify(valueField)}]).filter(v => v != null);\n` +
+    `  const sorted = values.slice().sort(d3.ascending);\n` +
+    `  const mean = d3.mean(values);\n` +
+    `  const stdev = d3.deviation(values) ?? 0;\n` +
+    `  const stderr = stdev / Math.sqrt(values.length);\n` +
+    `  const q1 = d3.quantile(sorted, 0.25), q3 = d3.quantile(sorted, 0.75);\n`;
+
+  const bandVar = 'errBand';
+  const lines = [];
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+  const bandOpacity = markProps.opacity !== undefined ? formatValue(markProps.opacity) : '0.3';
+
+  if (catDef && catDef.field) {
+    const catField = JSON.stringify(catDef.field);
+    lines.push(
+      `const ${bandVar} = Array.from(d3.group(${dataVar}, d => d[${catField}]), ([, rows]) => {\n` +
+        `  ${statBody.replace('{{DATA}}', 'rows')}` +
+        `  return {...rows[0], lower: ${lower}, upper: ${upper}};\n` +
+        `}).sort((a, b) => d3.ascending(a[${catField}], b[${catField}]));`
+    );
+    const catAccessor = `${catChannel}(d[${catField}])`;
+    lines.push(`svg.append("path")`);
+    lines.push(`    .attr("fill", ${fill})`);
+    lines.push(`    .attr("fill-opacity", ${bandOpacity})`);
+    if (valueChannel === 'y') {
+      lines.push(`    .attr("d", d3.area().x(d => ${catAccessor}).y0(d => y(d.lower)).y1(d => y(d.upper))(${bandVar}))`);
+    } else {
+      lines.push(`    .attr("d", d3.area().y(d => ${catAccessor}).x0(d => x(d.lower)).x1(d => x(d.upper))(${bandVar}))`);
+    }
+    // `borders` (boolean, or a styling object) draws the band's own two
+    // edges as separate outline strokes -- Vega-Lite's real behavior,
+    // distinct from just stroking the filled area (which would also draw
+    // a stroke across the two connecting ends).
+    if (markProps.borders) {
+      const bordersProps = typeof markProps.borders === 'object' ? markProps.borders : {};
+      const borderStroke = bordersProps.color ? formatValue(bordersProps.color) : fill;
+      const borderOpacity = bordersProps.opacity !== undefined ? formatValue(bordersProps.opacity) : '1';
+      const dashArray = bordersProps.strokeDash ? `\n    .attr("stroke-dasharray", ${formatValue(bordersProps.strokeDash.join(','))})` : '';
+      for (const bound of ['lower', 'upper']) {
+        lines.push(`svg.append("path")`);
+        lines.push(`    .attr("fill", "none")`);
+        lines.push(`    .attr("stroke", ${borderStroke})`);
+        lines.push(`    .attr("stroke-opacity", ${borderOpacity})${dashArray}`);
+        if (valueChannel === 'y') {
+          lines.push(`    .attr("d", d3.line().x(d => ${catAccessor}).y(d => y(d.${bound}))(${bandVar}))`);
+        } else {
+          lines.push(`    .attr("d", d3.line().y(d => ${catAccessor}).x(d => x(d.${bound}))(${bandVar}))`);
+        }
+      }
+    }
+  } else {
+    lines.push(`const ${bandVar} = (() => {\n  ${statBody.replace('{{DATA}}', dataVar)}  return {lower: ${lower}, upper: ${upper}};\n})();`);
+    lines.push(`svg.append("rect")`);
+    lines.push(`    .attr("fill", ${fill})`);
+    lines.push(`    .attr("fill-opacity", ${bandOpacity})`);
+    if (valueChannel === 'y') {
+      lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
+      lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
+      lines.push(`    .attr("y", y(${bandVar}.upper))`);
+      lines.push(`    .attr("height", Math.abs(y(${bandVar}.lower) - y(${bandVar}.upper)))`);
+    } else {
+      lines.push(`    .attr("y", ${dims.marginTopExpr})`);
+      lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
+      lines.push(`    .attr("x", x(${bandVar}.lower))`);
+      lines.push(`    .attr("width", Math.abs(x(${bandVar}.upper) - x(${bandVar}.lower)))`);
+    }
+  }
+
+  return '{\n' + lines.join('\n').replace(/^/gm, '  ') + '\n}';
+}
+
 export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsupported = false, extentParams = {}) {
   const type = typeof mark === 'string' ? mark : mark.type;
   const markProps = typeof mark === 'string' ? {} : mark;
@@ -604,6 +702,15 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       }
       return renderErrorbar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     }
+    case 'errorband':
+      // A pre-aggregated errorband already gives an explicit y2/x2 lower
+      // bound -- renderArea() already draws exactly that shape (it treats
+      // y2 as the band's own baseline instead of a zero baseline), so no
+      // need for errorband's own stat computation at all.
+      if (encoding.x2 || encoding.y2) {
+        return renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      }
+      return renderErrorband(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     default:
       if (ignoreUnsupported) {
         return renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
@@ -643,6 +750,26 @@ function ambiguousBarWidthDecl(varName, scale, dataVar, field) {
     `  return xs.length > 1 ? (xs[xs.length - 1] - xs[0]) / (xs.length - 1) * 0.7 : 20;\n` +
     `})();`
   );
+}
+
+// The companion (non-value) axis's own span for a bar with only one
+// position channel at all (no x2/y2, no band on the other axis) -- an
+// explicit numeric `mark.size` (already resolved from any static-param
+// expr by resolveMarkPropExprs(), translator.js) is a real, deliberate
+// fixed thickness (e.g. a bullet chart's own stacked range/measure bars,
+// each a different literal `size` centered on the same row), taking
+// priority over the full-plot-height/width default this project otherwise
+// uses when nothing says otherwise (verified against real Vega-Lite output
+// for bar_1d/bar_1d_default_size, which have no `size` at all).
+function fixedOrFullSpan(markProps, dims, axis) {
+  const size = markProps.size;
+  if (typeof size === 'number') {
+    const center = axis === 'y' ? dims.centerYExpr : dims.centerXExpr;
+    return {pos: `${center} - ${size / 2}`, extent: formatValue(size)};
+  }
+  return axis === 'y'
+    ? {pos: dims.marginTopExpr, extent: `${dims.heightMinusBottomExpr} - ${dims.marginTopExpr}`}
+    : {pos: dims.marginLeftExpr, extent: `${dims.widthMinusRightExpr} - ${dims.marginLeftExpr}`};
 }
 
 function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
@@ -961,30 +1088,36 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // A single quantitative position channel and nothing else at all (a
     // "1D bar" -- e.g. a lone dataset-wide aggregate with no groupby) --
     // Vega-Lite still draws a real bar: zero baseline to the value, along
-    // the one axis it has, spanning the full plot height on the other (no
-    // companion axis is drawn at all, so there's nothing to center against).
+    // the one axis it has. The companion axis span is `mark.size` when
+    // given (see fixedOrFullSpan()), else the full plot height (no
+    // companion axis is drawn at all in that case, so there's nothing to
+    // center a smaller band against).
+    const ySpan = fixedOrFullSpan(markProps, dims, 'y');
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-    lines.push(`    .attr("y", ${dims.marginTopExpr})`);
-    lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
+    lines.push(`    .attr("y", ${ySpan.pos})`);
+    lines.push(`    .attr("height", ${ySpan.extent})`);
   } else if (encoding.x && !encoding.y) {
     // A bare, un-aggregated quantitative x (see the width-decl branch
     // above): a thin reference band centered on each row's own value,
-    // rather than a zero-baseline bar, spanning the full plot height.
+    // rather than a zero-baseline bar.
+    const ySpan = fixedOrFullSpan(markProps, dims, 'y');
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
-    lines.push(`    .attr("y", ${dims.marginTopExpr})`);
-    lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
+    lines.push(`    .attr("y", ${ySpan.pos})`);
+    lines.push(`    .attr("height", ${ySpan.extent})`);
   } else if (encoding.y && !encoding.x && encoding.y.aggregated) {
+    const xSpan = fixedOrFullSpan(markProps, dims, 'x');
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-    lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
-    lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("x", ${xSpan.pos})`);
+    lines.push(`    .attr("width", ${xSpan.extent})`);
   } else if (encoding.y && !encoding.x) {
+    const xSpan = fixedOrFullSpan(markProps, dims, 'x');
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`);
     lines.push(`    .attr("height", ${yBarWidthVar})`);
-    lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
-    lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("x", ${xSpan.pos})`);
+    lines.push(`    .attr("width", ${xSpan.extent})`);
   } else if (ignoreUnsupported) {
     // Neither x nor y at all (e.g. a band axis with no value channel and
     // no x2/y2) -- a point per row at least shows where the data is,
@@ -1161,14 +1294,50 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   if ((!x || !y) && !ignoreUnsupported) throw new Error('"area" mark requires both x and y encodings');
   if (!x && !y) return SKIP_COMMENT('"area" mark has neither x nor y encoding');
   const singleAxisNote = !x || !y ? `// vl2d3: "area" mark missing ${!x ? 'x' : 'y'} encoding, centering on that axis instead (--ignore-unsupported)\n` : '';
-  const cx = x ? accessor(encoding.x, scales, 'x') : dims.centerXExpr;
-  const y1 = y ? accessor(encoding.y, scales, 'y') : dims.centerYExpr;
-  const y0 = encoding.y2 ? `y(d[${JSON.stringify(encoding.y2.field)}])` : y ? 'y(0)' : dims.centerYExpr;
+
+  // Vega-Lite orients an area by which axis is the *value* one -- almost
+  // always y (the standard chart, baseline-to-value running vertically),
+  // but flipped to x whenever x is quantitative and y is not (e.g.
+  // area_vertical.vl.json's own shape: a temporal/ordinal "along" axis on
+  // y instead of the usual x, baseline-to-value running horizontally).
+  const xIsValue = encoding.x && encoding.x.type === 'quantitative';
+  const yIsValue = encoding.y && encoding.y.type === 'quantitative';
+  const horizontal = xIsValue && !yIsValue;
+  const alongChannel = horizontal ? 'y' : 'x';
+  const valueChannel = horizontal ? 'x' : 'y';
+  const alongScale = scales[alongChannel];
+  const valueScale = scales[valueChannel];
+  const alongFallback = alongChannel === 'x' ? dims.centerXExpr : dims.centerYExpr;
+  const valueFallback = valueChannel === 'x' ? dims.centerXExpr : dims.centerYExpr;
+
+  const alongPos = alongScale ? accessor(encoding[alongChannel], scales, alongChannel) : alongFallback;
+  const valueTop = valueScale ? accessor(encoding[valueChannel], scales, valueChannel) : valueFallback;
+  // The baseline (`y2`/`x2`, whichever is the value channel's own
+  // companion): a plain field reference is the common case, but it can
+  // also be a literal `datum` (e.g. area_overlay_with_y2.vl.json's
+  // `"y2": {"datum": 0}`) -- previously read only `.field`, silently
+  // producing `d[undefined]` (NaN) for the datum form and never actually
+  // reaching the zero baseline.
+  const value2Def = encoding[`${valueChannel}2`];
+  const valueBase = value2Def
+    ? value2Def.field
+      ? `${valueChannel}(d[${JSON.stringify(value2Def.field)}])`
+      : value2Def.datum !== undefined
+        ? `${valueChannel}(${formatValue(value2Def.datum)})`
+        : `${valueChannel}(0)`
+    : valueScale
+      ? `${valueChannel}(0)`
+      : valueFallback;
+
   const groupField = seriesGroupField(encoding);
-  const sortField = x ? encoding.x.field : encoding.y.field;
+  const sortField = encoding[alongChannel] ? encoding[alongChannel].field : encoding[valueChannel].field;
   const sortFieldJson = JSON.stringify(sortField);
   const lines = [];
   const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+
+  const areaCall = horizontal
+    ? `d3.area().y(d => ${alongPos}).x0(d => ${valueBase}).x1(d => ${valueTop})`
+    : `d3.area().x(d => ${alongPos}).y0(d => ${valueBase}).y1(d => ${valueTop})`;
 
   if (groupField) {
     lines.push(`svg.append("g")`);
@@ -1178,14 +1347,14 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     lines.push(`  .join("path")`);
     lines.push(`    .attr("fill", ([key]) => ${encoding.color ? 'color(key)' : fill})`);
     lines.push(
-      `    .attr("d", ([, rows]) => d3.area().x(d => ${cx}).y0(d => ${y0}).y1(d => ${y1})` +
+      `    .attr("d", ([, rows]) => ${areaCall}` +
         `(rows.slice().sort((a, b) => d3.ascending(a[${sortFieldJson}], b[${sortFieldJson}]))));`
     );
   } else {
     lines.push(`svg.append("path")`);
     lines.push(`    .attr("fill", ${fill})`);
     lines.push(
-      `    .attr("d", d3.area().x(d => ${cx}).y0(d => ${y0}).y1(d => ${y1})` +
+      `    .attr("d", ${areaCall}` +
         `(${dataVar}.slice().sort((a, b) => d3.ascending(a[${sortFieldJson}], b[${sortFieldJson}]))));`
     );
   }
@@ -1331,7 +1500,11 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   // this child's own encoding, not just the scale, before referencing its field.
   const xField = encoding.x && JSON.stringify(encoding.x.field);
   const yField = encoding.y && JSON.stringify(encoding.y.field);
-  const TICK_HALF = 10; // half-length used along an axis with no scale (1D strip plots)
+  // Half-length used along an axis with no scale at all (1D strip plots) --
+  // an explicit numeric `mark.size` (already resolved from any static-param
+  // expr, translator.js's resolveMarkPropExprs()) overrides the arbitrary
+  // 10px default, matching bar_bullet_expr_bind.vl.json's own tick layer.
+  const TICK_HALF = typeof markProps.size === 'number' ? markProps.size / 2 : 10;
 
   if (x && y && xField && yField) {
     // A dodged/grouped offset on x narrows the tick to its own sub-band

@@ -254,11 +254,16 @@ extract_subday_date_function_fields <- function(expr) {
 # them ever see it.
 parse_bracket_field_path <- function(field) {
   if (!is.character(field) || length(field) != 1) return(NULL)
-  m <- regmatches(field, regexec(paste0("^(", .identifier_re, ")((?:\\[(?:'[^']*'|\"[^\"]*\")\\])+)$"), field, perl = TRUE))[[1]]
+  # A bracket-indexed field path is either a string key (a compound
+  # aggregate result, e.g. `argmax_US_Gross['Production Budget']`) or a
+  # bare numeric index (a genuine array-valued column, e.g. a bullet
+  # chart's `ranges[2]`) -- both are parsed here, not just the string-key
+  # shape (see vl2d3's identical parseBracketFieldPath() for the same fix).
+  m <- regmatches(field, regexec(paste0("^(", .identifier_re, ")((?:\\[(?:'[^']*'|\"[^\"]*\"|-?[0-9]+)\\])+)$"), field, perl = TRUE))[[1]]
   if (length(m) == 0) return(NULL)
   base <- m[2]
   raw_keys <- regmatches(m[3], gregexpr("\\[[^]]*\\]", m[3]))[[1]]
-  keys <- gsub("^\\['|^\\[\"|'\\]$|\"\\]$", "", raw_keys)
+  keys <- gsub("^\\['|^\\[\"|'\\]$|\"\\]$|^\\[|\\]$", "", raw_keys)
   list(base = base, keys = keys)
 }
 
@@ -272,7 +277,15 @@ flatten_bracket_fields <- function(encoding, work_var) {
     if (is.null(parsed)) next
     flat_field <- paste0(parsed$base, "__", paste(gsub("[^A-Za-z0-9_]", "_", parsed$keys), collapse = "__"))
     access_expr <- ".x"
-    for (k in parsed$keys) access_expr <- sprintf("%s[[%s]]", access_expr, render_string(k))
+    for (k in parsed$keys) {
+      # A bare numeric key is Vega-Lite/JS's own 0-based array index (e.g.
+      # `ranges[2]` means the *third* element) -- R indexing is 1-based, so
+      # this needs the `+ 1` to land on the same element; a quoted string
+      # key (a compound-aggregate field name) needs no such shift.
+      is_numeric_key <- grepl("^-?[0-9]+$", k)
+      index_expr <- if (is_numeric_key) as.character(as.integer(k) + 1L) else render_string(k)
+      access_expr <- sprintf("%s[[%s]]", access_expr, index_expr)
+    }
     statements <- c(statements, sprintf(
       "%s <- dplyr::mutate(%s, %s = sapply(%s, function(.x) %s))",
       work_var, work_var, render_name(flat_field), field_ref(parsed$base), access_expr
@@ -328,7 +341,7 @@ desugar_compound_aggregate_encoding <- function(node) {
   node
 }
 
-prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL) {
+prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL, facet_group_fields = character(0)) {
   node <- desugar_compound_aggregate_encoding(node)
   node_encoding <- node$encoding %||% list()
   geo_channel <- intersect(names(node_encoding), .geo_channels)
@@ -450,7 +463,7 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   # the resulting summarise() drops that column while the plot's aes()
   # (inherited separately, by ggplot2 itself) still expects it.
   plan <- if (length(channel_entries(encoding_effective)) > 0) {
-    plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported)
+    plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported, facet_group_fields)
   } else {
     list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE)
   }
@@ -582,13 +595,18 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   early_facet_def <- extract_facet_channels(spec$encoding)
   if (!is.null(early_facet_def)) spec <- inject_facet_timeunit_transforms(spec, early_facet_def)
 
-  prepared <- prepare_unit(spec, emitter, hint, ignore_unsupported = ignore_unsupported)
+  prepared <- prepare_unit(
+    spec, emitter, hint,
+    ignore_unsupported = ignore_unsupported,
+    facet_group_fields = facet_group_field_names(early_facet_def)
+  )
   if (is.null(prepared$data_var)) stop("A view must have a data source")
 
   plot_var <- new_var(emitter, hint)
   emit(emitter, sprintf("%s <- ggplot2::ggplot(%s)", plot_var, prepared$data_var))
 
-  geom <- render_geom_layer(prepared$mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE), ignore_unsupported, prepared$data_var, prepared$extent_params)
+  resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, resolve_static_params(spec$params))
+  geom <- render_geom_layer(resolved_mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE), ignore_unsupported, prepared$data_var, prepared$extent_params)
   emit(emitter, geom$notes)
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
@@ -602,7 +620,8 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 
   facet_def <- extract_facet_channels(prepared$original_encoding)
   if (!is.null(facet_def)) {
-    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def)))
+    facet_scales <- if (identical(mark_type0, "arc")) "free_y" else NULL
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = facet_scales)))
   }
 
   plot_var
@@ -619,12 +638,53 @@ inherit_wrapper <- function(child, wrapper) {
   child
 }
 
+# See render_facet_call()'s own `scales` doc comment (facet.R) for why an
+# "arc" mark needs its facet panels' theta/radius (ggplot2's own y) axis
+# freed rather than shared. Checks the *wrapped* spec's own mark(s) (a
+# facet's own child can be a plain unit view or a layer composition) --
+# recursing into `layer` covers a pie chart layered with e.g. a text-label
+# overlay, matching translate_layer's own has_arc.
+spec_has_arc_mark <- function(spec) {
+  if (!is.null(spec$mark)) {
+    mark_type <- if (is.character(spec$mark)) spec$mark else spec$mark$type
+    return(identical(mark_type, "arc"))
+  }
+  if (!is.null(spec$layer)) {
+    return(any(vapply(spec$layer, spec_has_arc_mark, logical(1))))
+  }
+  FALSE
+}
+
 extract_facet_channels <- function(encoding) {
   if (!is.null(encoding$facet)) return(encoding$facet)
   if (!is.null(encoding$row) || !is.null(encoding$column)) {
     return(list(row = encoding$row, column = encoding$column))
   }
   NULL
+}
+
+# The raw field name(s) a facet_def (extract_facet_channels()'s return
+# value) needs each panel split by -- threaded into plan_layer_data() as an
+# extra, always-present groupby for the *explicit* dplyr::summarise()
+# aggregate path (transforms.R's plan_explicit_aggregate()) only: unlike
+# stat_summary()/stat_count() (which ggplot2 itself already computes
+# per-facet-panel automatically, no help needed), a pre-computed
+# dplyr::summarise() runs before faceting ever sees the data, so without
+# this the facet field gets silently collapsed/dropped entirely by the
+# summarise() -- not just wrong data, but a hard "Plot is missing `<field>`"
+# error from facet_grid()/facet_wrap() as soon as the dropped column no
+# longer exists to facet by (e.g. arc_facet.vl.json's `column: {field:
+# "year"}` alongside `theta: {"aggregate": "sum", ...}`, with no other
+# channel already tracking "year").
+facet_group_field_names <- function(facet_def) {
+  if (is.null(facet_def)) return(character(0))
+  if (!is.null(facet_def$row) || !is.null(facet_def$column)) {
+    unique(c(facet_def$row$field, facet_def$column$field))
+  } else if (!is.null(facet_def$field)) {
+    facet_def$field
+  } else {
+    character(0)
+  }
 }
 
 # Vega-Lite allows a `layer` entry to itself be a nested layer composition
@@ -734,16 +794,19 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   encodings_for_scales <- list()
   facet_def <- extract_facet_channels(wrapper_encoding)
 
+  layer_param_values <- resolve_static_params(spec$params)
   for (i in seq_along(layer_children)) {
     child <- layer_children[[i]]
     prepared <- prepare_unit(
       child, emitter, sprintf("%s%d", base_hint, i),
       inherited_data_var = wrapper_data_var, inherited_encoding = wrapper_encoding,
-      ignore_unsupported = ignore_unsupported, inherited_offset_field = wrapper_offset_field
+      ignore_unsupported = ignore_unsupported, inherited_offset_field = wrapper_offset_field,
+      facet_group_fields = facet_group_field_names(facet_def)
     )
     data_arg <- prepared$data_var # NULL means "inherit the plot's data"
+    resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, layer_param_values)
     geom <- render_geom_layer(
-      prepared$mark, prepared$encoding, data_arg,
+      resolved_mark, prepared$encoding, data_arg,
       list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE),
       ignore_unsupported,
       prepared$data_var %||% wrapper_data_var,
@@ -768,7 +831,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   apply_common(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported)
 
   if (!is.null(facet_def)) {
-    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def)))
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = if (has_arc) "free_y" else NULL)))
   }
 
   plot_var
@@ -781,7 +844,8 @@ translate_facet <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   child_var <- translate_spec(child_spec, emitter, child_hint, ignore_unsupported)
 
   plot_var <- new_var(emitter, hint)
-  emit(emitter, sprintf("%s <- %s + %s", plot_var, child_var, render_facet_call(spec$facet, spec$columns)))
+  facet_scales <- if (spec_has_arc_mark(child_spec)) "free_y" else NULL
+  emit(emitter, sprintf("%s <- %s + %s", plot_var, child_var, render_facet_call(spec$facet, spec$columns, scales = facet_scales)))
   plot_var
 }
 
@@ -856,6 +920,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
 
   encodings_for_scales <- list()
   facet_def <- NULL
+  has_arc <- FALSE
   i <- 0
   for (val in layer_values) {
     child_spec <- inherit_wrapper(substitute_repeat_fields(spec$spec, list(layer = val)), spec)
@@ -880,6 +945,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
       emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
 
       mark_type_i <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
+      if (identical(mark_type_i, "arc")) has_arc <- TRUE
       enc <- prepared$encoding
       attr(enc, "mark_type") <- mark_type_i
       encodings_for_scales[[length(encodings_for_scales) + 1]] <- enc
@@ -889,7 +955,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
 
   apply_common(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported)
   if (!is.null(facet_def)) {
-    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def)))
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = if (has_arc) "free_y" else NULL)))
   }
   plot_var
 }

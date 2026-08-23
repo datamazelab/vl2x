@@ -21,8 +21,23 @@ render_inline_values <- function(values) {
 
   col_code <- vapply(all_fields, function(field) {
     items <- cols[[field]]
-    rendered <- vapply(items, function(v) if (is.null(v) || (length(v) == 1 && is.na(v))) "NA" else render_scalar_or_na(v), character(1))
-    paste0(render_name(field), " = c(", paste(rendered, collapse = ", "), ")")
+    # An array-valued field (e.g. a bullet chart's own `"ranges": [150, 225,
+    # 300]`) can't go through the plain `c(...)` column path below: each
+    # row's own array would just splice its elements in as *more* rows
+    # instead of staying one cell, immediately conflicting with every other
+    # (real, one-value-per-row) column's length -- `data.frame(..., ranges
+    # = c(c(150, 225, 300)))` for a single row silently asks for 3 rows.
+    # `I(list(...))` instead keeps each row's whole array as one list-cell,
+    # exactly what flatten_bracket_fields()'s `sapply(field, function(.x)
+    # .x[[k]])` (translator.R) already expects to index into.
+    has_array <- any(vapply(items, function(v) !is.null(v) && !is_scalar_value(v), logical(1)))
+    if (has_array) {
+      rendered <- vapply(items, function(v) if (is.null(v)) "NULL" else render_scalar_or_na(v), character(1))
+      paste0(render_name(field), " = I(list(", paste(rendered, collapse = ", "), "))")
+    } else {
+      rendered <- vapply(items, function(v) if (is.null(v) || (length(v) == 1 && is.na(v))) "NA" else render_scalar_or_na(v), character(1))
+      paste0(render_name(field), " = c(", paste(rendered, collapse = ", "), ")")
+    }
   }, character(1))
 
   format_call("data.frame", col_code, extra_args = c("stringsAsFactors = FALSE", "check.names = FALSE"), indent = 0)

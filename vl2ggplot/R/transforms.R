@@ -415,7 +415,7 @@ render_pivot_transform <- function(t, var_name) {
 # behavior for un-aggregated tooltip fields, for a channel this project
 # drops on the floor anyway.
 .position_like <- c(
-  "x", "y", "x2", "y2", "color", "fill", "stroke", "size", "opacity",
+  "x", "y", "x2", "y2", "theta", "theta2", "radius", "radius2", "color", "fill", "stroke", "size", "opacity",
   "shape", "detail", "text"
 )
 
@@ -462,8 +462,43 @@ plan_2d_bin <- function(mark_type, encoding, agg_keys) {
 }
 
 # Returns list(statements, encoding, extra_fixed, extra_aes, use_histogram).
-plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE) {
+plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0)) {
   keys <- channel_entries(encoding)
+  .arc_theta_radius <- c("theta", "theta2", "radius", "radius2")
+  if (mark_type != "arc") {
+    # theta/radius are meaningful position-like channels only for an "arc"
+    # mark -- a *different* mark type in the same layer composition (e.g.
+    # arc_radial_histogram.vl.json's own text labels, layered alongside the
+    # wedges and inheriting the wrapper's `theta`/`radius` encoding purely
+    # incidentally) has no real use for them, and letting them participate
+    # in *that* mark's own bin/aggregate detection routes it through
+    # machinery built for bar/rect-shaped geoms (geom_histogram()'s
+    # stat_bin(), see the arc-only case below) that a text/point/line mark
+    # can't actually use -- restores the exact same complete blindness
+    # theta/radius had for every non-arc mark type before being added to
+    # .position_like at all.
+    keys <- setdiff(keys, .arc_theta_radius)
+  } else if (any(vapply(intersect(keys, .arc_theta_radius), function(k) !is.null(encoding[[k]]$bin), logical(1)))) {
+    # A binned theta/radius (a *radial* histogram -- one wedge's angle per
+    # bin, e.g. arc_radial_histogram.vl.json) has no equivalent to the
+    # normal geom_histogram()/stat_bin() path every other binned mark takes
+    # here: that machinery fundamentally assumes a bar/rect-shaped geom, and
+    # errors outright when it's still handed the "y" aes theta maps onto
+    # alongside coord_polar() -- and even routing just the *other* (still
+    # aggregate-only) theta/radius channel through the plain groupless-
+    # aggregate path drops whatever column the binned one still needs (a
+    # `dplyr::summarise()` with no groupby keeps only what it computes).
+    # A real per-bin wedge count isn't implemented (a larger feature on its
+    # own), so this drops theta/theta2/radius/radius2 from consideration
+    # entirely here, restoring the exact same "not recognized as
+    # aggregatable at all" blindness this mark_type/channel combination had
+    # before theta/radius were added to .position_like (still wrong --
+    # every raw row's own literal value becomes its own wedge -- but not a
+    # crash, and this project's usual bar/rect trigger for the identical
+    # gap: binning combined with other groupby channels, is left in place
+    # rather than pre-empted).
+    keys <- setdiff(keys, .arc_theta_radius)
+  }
   agg_keys <- keys[vapply(keys, function(k) !is.null(encoding[[k]]$aggregate), logical(1))]
   bin_keys <- keys[vapply(keys, function(k) !is.null(encoding[[k]]$bin), logical(1))]
   tu_only_keys <- keys[vapply(keys, function(k) {
@@ -666,7 +701,7 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     }
   }
 
-  plan <- plan_explicit_aggregate(encoding, agg_keys, group_keys, var_name, ignore_unsupported)
+  plan <- plan_explicit_aggregate(encoding, agg_keys, group_keys, var_name, ignore_unsupported, facet_group_fields)
   plan$statements <- c(plan_notes, plan$statements)
   plan$aggregated <- TRUE
   plan
@@ -882,7 +917,7 @@ apply_error_extent <- function(mark_props, encoding, var_name, ignore_unsupporte
   list(statements = c(note, stmts), encoding = rewritten)
 }
 
-plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE) {
+plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0)) {
   notes <- character(0)
   if (length(group_keys) > 2) {
     if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
@@ -930,6 +965,14 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
       group_field_refs <- c(group_field_refs, field_ref(def$field))
     }
   }
+  # A facet row/column field isn't a real encoding channel (no aes()
+  # mapping, no timeUnit-rewrite bookkeeping needed -- inject_facet_
+  # timeunit_transforms() already derived its real column, if any, before
+  # this ever runs) -- just needs to survive the group_by()/summarise()
+  # below as a plain passenger column, or facet_grid()/facet_wrap()
+  # downstream has nothing left to facet by (see facet_group_field_names()
+  # in translator.R for why).
+  group_field_refs <- c(group_field_refs, vapply(setdiff(facet_group_fields, vapply(group_keys, function(k) encoding[[k]]$field, character(1))), field_ref, character(1)))
 
   value_assigns <- vapply(agg_keys, function(k) {
     def <- encoding[[k]]

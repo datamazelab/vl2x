@@ -47,6 +47,65 @@ simple_color_value <- function(value, ignore_unsupported = FALSE, .notes = NULL)
 # nothing static to resolve, so this falls back the same way a gradient
 # fill/stroke definition does (a reasonable constant, with a note, under
 # ignore_unsupported; a clear error otherwise).
+# A top-level `params` entry can bind a mark/encoding property to a live,
+# interactive value (`{"bind": {"input": "range", ...}}`) -- this project
+# has no interactivity, so the only thing worth reproducing is its *static
+# default* (`value`), which is what every property bound via `{"expr":
+# "<param name>"}` actually shows on first render anyway (mirrors vl2d3's
+# identical resolveStaticParams()/evalSimpleParamExpr() in translator.js --
+# see that file for the full rationale, including why a single left-to-
+# right pass over `params` is enough for a derived param that references an
+# earlier one, e.g. a bullet chart's own `innerBarSize: height / 2`).
+resolve_static_params <- function(params) {
+  values <- list()
+  for (p in params %||% list()) {
+    if (is.null(p$name)) next
+    if (is.numeric(p$value) && length(p$value) == 1) {
+      values[[p$name]] <- p$value
+    } else if (is.character(p$expr) && length(p$expr) == 1) {
+      resolved <- eval_simple_param_expr(p$expr, values)
+      if (!is.null(resolved)) values[[p$name]] <- resolved
+    }
+  }
+  values
+}
+
+# Substitutes every already-resolved param name in `expr` with its numeric
+# value, then evaluates the result -- but only if what's left is safe,
+# plain arithmetic (a whitelist of digits/operators/parens/whitespace, no
+# identifiers at all): deliberately refuses anything referencing an
+# unresolved param, a signal, or a Vega expression function, returning NULL
+# for the caller to fall back on rather than guessing.
+eval_simple_param_expr <- function(expr, param_values) {
+  substituted <- expr
+  for (nm in names(param_values)) {
+    substituted <- gsub(sprintf("\\b%s\\b", nm), sprintf("(%s)", format_value(param_values[[nm]])), substituted, perl = TRUE)
+  }
+  if (!grepl("^[0-9\\s+*/().-]+$", substituted, perl = TRUE)) return(NULL)
+  result <- tryCatch(eval(parse(text = substituted)), error = function(e) NULL)
+  if (is.numeric(result) && length(result) == 1 && is.finite(result)) result else NULL
+}
+
+# Resolves any mark property bound to a *static* param (`{"expr": "<param
+# name or simple arithmetic over param names>"}`) into the literal number
+# it would show on first render, by substituting it directly into the
+# expr's own text -- mark_scalar_value() below already handles a plain
+# numeric expr string as-is, so this needs no further plumbing once the
+# substitution happens here, up front. A prop already a plain literal, or
+# bound to something eval_simple_param_expr() can't resolve, passes through
+# unchanged for mark_scalar_value()'s own existing fallback to handle.
+resolve_mark_prop_exprs <- function(mark_props, param_values) {
+  if (length(param_values) == 0) return(mark_props)
+  for (k in names(mark_props)) {
+    v <- mark_props[[k]]
+    if (is.list(v) && is.character(v[["expr"]])) {
+      resolved <- eval_simple_param_expr(v[["expr"]], param_values)
+      if (!is.null(resolved)) mark_props[[k]][["expr"]] <- format_value(resolved)
+    }
+  }
+  mark_props
+}
+
 mark_scalar_value <- function(value, default_literal, ignore_unsupported = FALSE, .notes = NULL) {
   if (is.list(value) && !is.null(value[["expr"]])) {
     translated <- translate_expr(value[["expr"]])
