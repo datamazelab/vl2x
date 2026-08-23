@@ -333,6 +333,203 @@ function renderBoxplot(encoding, scales, dims, dataVar, markProps, ignoreUnsuppo
   return '{\n' + lines.join('\n').replace(/^/gm, '  ') + '\n}';
 }
 
+// The (lower, upper) bound expressions for an errorbar/errorband's
+// `extent` -- computed from per-group summary stats already in scope
+// (`mean`/`stdev`/`stderr`/`q1`/`q3`, see renderErrorbar()). "ci" uses a
+// normal approximation (mean +/- 1.96*stderr) rather than Vega-Lite's own
+// bootstrapped resample of the raw values -- a reasonable, deterministic
+// stand-in, in keeping with this project's existing approach to other
+// statistical marks (e.g. renderBoxplot's own min-max/IQR-multiple
+// whiskers, never a full kernel-density-equivalent computation).
+function errorExtentBounds(extent) {
+  if (extent === 'stdev') return {lower: 'mean - stdev', upper: 'mean + stdev'};
+  if (extent === 'ci') return {lower: 'mean - 1.96 * stderr', upper: 'mean + 1.96 * stderr'};
+  if (extent === 'iqr') return {lower: 'q1', upper: 'q3'};
+  return {lower: 'mean - stderr', upper: 'mean + stderr'}; // "stderr" -- Vega-Lite's own default extent.
+}
+
+// An "errorbar" mark with no explicit x2/y2 range (see renderApproximateMark
+// for the already-ranged case, e.g. a pre-aggregated spec giving explicit
+// lower/upper fields) is, like "boxplot", one of Vega-Lite's composite
+// marks: it collapses each distinct category down to a summary interval
+// (mean +/- some extent, computed from the *raw* per-row values) rather
+// than drawing one shape per row. Same grouping idiom as renderBoxplot
+// (distinct category/color/offset fields, deduplicated by field), but a
+// much simpler shape to draw: a single rule from the lower to the upper
+// bound, with small end ticks only when the mark opts into them
+// (`mark.ticks`) -- Vega-Lite's own default appearance has none.
+function renderErrorbar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
+  const xIsValue = encoding.x && encoding.x.type === 'quantitative';
+  const yIsValue = encoding.y && encoding.y.type === 'quantitative';
+  if (!xIsValue && !yIsValue) {
+    if (ignoreUnsupported) {
+      return (
+        `// vl2d3: unsupported "errorbar" orientation (no quantitative x or y encoding), drawing a point per row instead (--ignore-unsupported)\n` +
+        renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported)
+      );
+    }
+    throw new Error('"errorbar" mark requires a quantitative x or y encoding');
+  }
+  const valueChannel = yIsValue ? 'y' : 'x';
+  const catChannel = valueChannel === 'y' ? 'x' : 'y';
+  const valueField = encoding[valueChannel].field;
+  const catDef = encoding[catChannel];
+  const offsetChannel = catChannel === 'x' ? 'xOffset' : 'yOffset';
+
+  const {lower, upper} = errorExtentBounds(markProps.extent);
+
+  const groupFields = [];
+  for (const ch of [catChannel, 'color', offsetChannel]) {
+    const def = encoding[ch];
+    if (def && def.field && !groupFields.includes(def.field)) groupFields.push(def.field);
+  }
+  const keyExpr = groupFields.length
+    ? `JSON.stringify([${groupFields.map(f => `d[${JSON.stringify(f)}]`).join(', ')}])`
+    : '0';
+
+  const statsVar = 'errStats';
+  const lines = [];
+  lines.push(
+    `const ${statsVar} = Array.from(d3.group(${dataVar}, d => ${keyExpr}), ([, rows]) => {\n` +
+      `  const values = rows.map(d => d[${JSON.stringify(valueField)}]).filter(v => v != null);\n` +
+      `  const sorted = values.slice().sort(d3.ascending);\n` +
+      `  const mean = d3.mean(values);\n` +
+      `  const stdev = d3.deviation(values) ?? 0;\n` +
+      `  const stderr = stdev / Math.sqrt(values.length);\n` +
+      `  const q1 = d3.quantile(sorted, 0.25), q3 = d3.quantile(sorted, 0.75);\n` +
+      `  return {...rows[0], lower: ${lower}, upper: ${upper}};\n` +
+      `});`
+  );
+
+  const catCenter = catDef
+    ? dodgeAwareAccessor(encoding, scales, catChannel)
+    : catChannel === 'x'
+      ? dims.centerXExpr
+      : dims.centerYExpr;
+
+  const stroke = encoding.color ? accessor(encoding.color, scales, 'color') : formatValue(markColorFallback(markProps, 'stroke', 'black'));
+  const rowDependent = hasRowDependentColor(encoding);
+
+  lines.push(`svg.append("g")`);
+  if (!rowDependent) lines.push(`    .attr("stroke", ${stroke})`);
+  lines.push(`  .selectAll("line")`);
+  lines.push(`  .data(${statsVar})`);
+  lines.push(`  .join("line")`);
+  if (rowDependent) lines.push(`    .attr("stroke", d => ${stroke})`);
+  if (valueChannel === 'x') {
+    lines.push(`    .attr("x1", d => x(d.lower))`);
+    lines.push(`    .attr("x2", d => x(d.upper))`);
+    lines.push(`    .attr("y1", d => ${catCenter})`);
+    lines.push(`    .attr("y2", d => ${catCenter})`);
+  } else {
+    lines.push(`    .attr("y1", d => y(d.lower))`);
+    lines.push(`    .attr("y2", d => y(d.upper))`);
+    lines.push(`    .attr("x1", d => ${catCenter})`);
+    lines.push(`    .attr("x2", d => ${catCenter})`);
+  }
+
+  // End ticks are opt-in (`mark.ticks`, a boolean or a styling object with
+  // its own `color`) -- Vega-Lite's own default errorbar has none.
+  if (markProps.ticks) {
+    const ticksProps = typeof markProps.ticks === 'object' ? markProps.ticks : {};
+    const tickStroke = ticksProps.color ? formatValue(ticksProps.color) : stroke;
+    const tickHalf = 4;
+    lines.push(`svg.append("g")`);
+    if (!rowDependent || ticksProps.color) lines.push(`    .attr("stroke", ${tickStroke})`);
+    lines.push(`  .selectAll("line")`);
+    lines.push(`  .data(${statsVar}.flatMap(d => [{...d, __v: d.lower}, {...d, __v: d.upper}]))`);
+    lines.push(`  .join("line")`);
+    if (rowDependent && !ticksProps.color) lines.push(`    .attr("stroke", d => ${stroke})`);
+    if (valueChannel === 'x') {
+      lines.push(`    .attr("x1", d => x(d.__v))`);
+      lines.push(`    .attr("x2", d => x(d.__v))`);
+      lines.push(`    .attr("y1", d => ${catCenter} - ${tickHalf})`);
+      lines.push(`    .attr("y2", d => ${catCenter} + ${tickHalf})`);
+    } else {
+      lines.push(`    .attr("y1", d => y(d.__v))`);
+      lines.push(`    .attr("y2", d => y(d.__v))`);
+      lines.push(`    .attr("x1", d => ${catCenter} - ${tickHalf})`);
+      lines.push(`    .attr("x2", d => ${catCenter} + ${tickHalf})`);
+    }
+  }
+
+  return '{\n' + lines.join('\n').replace(/^/gm, '  ') + '\n}';
+}
+
+// A pre-aggregated errorbar (one row per category already, no per-row
+// summarizing needed) gives its interval directly via `xError`/`xError2`
+// (or the y equivalents) instead of a real `x2`/`y2` range -- `xError`
+// alone is a symmetric +/- offset from the base value; `xError` +
+// `xError2` together are both offsets *added* to the base value (Vega-Lite
+// semantics: `xError2` is not itself the lower bound, it's the signed
+// offset to it -- mirrors error_bounds() in vl2ggplot's geoms.R). No
+// grouping/stats computation needed here at all, unlike renderErrorbar()'s
+// raw-values case -- just a rule per existing row.
+function renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, errChannel) {
+  const catChannel = errChannel === 'x' ? 'y' : 'x';
+  const baseField = JSON.stringify(encoding[errChannel].field);
+  const errField = JSON.stringify(encoding[`${errChannel}Error`].field);
+  const err2Def = encoding[`${errChannel}Error2`];
+  const lowerExpr = err2Def
+    ? `${errChannel}(d[${baseField}] + d[${JSON.stringify(err2Def.field)}])`
+    : `${errChannel}(d[${baseField}] - d[${errField}])`;
+  const upperExpr = `${errChannel}(d[${baseField}] + d[${errField}])`;
+
+  const catDef = encoding[catChannel];
+  const catCenter = catDef
+    ? dodgeAwareAccessor(encoding, scales, catChannel)
+    : catChannel === 'x'
+      ? dims.centerXExpr
+      : dims.centerYExpr;
+
+  const stroke = encoding.color ? accessor(encoding.color, scales, 'color') : formatValue(markColorFallback(markProps, 'stroke', 'black'));
+  const rowDependent = hasRowDependentColor(encoding);
+
+  const lines = [];
+  lines.push(`svg.append("g")`);
+  if (!rowDependent) lines.push(`    .attr("stroke", ${stroke})`);
+  lines.push(`  .selectAll("line")`);
+  lines.push(`  .data(${dataVar})`);
+  lines.push(`  .join("line")`);
+  if (rowDependent) lines.push(`    .attr("stroke", d => ${stroke})`);
+  if (errChannel === 'x') {
+    lines.push(`    .attr("x1", d => ${lowerExpr})`);
+    lines.push(`    .attr("x2", d => ${upperExpr})`);
+    lines.push(`    .attr("y1", d => ${catCenter})`);
+    lines.push(`    .attr("y2", d => ${catCenter})`);
+  } else {
+    lines.push(`    .attr("y1", d => ${lowerExpr})`);
+    lines.push(`    .attr("y2", d => ${upperExpr})`);
+    lines.push(`    .attr("x1", d => ${catCenter})`);
+    lines.push(`    .attr("x2", d => ${catCenter})`);
+  }
+
+  if (markProps.ticks) {
+    const ticksProps = typeof markProps.ticks === 'object' ? markProps.ticks : {};
+    const tickStroke = ticksProps.color ? formatValue(ticksProps.color) : stroke;
+    const tickHalf = 4;
+    lines.push(`svg.append("g")`);
+    if (!rowDependent || ticksProps.color) lines.push(`    .attr("stroke", ${tickStroke})`);
+    lines.push(`  .selectAll("line")`);
+    lines.push(`  .data(${dataVar}.flatMap(d => [d, d]))`);
+    lines.push(`  .join("line")`);
+    if (rowDependent && !ticksProps.color) lines.push(`    .attr("stroke", d => ${stroke})`);
+    if (errChannel === 'x') {
+      lines.push(`    .attr("x1", (d, i) => i % 2 === 0 ? ${lowerExpr} : ${upperExpr})`);
+      lines.push(`    .attr("x2", (d, i) => i % 2 === 0 ? ${lowerExpr} : ${upperExpr})`);
+      lines.push(`    .attr("y1", d => ${catCenter} - ${tickHalf})`);
+      lines.push(`    .attr("y2", d => ${catCenter} + ${tickHalf})`);
+    } else {
+      lines.push(`    .attr("y1", (d, i) => i % 2 === 0 ? ${lowerExpr} : ${upperExpr})`);
+      lines.push(`    .attr("y2", (d, i) => i % 2 === 0 ? ${lowerExpr} : ${upperExpr})`);
+      lines.push(`    .attr("x1", d => ${catCenter} - ${tickHalf})`);
+      lines.push(`    .attr("x2", d => ${catCenter} + ${tickHalf})`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsupported = false, extentParams = {}) {
   const type = typeof mark === 'string' ? mark : mark.type;
   const markProps = typeof mark === 'string' ? {} : mark;
@@ -391,6 +588,22 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       return renderArc(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     case 'boxplot':
       return renderBoxplot(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+    case 'errorbar': {
+      // A pre-aggregated spec already gives an explicit lower/upper range
+      // -- either a real x2/y2 (draw that box/range directly, the same
+      // well-defined shape "bar"/"rect" use for their own x2/y2 case), or
+      // xError/xError2 (a signed offset from the base value, rather than
+      // an absolute bound -- renderErrorbarFromError() below) -- either
+      // way, no need to re-derive the interval from raw per-row values.
+      const errChannel = encoding.xError ? 'x' : encoding.yError ? 'y' : null;
+      if (errChannel) {
+        return renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, errChannel);
+      }
+      if (encoding.x2 || encoding.y2) {
+        return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      }
+      return renderErrorbar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+    }
     default:
       if (ignoreUnsupported) {
         return renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
@@ -805,6 +1018,27 @@ function binCenterAccessor(encoding, scales, channel) {
   return `(${lo} + ${hi}) / 2`;
 }
 
+// Vega-Lite's own named shape values, for a `shape` channel bound to a
+// literal constant (`{"value": "square"}`) rather than a data field -- no
+// scale involved (resolveShapeScale/scales.shape only exists for the
+// data-driven case), so this maps the name directly to a d3-shape symbol
+// type. Falls back to a circle for any name with no close d3-shape
+// equivalent, same as SHAPE_SYMBOLS' own approximations in scales.js.
+const NAMED_SHAPE_SYMBOLS = {
+  circle: 'd3.symbolCircle',
+  square: 'd3.symbolSquare',
+  cross: 'd3.symbolCross',
+  diamond: 'd3.symbolDiamond',
+  triangle: 'd3.symbolTriangle',
+  'triangle-up': 'd3.symbolTriangle',
+  'triangle-down': 'd3.symbolTriangle2',
+  'triangle-right': 'd3.symbolTriangle',
+  'triangle-left': 'd3.symbolTriangle',
+  arrow: 'd3.symbolTriangle',
+  wedge: 'd3.symbolWye',
+  stroke: 'd3.symbolCircle',
+};
+
 function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
   const {x, y, size, shape} = scales;
   // A 1D strip/dot plot (only one of x/y given) centers points on the
@@ -823,7 +1057,16 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
 
-  if (encoding.shape && shape) {
+  // A literal SVG path string (e.g. a custom star shape) has no simple
+  // d3-shape equivalent -- rather than approximate it as some other symbol
+  // (misleading), it's left to the plain-circle fallback below, same as
+  // any other genuinely unsupported shape form.
+  const constShapeName =
+    encoding.shape && 'value' in encoding.shape && typeof encoding.shape.value === 'string' && encoding.shape.value in NAMED_SHAPE_SYMBOLS
+      ? encoding.shape.value
+      : null;
+
+  if ((encoding.shape && shape) || constShapeName) {
     // A distinct marker shape per category (not just a plain circle) --
     // SVG has no built-in "draw this shape" primitive, so this needs
     // d3-shape's own symbol *path* generator instead of a <circle>. Its
@@ -833,9 +1076,10 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
     // one a given row ends up using.
     const symbolVar = 'pointSymbol';
     const symLines = [];
-    symLines.push(
-      `const ${symbolVar} = d3.symbol().type(d => shape(d[${JSON.stringify(encoding.shape.field)}])).size(d => Math.PI * Math.pow(${r}, 2));`
-    );
+    const symbolType = constShapeName
+      ? NAMED_SHAPE_SYMBOLS[constShapeName]
+      : `d => shape(d[${JSON.stringify(encoding.shape.field)}])`;
+    symLines.push(`const ${symbolVar} = d3.symbol().type(${symbolType}).size(d => Math.PI * Math.pow(${r}, 2));`);
     symLines.push(`svg.append("g")`);
     if (!rowDependent) symLines.push(`  .attr("fill", ${fill})`);
     symLines.push(`  .attr("fill-opacity", ${markProps.filled === false ? 0 : 0.8})`);

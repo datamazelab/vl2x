@@ -256,7 +256,7 @@ render_density_transform <- function(t, var_name) {
 # Percentile/selection ops with no simple base-R equivalent (percent_rank,
 # cume_dist, ntile, first_value/last_value/nth_value) aren't supported.
 .window_positional_ops <- c("row_number", "rank", "dense_rank", "lag", "lead")
-.window_aggregate_ops <- c("sum", "mean", "average", "count", "min", "max", "median")
+.window_aggregate_ops <- c("sum", "mean", "average", "count", "min", "max", "median", "distinct")
 
 is_supported_window_op <- function(op) op %in% c(.window_positional_ops, .window_aggregate_ops)
 
@@ -271,10 +271,13 @@ window_aggregate_expr <- function(op, field, frame) {
   cumulative <- !is.null(frame) && is.null(frame[[1]]) && identical(frame[[2]], 0)
 
   base_fn <- switch(op,
-    sum = "sum", mean = , average = "mean", count = NA, min = "min", max = "max", median = "median"
+    sum = "sum", mean = , average = "mean", count = NA, min = "min", max = "max", median = "median", distinct = NA
   )
   if (whole_partition) {
     if (op == "count") return("dplyr::n()")
+    # n_distinct() (unlike unique()/length()) already takes the same
+    # na.rm convention every other aggregate op here uses.
+    if (op == "distinct") return(sprintf("dplyr::n_distinct(%s, na.rm = TRUE)", f))
     return(sprintf("%s(%s, na.rm = TRUE)", base_fn, f))
   }
   if (cumulative) {
@@ -283,6 +286,10 @@ window_aggregate_expr <- function(op, field, frame) {
       count = "dplyr::row_number()",
       min = sprintf("cummin(%s)", f),
       max = sprintf("cummax(%s)", f),
+      distinct = sprintf(
+        "vapply(seq_along(%s), function(.i) dplyr::n_distinct(%s[seq_len(.i)], na.rm = TRUE), integer(1))",
+        f, f
+      ),
       # mean/average/median have no base-R cumulative version -- computed
       # directly from the running window bounds instead, same as the
       # general sliding-window case just below.
@@ -298,7 +305,7 @@ window_aggregate_expr <- function(op, field, frame) {
   # this only runs once per chart render, not performance-critical) loop.
   lo_arg <- if (is.null(frame[[1]])) "1" else sprintf("max(1, .i + (%s))", format_value(frame[[1]]))
   hi_arg <- if (is.null(frame[[2]])) "dplyr::n()" else sprintf("min(dplyr::n(), .i + (%s))", format_value(frame[[2]]))
-  agg_fn <- if (op == "count") "length" else if (op %in% c("mean", "average")) "mean" else base_fn
+  agg_fn <- if (op == "count") "length" else if (op %in% c("mean", "average")) "mean" else if (op == "distinct") "dplyr::n_distinct" else base_fn
   sprintf(
     "vapply(seq_len(dplyr::n()), function(.i) %s(%s[(%s):(%s)], na.rm = TRUE), numeric(1))",
     agg_fn, f, lo_arg, hi_arg

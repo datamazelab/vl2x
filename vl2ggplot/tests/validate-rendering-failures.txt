@@ -1187,11 +1187,6 @@ chart <- patchwork::wrap_plots(list(hconcat1, hconcat2), ncol = 2)
 
 chart
 
-===== rect_mosaic_labelled_with_offset.vl.json [TRANSLATE] =====
-values must be length 1,
- but FUN(X[[4]]) result is length 0
-
-
 ===== test_aggregate_nested.vl.json [TRANSLATE] =====
 Unsupported: nested field reference "properties.yield" (dot-path into a sub-object) is not supported
 
