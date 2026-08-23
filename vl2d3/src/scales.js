@@ -61,6 +61,14 @@ function datumToJsExpr(datum) {
 function explicitDomainCode(def, ignoreUnsupported = false) {
   const domain = def.scale && def.scale.domain;
   if (domain === undefined) return null;
+  // A facet template function's own color/size/opacity scale can't compute
+  // its domain from its own (per-panel-only) data var -- see
+  // buildRuntimeFacetPanels() in translator.js, which threads in a domain
+  // already computed from the full, unsplit facet data as an extra
+  // parameter and marks it this way rather than as a literal array.
+  if (domain && typeof domain === 'object' && !Array.isArray(domain) && typeof domain.__vl2dRawExpr === 'string') {
+    return domain.__vl2dRawExpr;
+  }
   if (!Array.isArray(domain)) {
     // Falling back to `null` here means the caller's own `?? domainFromData(...)`
     // auto-computes a domain from the data instead -- already the normal
@@ -80,6 +88,7 @@ function explicitDomainCode(def, ignoreUnsupported = false) {
 // given at all" (the ordinary, unremarkable path).
 function domainFallbackNote(def, ignoreUnsupported) {
   const domain = def.scale && def.scale.domain;
+  if (domain && typeof domain === 'object' && !Array.isArray(domain) && typeof domain.__vl2dRawExpr === 'string') return '';
   if (!ignoreUnsupported || domain === undefined || Array.isArray(domain)) return '';
   return ` // vl2d3: unsupported scale domain form ${JSON.stringify(domain)}, using an auto-computed domain instead (--ignore-unsupported)`;
 }
@@ -87,6 +96,32 @@ function domainFallbackNote(def, ignoreUnsupported) {
 function domainFromData(dataVar, field, isTemporal) {
   const acc = `d => d[${JSON.stringify(field)}]`;
   return `d3.extent(${dataVar}, ${acc})`;
+}
+
+// A temporal field used as a bar/area mark's own category axis (e.g. one
+// bar per binned year-month, dodged by another field) with no explicit
+// x2/y2 range of its own: a plain `d3.extent()` domain puts the very first
+// and last distinct dates exactly at the domain's edges, so a bar centered
+// on either of those (this file's own bar-width estimate straddles the
+// scaled position by half a step either way) hangs off the plot's edge and
+// gets clipped. Vega-Lite avoids this by treating a discretized temporal
+// field as a real band-like axis; the closest equivalent here (still a
+// continuous scaleTime, so existing per-mark bar-width math keeps working
+// unchanged) is padding the domain by half the (uniform) step on each side.
+function paddedTemporalDomainFromData(dataVar, field) {
+  return (
+    `(() => { const xs = Array.from(new Set(${dataVar}.map(d => +d[${JSON.stringify(field)}]))).sort((a, b) => a - b); ` +
+    `const step = xs.length > 1 ? (xs[xs.length - 1] - xs[0]) / (xs.length - 1) : 0; ` +
+    `return [new Date(xs[0] - step / 2), new Date(xs[xs.length - 1] + step / 2)]; })()`
+  );
+}
+
+function paddedTemporalDomain(valuesExpr) {
+  return (
+    `(() => { const xs = Array.from(new Set((${valuesExpr}).map(v => +v))).sort((a, b) => a - b); ` +
+    `const step = xs.length > 1 ? (xs[xs.length - 1] - xs[0]) / (xs.length - 1) : 0; ` +
+    `return [new Date(xs[0] - step / 2), new Date(xs[xs.length - 1] + step / 2)]; })()`
+  );
 }
 
 function zeroDomainFromData(dataVar, field) {
@@ -147,7 +182,7 @@ function ordinalExtentDomain(valuesExpr, sort) {
 // Resolve the position scale for `x` or `y`. `zeroBaseline` should be true
 // when this is the "value" axis of a bar/area mark (Vega-Lite's default of
 // including zero in that case).
-export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBaseline, ignoreUnsupported = false, combinedValuesExpr = null}) {
+export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBaseline, ignoreUnsupported = false, combinedValuesExpr = null, categoryPadding = false}) {
   const varName = channel;
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
@@ -155,7 +190,15 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
   const scaleType = def.scale && def.scale.type;
 
   if (def.type === 'temporal') {
-    const domain = explicitDomain ?? (combinedValuesExpr ? extentDomain(combinedValuesExpr) : domainFromData(dataVar, field));
+    const domain =
+      explicitDomain ??
+      (categoryPadding
+        ? combinedValuesExpr
+          ? paddedTemporalDomain(combinedValuesExpr)
+          : paddedTemporalDomainFromData(dataVar, field)
+        : combinedValuesExpr
+          ? extentDomain(combinedValuesExpr)
+          : domainFromData(dataVar, field));
     return {
       varName,
       decl: `const ${varName} = d3.scaleTime(${domain}, ${rangeExpr});${domainNote}`,
@@ -226,6 +269,19 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
     decl: `const ${varName} = d3.${ctor}(${domain}, ${rangeExpr})${nice};${domainNote}`,
     kind: 'continuous',
   };
+}
+
+// The "auto-computed domain" a color/size/opacity scale would build for
+// itself from `dataVar` -- exposed standalone so a facet template function
+// (whose own data var only ever holds one panel's rows, see
+// buildRuntimeFacetPanels() in translator.js) can compute the SAME domain
+// once from the full, unsplit data instead, keeping a consistent
+// value->color/size/opacity mapping across every panel.
+export function sharedChannelDomainExpr(channel, def, dataVar) {
+  if (channel === 'color' && def.type !== 'quantitative' && def.type !== 'temporal') {
+    return ordinalDomainFromData(dataVar, def.field, def.sort);
+  }
+  return domainFromData(dataVar, def.field);
 }
 
 export function resolveColorScale(def, {dataVar, ignoreUnsupported = false}) {

@@ -20,7 +20,14 @@ import {renderDataLoad, renderTemporalCoercion} from './data.js';
 import {renderTransforms} from './transforms.js';
 import {prepareEncoding} from './prepare.js';
 import {planStacking, renderStackingStatements, applyStackingToEncoding} from './stack.js';
-import {resolvePositionScale, resolveColorScale, resolveSizeScale, resolveOpacityScale, resolveOffsetScale} from './scales.js';
+import {
+  resolvePositionScale,
+  resolveColorScale,
+  resolveSizeScale,
+  resolveOpacityScale,
+  resolveOffsetScale,
+  sharedChannelDomainExpr,
+} from './scales.js';
 import {renderMark} from './marks.js';
 import {formatValue} from './literals.js';
 import {extractDateFunctionFields} from './expr.js';
@@ -122,11 +129,39 @@ function collectProducedFields(transformList = []) {
     if (t.window) {
       for (const w of t.window) if (w.as) produced.add(w.as);
     }
+    if (t.joinaggregate) {
+      for (const a of t.joinaggregate) if (a.as) produced.add(a.as);
+    }
     if (t.density) {
       (Array.isArray(t.as) && t.as.length === 2 ? t.as : ['value', 'density']).forEach(a => produced.add(a));
     }
+    if (t.fold) {
+      const [keyName, valueName] = Array.isArray(t.as) ? t.as : ['key', 'value'];
+      produced.add(keyName);
+      produced.add(valueName);
+    }
+    if (t.stack) {
+      const [as0, as1] = Array.isArray(t.as) ? t.as : [`${t.stack}_start`, `${t.stack}_end`];
+      produced.add(as0);
+      produced.add(as1);
+    }
   }
   return produced;
+}
+
+// `pivot`'s own output column names are the *distinct runtime values* of
+// its key field -- genuinely unknowable at code-generation time, unlike
+// every other transform above (whose output names are static, spec-declared
+// strings). An invalid-value filter injected on the strength of a channel's
+// own field name (collectInvalidFilterFields()) can't tell a pivot-produced
+// field apart from a raw one in that case, and filtering the *raw*,
+// pre-pivot rows on a column that doesn't exist there yet (`undefined !=
+// null` is false) would silently drop every row before the pivot ever
+// runs -- so this disables that filter entirely whenever a pivot is
+// anywhere in the pipeline, the same "can't tell, so don't touch anything"
+// call R's transform_produced_fields() makes for the identical reason.
+function hasDynamicProducedFields(transformList = []) {
+  return transformList.some(t => t.pivot !== undefined);
 }
 
 // A top-level `extent` transform (`{extent: field, param: name}`) computes
@@ -157,6 +192,7 @@ function collectExtentParams(transformList = []) {
 // produces rather than one the raw data actually has (see
 // collectProducedFields()).
 function collectInvalidFilterFields(encoding, transformList) {
+  if (hasDynamicProducedFields(transformList)) return [];
   const produced = collectProducedFields(transformList);
   const fields = new Set();
   for (const ch of INVALID_FILTER_CHANNELS) {
@@ -205,9 +241,15 @@ function unescapeEncodingFields(encoding) {
 // this one shape up front and flatten it into an ordinary new top-level
 // field before any of them ever see it.
 function parseBracketFieldPath(field) {
-  const m = /^([A-Za-z_$][\w$]*)((?:\[(?:'[^']*'|"[^"]*")\])+)$/.exec(String(field));
+  // A bracket-indexed field path is either a string key (a compound
+  // aggregate result, e.g. `argmax_US_Gross['Production Budget']`) or a
+  // bare numeric index (a genuine array-valued column, e.g. a bullet
+  // chart's `ranges[2]`) -- both resolve the same way at access time
+  // (`arr[2]` and `arr["2"]` are equivalent in JS), so both are parsed
+  // here rather than only the string-key shape.
+  const m = /^([A-Za-z_$][\w$]*)((?:\[(?:'[^']*'|"[^"]*"|-?\d+)\])+)$/.exec(String(field));
   if (!m) return null;
-  const keys = [...m[2].matchAll(/\[(?:'([^']*)'|"([^"]*)")\]/g)].map(km => km[1] ?? km[2]);
+  const keys = [...m[2].matchAll(/\[(?:'([^']*)'|"([^"]*)"|(-?\d+))\]/g)].map(km => (km[3] !== undefined ? Number(km[3]) : km[1] ?? km[2]));
   return {base: m[1], keys};
 }
 
@@ -219,7 +261,7 @@ function flattenBracketFields(encoding, dataVar) {
     if (!def || typeof def !== 'object' || !def.field) continue;
     const parsed = parseBracketFieldPath(def.field);
     if (!parsed) continue;
-    const flatField = `${parsed.base}__${parsed.keys.map(k => k.replace(/[^A-Za-z0-9_]/g, '_')).join('__')}`;
+    const flatField = `${parsed.base}__${parsed.keys.map(k => String(k).replace(/[^A-Za-z0-9_]/g, '_')).join('__')}`;
     let expr = `d[${JSON.stringify(parsed.base)}]`;
     for (const k of parsed.keys) expr = `(${expr} == null ? null : ${expr}[${JSON.stringify(k)}])`;
     statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${JSON.stringify(flatField)}: ${expr}}));`);
@@ -383,12 +425,24 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     const combinedValuesExpr = needsCombining
       ? `[].concat(${declaringChildren.flatMap(valuesExprsFor).join(', ')})`
       : null;
+    // A temporal field standing in as a bar/area's own *category* axis
+    // (dodged/binned bars, one per distinct date) rather than its value
+    // axis -- padded so the first/last bar isn't centered flush on the
+    // domain's own edge and clipped (see paddedTemporalDomain in scales.js).
+    // Not needed when this channel already has its own x2/y2 companion (a
+    // real bin/box range already positions the bar without any center-based
+    // estimate to straddle past the edge).
+    const categoryPadding =
+      zeroBaseline &&
+      def.type === 'temporal' &&
+      !prepared.some(p => p.encoding[`${channel}2`]);
     const scale = resolvePositionScale(channel, def, {
       dataVar: allDataExpr,
       rangeExpr: dims[`${channel}RangeExpr`],
       zeroBaseline: zeroBaseline && def.type === 'quantitative',
       ignoreUnsupported,
       combinedValuesExpr,
+      categoryPadding,
     });
     b(scale.decl);
     scales[channel] = scale;
@@ -630,8 +684,41 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   // own prior output).
   const templateSpec = {...root.spec};
   if (root.encoding) templateSpec.encoding = {...root.encoding, ...(templateSpec.encoding || {})};
+
+  // color/size/opacity are data-driven scales -- built fresh inside the
+  // template function from whatever data it's called with. Called with
+  // only one panel's own rows, that would compute a domain from just THAT
+  // panel's own distinct values (e.g. a `row: {field: "gender"}` facet's
+  // "Female" panel only ever seeing "Female"), mapping it to the same first
+  // scale output in every panel regardless of which value it actually is.
+  // Instead, thread in a domain already computed from the full, unsplit
+  // facet data as an extra parameter, so every panel's scale agrees on the
+  // same value -> output mapping (see sharedChannelDomainExpr in scales.js
+  // and its `__vl2dRawExpr` marker, read by explicitDomainCode()).
+  const sharedDomainChannels = ['color', 'size', 'opacity'].filter(ch => {
+    const def = templateSpec.encoding && templateSpec.encoding[ch];
+    return def && def.field && !(def.scale && def.scale.domain !== undefined);
+  });
+  const sharedDomainVars = {};
+  const sharedDomainDefs = {};
+  for (const ch of sharedDomainChannels) {
+    const varName = `__facet${ch[0].toUpperCase()}${ch.slice(1)}Domain`;
+    sharedDomainVars[ch] = varName;
+    const def = templateSpec.encoding[ch];
+    sharedDomainDefs[ch] = def;
+    templateSpec.encoding = {
+      ...templateSpec.encoding,
+      [ch]: {...def, scale: {...(def.scale || {}), domain: {__vl2dRawExpr: varName}}},
+    };
+  }
+
   const templateName = `${fnName}_facetTemplate`;
-  lines.push(...buildFunction(templateName, buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows'), '', ['__facetRows']));
+  lines.push(
+    ...buildFunction(templateName, buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows'), '', [
+      '__facetRows',
+      ...sharedDomainChannels.map(ch => sharedDomainVars[ch]),
+    ])
+  );
 
   const body = [];
   const b = s => body.push('  ' + s);
@@ -649,6 +736,10 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   const temporalFields = [...new Set([...transformTemporalFields, ...(facetIsTemporal ? [facetDef.field] : [])])];
   renderTemporalCoercion('facetData', temporalFields).forEach(b);
   if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
+
+  for (const ch of sharedDomainChannels) {
+    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData')};`);
+  }
 
   const keyExpr = facetDef.timeUnit
     ? timeUnitExpr(facetDef.timeUnit, `d[${JSON.stringify(facetDef.field)}]`, ignoreUnsupported)
@@ -672,6 +763,20 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
 
   const flexStyle =
     direction === 'column' ? 'flex-direction: column;' : direction === 'row' ? 'flex-direction: row;' : 'flex-wrap: wrap;';
+  // Each panel gets its own width/height from the per-view spec (e.g.
+  // trellis_area_seattle's `spec: {width: 800, height: 25}`, one thin
+  // strip per facet value) when given, rather than every panel silently
+  // falling back to the same default 640x400 the outer chart itself would.
+  // A `{"step": n}` per-category size (rather than a fixed pixel size) has
+  // no direct pixel equivalent without knowing the category count -- an
+  // out-of-scope simplification already documented elsewhere in this
+  // project (e.g. apply_common()'s identical note, translator.R) -- so
+  // only a plain number is passed through here; anything else is left for
+  // the panel's own default, same as if no width/height were given at all.
+  const panelDims = [];
+  if (typeof root.spec.width === 'number') panelDims.push(`width: ${formatValue(root.spec.width)}`);
+  if (typeof root.spec.height === 'number') panelDims.push(`height: ${formatValue(root.spec.height)}`);
+  const panelOptionsExpr = panelDims.length > 0 ? `{...options, ${panelDims.join(', ')}}` : 'options';
   b(`const doc = container.ownerDocument;`);
   b(`const wrap = doc.createElement("div");`);
   b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 4px;";`);
@@ -692,7 +797,8 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   b(`  panelWrap.appendChild(label);`);
   b(`  const panel = doc.createElement("div");`);
   b(`  panelWrap.appendChild(panel);`);
-  b(`  await ${templateName}(panel, options, rows);`);
+  const domainArgs = sharedDomainChannels.map(ch => sharedDomainVars[ch]);
+  b(`  await ${templateName}(panel, ${panelOptionsExpr}, rows${domainArgs.length ? ', ' + domainArgs.join(', ') : ''});`);
   b(`}`);
 
   lines.push(...buildFunction(fnName, body, prefix));
@@ -707,6 +813,27 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
 function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
   const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in spec);
   if (!compositionKey) {
+    // A plain unit spec's `encoding.row`/`.column`/`.facet` is Vega-Lite's
+    // own shorthand for a facet operator (equivalent to wrapping this same
+    // spec in `{"facet": {...}, "spec": {...without those channels...}}`)
+    // -- recognized here (rather than only the explicit `facet` key) so a
+    // spec written either way gets the same runtime facet split, instead
+    // of this shorthand form silently having its row/column channel
+    // ignored (no POSITION_LIKE entry for it at all, see prepare.js) and
+    // every facet's rows rendered combined into one incorrect panel.
+    const encoding = spec.encoding || {};
+    const facetInfo = normalizeFacetDef({row: encoding.row, column: encoding.column, ...encoding.facet});
+    if (facetInfo) {
+      const templateEncoding = {...encoding};
+      delete templateEncoding.row;
+      delete templateEncoding.column;
+      delete templateEncoding.facet;
+      const templateSpec = {...spec, encoding: templateEncoding};
+      delete templateSpec.data;
+      delete templateSpec.transform;
+      const facetRoot = {data: spec.data, transform: spec.transform, spec: templateSpec};
+      return buildRuntimeFacetPanels(facetRoot, facetInfo, fnName, ignoreUnsupported, prefix);
+    }
     return buildFunction(fnName, buildUnitOrLayerBody(spec, ignoreUnsupported), prefix);
   }
 

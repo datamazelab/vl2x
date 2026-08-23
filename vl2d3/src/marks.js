@@ -290,6 +290,25 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   } else if (yTemporalBar && !encoding.x && !encoding.x2) {
     lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
+  } else if (xTemporalBar && encoding.xOffset && encoding.xOffset.field && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
+    // A dodged/grouped bar over a *continuous* temporal x (e.g. binned by
+    // month, one bar per symbol within each month) -- there's no real
+    // band scale to derive an inner sub-band from (scales.js's
+    // resolveOffsetScale only ever builds one for a genuinely banded
+    // outer scale), so this estimates the outer bar's own width the same
+    // way any other temporal bar does, then slices *that* width into one
+    // sub-band per distinct offset value with a plain scaleBand of its own.
+    lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
+    lines.push(
+      `const xOffsetSub = d3.scaleBand(Array.from(new Set(${dataVar}.map(d => d[${JSON.stringify(encoding.xOffset.field)}]))).sort((a, b) => d3.ascending(a, b)), [0, ${xBarWidthVar}]).padding(0.05);`
+    );
+    needsWidthBlock = true;
+  } else if (yTemporalBar && encoding.yOffset && encoding.yOffset.field && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
+    lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
+    lines.push(
+      `const yOffsetSub = d3.scaleBand(Array.from(new Set(${dataVar}.map(d => d[${JSON.stringify(encoding.yOffset.field)}]))).sort((a, b) => d3.ascending(a, b)), [0, ${yBarWidthVar}]).padding(0.05);`
+    );
+    needsWidthBlock = true;
   } else if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
     needsWidthBlock = true;
@@ -308,6 +327,19 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   } else if (yAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(ambiguousBarWidthDecl(yBarWidthVar, y, dataVar, encoding.y.field));
     needsWidthBlock = true;
+  } else if (encoding.x && !encoding.y && !encoding.x.aggregated && !encoding.x2) {
+    // A bare, un-aggregated quantitative x with no companion axis at all
+    // (e.g. one raw row per distinct value, no groupby/aggregate) -- unlike
+    // the aggregated case, there's no single dataset-wide value to draw a
+    // zero-baseline bar to, so this instead needs a per-distinct-value
+    // reference-band width (same derivation as the temporal bar width case
+    // above, which already works for a plain continuous scale, not just a
+    // temporal one).
+    lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
+    needsWidthBlock = true;
+  } else if (encoding.y && !encoding.x && !encoding.y.aggregated && !encoding.y2) {
+    lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
+    needsWidthBlock = true;
   }
   lines.push(`svg.append("g")`);
   if (!rowDependent) lines.push(`  .attr("fill", ${fill})`);
@@ -321,6 +353,30 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", xBarWidth2)`);
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - yBarWidth2 / 2)`);
     lines.push(`    .attr("height", yBarWidth2)`);
+  } else if (xTemporalBar && !encoding.y && !encoding.y2) {
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
+    lines.push(`    .attr("width", ${xBarWidthVar})`);
+    lines.push(`    .attr("y", ${dims.marginTopExpr})`);
+    lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
+  } else if (yTemporalBar && !encoding.x && !encoding.x2) {
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`);
+    lines.push(`    .attr("height", ${yBarWidthVar})`);
+    lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
+  } else if (xTemporalBar && encoding.xOffset && encoding.xOffset.field && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
+    lines.push(
+      `    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2 + xOffsetSub(d[${JSON.stringify(encoding.xOffset.field)}]))`
+    );
+    lines.push(`    .attr("width", xOffsetSub.bandwidth())`);
+    lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
+    lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
+  } else if (yTemporalBar && encoding.yOffset && encoding.yOffset.field && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
+    lines.push(
+      `    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2 + yOffsetSub(d[${JSON.stringify(encoding.yOffset.field)}]))`
+    );
+    lines.push(`    .attr("height", yOffsetSub.bandwidth())`);
+    lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
   } else if (xTemporalBar && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
@@ -406,8 +462,20 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
   } else if (encoding.x2 && !encoding.y2) {
-    lines.push(`    .attr("x", d => Math.min(x(d[${JSON.stringify(encoding.x.field)}]), x(d[${JSON.stringify(encoding.x2.field)}])))`);
-    lines.push(`    .attr("width", d => Math.abs(x(d[${JSON.stringify(encoding.x2.field)}]) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+    if (encoding.x.binned) {
+      // Vega-Lite's default `config.bar.binSpacing` (1px) leaves a small
+      // gap between adjacent bins -- without it, a fine-grained bin scale
+      // (many narrow bins) renders as one visually solid touching block.
+      lines.push(
+        `    .attr("x", d => Math.min(x(d[${JSON.stringify(encoding.x.field)}]), x(d[${JSON.stringify(encoding.x2.field)}])) + 0.5)`
+      );
+      lines.push(
+        `    .attr("width", d => Math.max(0, Math.abs(x(d[${JSON.stringify(encoding.x2.field)}]) - x(d[${JSON.stringify(encoding.x.field)}])) - 1))`
+      );
+    } else {
+      lines.push(`    .attr("x", d => Math.min(x(d[${JSON.stringify(encoding.x.field)}]), x(d[${JSON.stringify(encoding.x2.field)}])))`);
+      lines.push(`    .attr("width", d => Math.abs(x(d[${JSON.stringify(encoding.x2.field)}]) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+    }
     // This layer child may have no y of its own at all (e.g. a shared
     // reference band spanning the full plot height) -- fall back to the
     // plot's own top/bottom extent rather than assuming `encoding.y` exists.
@@ -437,8 +505,17 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
     }
   } else if (encoding.y2 && !encoding.x2) {
-    lines.push(`    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])))`);
-    lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
+    if (encoding.y.binned) {
+      lines.push(
+        `    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])) + 0.5)`
+      );
+      lines.push(
+        `    .attr("height", d => Math.max(0, Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])) - 1))`
+      );
+    } else {
+      lines.push(`    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])))`);
+      lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
+    }
     // Same fallback as above, for a shared reference band with no x of its own.
     if (encoding.x && xBand) {
       lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
@@ -469,21 +546,34 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", 5)`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (encoding.x && !encoding.y) {
+  } else if (encoding.x && !encoding.y && encoding.x.aggregated) {
     // A single quantitative position channel and nothing else at all (a
     // "1D bar" -- e.g. a lone dataset-wide aggregate with no groupby) --
     // Vega-Lite still draws a real bar: zero baseline to the value, along
-    // the one axis it has, centered on the other (nothing to position it
-    // against there).
+    // the one axis it has, spanning the full plot height on the other (no
+    // companion axis is drawn at all, so there's nothing to center against).
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-    lines.push(`    .attr("y", ${dims.centerYExpr} - 10)`);
-    lines.push(`    .attr("height", 20)`);
-  } else if (encoding.y && !encoding.x) {
+    lines.push(`    .attr("y", ${dims.marginTopExpr})`);
+    lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
+  } else if (encoding.x && !encoding.y) {
+    // A bare, un-aggregated quantitative x (see the width-decl branch
+    // above): a thin reference band centered on each row's own value,
+    // rather than a zero-baseline bar, spanning the full plot height.
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
+    lines.push(`    .attr("width", ${xBarWidthVar})`);
+    lines.push(`    .attr("y", ${dims.marginTopExpr})`);
+    lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
+  } else if (encoding.y && !encoding.x && encoding.y.aggregated) {
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-    lines.push(`    .attr("x", ${dims.centerXExpr} - 10)`);
-    lines.push(`    .attr("width", 20)`);
+    lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
+  } else if (encoding.y && !encoding.x) {
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`);
+    lines.push(`    .attr("height", ${yBarWidthVar})`);
+    lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
   } else if (ignoreUnsupported) {
     // Neither x nor y at all (e.g. a band axis with no value channel and
     // no x2/y2) -- a point per row at least shows where the data is,

@@ -19,11 +19,10 @@ chart <- chart + ggplot2::geom_boxplot(mapping = ggplot2::aes(x = a, y = b))
 chart
 
 ===== histogram_log.vl.json [EXEC] =====
-Problem while setting up geom.
+Problem while computing stat.
 ℹ Error occurred in the 1st layer.
-Caused by error in `compute_geom_1()`:
-! `geom_linerange()` requires the following missing aesthetics: ymin and
-  ymax or xmin and xmax.
+Caused by error in `setup_params()`:
+! `stat_count()` requires an x or y aesthetic.
 library(ggplot2)
 
 chart_data <- data.frame(
@@ -37,11 +36,15 @@ chart_data <- dplyr::mutate(chart_data, bin_log_x = .brks[[1]][findInterval(log_
 chart_data <- dplyr::mutate(chart_data, x1 = (10)^(bin_log_x))
 chart_data <- dplyr::mutate(chart_data, x2 = (10)^(bin_log_x_end))
 chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_linerange(
-  mapping = ggplot2::aes(xmin = x1, xmax = x2, y = ""),
+chart <- chart + ggplot2::geom_rect(
+  mapping = ggplot2::aes(
+  xmin = (((x1) + (x2)) / 2) - ((((x2) - (x1)) / 2) * 0.9),
+  xmax = (((x1) + (x2)) / 2) + ((((x2) - (x1)) / 2) * 0.9)
+),
   stat = "count",
-  linewidth = 10
-)
+  ymin = -0.5,
+  ymax = 0.5
+) + ggplot2::theme(axis.text.y = ggplot2::element_blank(), axis.ticks.y = ggplot2::element_blank(), axis.title.y = ggplot2::element_blank())
 
 
 chart
@@ -249,10 +252,183 @@ chart <- chart + ggplot2::geom_text(
 
 chart
 
+===== layer_falkensee.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 1st layer.
+Caused by error in `+.Date`:
+! binary + is not defined for "Date" objects
+library(ggplot2)
+
+layer_data <- data.frame(
+  year = c("1875", "1890", "1910", "1925", "1933", "1939", "1946", "1950", "1964", "1971", "1981", "1985", "1989", "1990", "1991", "1992", "1993", "1994", "1995", "1996", "1997", "1998", "1999", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014"),
+  population = c(1309, 1558, 4512, 8180, 15915, 24824, 28275, 29189, 29881, 26007, 24029, 23340, 22307, 22087, 22139, 22105, 22242, 22801, 24273, 25640, 27393, 29505, 32124, 33791, 35297, 36179, 36829, 37493, 38376, 39008, 39366, 39821, 40179, 40511, 40465, 40905, 41258, 41777),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+chart <- ggplot2::ggplot(layer_data)
+layer1_data <- data.frame(
+  start = c("1933", "1948"),
+  end = c("1945", "1989"),
+  event = c("Nazi Rule", "GDR (East Germany)"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer1_data <- dplyr::mutate(layer1_data, start = if (is.numeric(start)) as.Date(start / 86400000, origin = "1970-01-01") else as.Date(as.character(start), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)), end = if (is.numeric(end)) as.Date(end / 86400000, origin = "1970-01-01") else as.Date(as.character(end), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)))
+layer1_data <- dplyr::mutate(layer1_data, year_start = as.Date(format(start, "%Y-01-01")), year_end = as.Date(format(end, "%Y-01-01")))
+chart <- chart + ggplot2::geom_rect(
+  data = layer1_data,
+  mapping = ggplot2::aes(
+  fill = factor(event),
+  xmin = (((year_start) + (year_end)) / 2) - ((((year_end) - (year_start)) / 2) * 0.9),
+  xmax = (((year_start) + (year_end)) / 2) + ((((year_end) - (year_start)) / 2) * 0.9)
+),
+  ymin = -Inf,
+  ymax = Inf
+)
+layer2_data <- layer_data
+layer2_data <- dplyr::mutate(layer2_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)))
+layer2_data <- dplyr::mutate(layer2_data, population = if (is.character(population)) suppressWarnings(as.numeric(population)) else population)
+layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
+chart <- chart + ggplot2::geom_line(
+  data = layer2_data,
+  mapping = ggplot2::aes(x = year_year, y = population, group = 1),
+  colour = "#333"
+)
+layer3_data <- layer_data
+layer3_data <- dplyr::mutate(layer3_data, year = if (is.numeric(year)) as.Date(year / 86400000, origin = "1970-01-01") else as.Date(as.character(year), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)))
+layer3_data <- dplyr::mutate(layer3_data, population = if (is.character(population)) suppressWarnings(as.numeric(population)) else population)
+layer3_data <- dplyr::mutate(layer3_data, year_year = as.Date(format(year, "%Y-01-01")))
+chart <- chart + ggplot2::geom_point(
+  data = layer3_data,
+  mapping = ggplot2::aes(x = year_year, y = population),
+  colour = "#333"
+)
+# NOTE: width are set when saving/displaying, e.g. ggsave(..., width = 500)
+
+
+chart
+
+===== layer_timeunit_rect.vl.json [EXEC] =====
+Problem while computing aesthetics.
+ℹ Error occurred in the 2nd layer.
+Caused by error in `+.Date`:
+! binary + is not defined for "Date" objects
+library(ggplot2)
+
+chart <- ggplot2::ggplot()
+layer1_data <- read.csv("data/seattle-weather.csv", stringsAsFactors = FALSE, check.names = FALSE)
+layer1_data <- dplyr::mutate(layer1_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)))
+layer1_data <- dplyr::mutate(layer1_data, month_date = as.Date(format(date, "2012-%m-01")))
+chart <- chart + ggplot2::geom_col(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = month_date, y = precipitation),
+  stat = "summary",
+  fun = "mean"
+)
+layer2_data <- data.frame(
+  date = c("May 1, 2010"),
+  date_end = c("July 15, 2010"),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+layer2_data <- dplyr::mutate(layer2_data, date = if (is.numeric(date)) as.Date(date / 86400000, origin = "1970-01-01") else as.Date(as.character(date), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)), date_end = if (is.numeric(date_end)) as.Date(date_end / 86400000, origin = "1970-01-01") else as.Date(as.character(date_end), tryFormats = c(
+  "%Y-%m-%d",
+  "%Y/%m/%d",
+  "%m/%d/%Y",
+  "%d/%m/%Y",
+  "%b %d %Y",
+  "%B %d, %Y",
+  "%B %d %Y",
+  "%Y-%m-%dT%H:%M:%S",
+  "%a, %d %b %Y %H:%M:%S",
+  "%Y"
+)))
+layer2_data <- dplyr::mutate(layer2_data, month_date = as.Date(format(date, "2012-%m-01")), month_date_end = as.Date(format(date_end, "2012-%m-01")))
+chart <- chart + ggplot2::geom_rect(
+  data = layer2_data,
+  mapping = ggplot2::aes(
+  xmin = (((month_date) + (month_date_end)) / 2) - ((((month_date_end) - (month_date)) / 2) * 0.9),
+  xmax = (((month_date) + (month_date_end)) / 2) + ((((month_date_end) - (month_date)) / 2) * 0.9)
+),
+  fill = "grey",
+  alpha = 0.5,
+  ymin = -Inf,
+  ymax = Inf
+)
+
+
+chart
+
 ===== wheat_wages.vl.json [EXEC] =====
-<text>:52:83: unexpected input
-51: layer6_data <- dplyr::mutate(layer6_data, start = if (is.character(start)) suppressWarnings(as.numeric(start)) else start)
-52: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
+<text>:54:83: unexpected input
+53: layer6_data <- dplyr::mutate(layer6_data, start = if (is.character(start)) suppressWarnings(as.numeric(start)) else start)
+54: layer6_data <- dplyr::mutate(layer6_data, offset = (ifelse((!commonwealth & index % 2), -1, 1)) * 2 + 95)
                                                                                       ^
 library(ggplot2)
 
@@ -261,9 +437,11 @@ layer_data <- dplyr::mutate(layer_data, year_end = +year + 5)
 chart <- ggplot2::ggplot(layer_data)
 layer1_data <- layer_data
 layer1_data <- dplyr::mutate(layer1_data, wheat = if (is.character(wheat)) suppressWarnings(as.numeric(wheat)) else wheat, year = if (is.character(year)) suppressWarnings(as.numeric(year)) else year)
+layer1_data <- dplyr::mutate(layer1_data, .brks = list(pretty(year, 20)))
+layer1_data <- dplyr::mutate(layer1_data, bin_year = .brks[[1]][findInterval(year, .brks[[1]], all.inside = TRUE)], bin_year_end = .brks[[1]][findInterval(year, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)
 chart <- chart + ggplot2::geom_rect(
   data = layer1_data,
-  mapping = ggplot2::aes(xmin = year, xmax = year_end, ymax = wheat, ymin = 0),
+  mapping = ggplot2::aes(xmin = bin_year, xmax = bin_year_end, ymax = wheat, ymin = 0),
   fill = "#aaa",
   colour = "#999"
 )

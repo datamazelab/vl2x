@@ -94,6 +94,9 @@ render_one_transform <- function(t, var_name, ignore_unsupported = FALSE) {
   if (!is.null(t$pivot)) {
     return(render_pivot_transform(t, var_name))
   }
+  if (!is.null(t$stack)) {
+    return(render_stack_transform(t, var_name))
+  }
   if (ignore_unsupported) {
     # Skip this one step -- the rest of the transform pipeline (and the
     # chart as a whole) still runs on whatever data shape existed before it,
@@ -101,6 +104,47 @@ render_one_transform <- function(t, var_name, ignore_unsupported = FALSE) {
     return(sprintf("# vl2ggplot: skipped unsupported transform type \"%s\" (ignore_unsupported)", names(t)[1]))
   }
   stop(sprintf('Unsupported transform type: "%s"', names(t)[1]))
+}
+
+# An explicit top-level `stack` transform (as opposed to the implicit
+# per-encoding stacking a plain `bar`/`area` mark's own `stack: "normalize"`/
+# etc gets elsewhere, e.g. build_position_scale()) -- computes, within each
+# `groupby` group, the cumulative sum of `field`, producing a start/end
+# pair of new columns named by `as`. `sort` (ordering within each group)
+# isn't implemented -- rows keep whatever order they already had per group
+# (dplyr's own stable, original-row-order behavior), a reasonable default
+# absent it.
+render_stack_transform <- function(t, var_name) {
+  value_ref <- field_ref(t$stack)
+  group_fields <- t$groupby %||% list()
+  as_names <- if (length(t$as) == 2) t$as else c(paste0(t$stack, "_start"), paste0(t$stack, "_end"))
+  mode <- if (identical(t$offset, "normalize")) "normalize" else if (identical(t$offset, "center")) "center" else "zero"
+
+  stmts <- character(0)
+  if (length(group_fields) > 0) {
+    group_refs <- paste(vapply(unlist(group_fields), field_ref, character(1)), collapse = ", ")
+    stmts <- c(stmts, sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, group_refs))
+  }
+  stmts <- c(stmts, sprintf(
+    "%s <- dplyr::mutate(%s, .stack_y1 = cumsum(%s), .stack_y0 = .stack_y1 - %s, .stack_total = sum(%s, na.rm = TRUE))",
+    var_name, var_name, value_ref, value_ref, value_ref
+  ))
+  if (length(group_fields) > 0) {
+    stmts <- c(stmts, sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name))
+  }
+  scaled <- switch(mode,
+    normalize = list(
+      y0 = "ifelse(.stack_total != 0, .stack_y0 / .stack_total, 0)",
+      y1 = "ifelse(.stack_total != 0, .stack_y1 / .stack_total, 0)"
+    ),
+    center = list(y0 = ".stack_y0 - .stack_total / 2", y1 = ".stack_y1 - .stack_total / 2"),
+    zero = list(y0 = ".stack_y0", y1 = ".stack_y1")
+  )
+  stmts <- c(stmts, sprintf(
+    "%s <- dplyr::mutate(%s, %s = %s, %s = %s, .stack_y0 = NULL, .stack_y1 = NULL, .stack_total = NULL)",
+    var_name, var_name, render_name(as_names[1]), scaled$y0, render_name(as_names[2]), scaled$y1
+  ))
+  stmts
 }
 
 render_aggregate_transform <- function(t, var_name, ignore_unsupported = FALSE) {
@@ -458,6 +502,42 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
 
   # Map-only: timeUnit with no aggregation anywhere -> a single mutate().
   if (length(agg_keys) == 0) {
+    # A single bin-only channel (no timeUnit-only channel alongside it, no
+    # aggregate anywhere) gets *real* binning -- both the bin's start and
+    # end edges, via the same pretty()/findInterval() mechanism the
+    # top-level `bin` transform already uses (render_one_transform()) --
+    # rather than the identity passthrough below, which used to leave the
+    # field entirely un-binned (every row keeping its own exact raw value:
+    # no two rows ever landing in "the same bin" at all, and a bar/rect
+    # mark drawing one wildly-varying zero-baseline bar per row instead of
+    # a clean per-bin box). Emitting a companion `${channel}2` end-edge
+    # channel also lets geoms.R draw the box at the bin's own exact width,
+    # instead of guessing one from the gaps between whichever distinct
+    # values happen to occur.
+    if (length(bin_keys) == 1 && length(tu_only_keys) == 0) {
+      k <- bin_keys[1]
+      def <- encoding[[k]]
+      max_bins <- if (is.list(def$bin) && !is.null(def$bin$maxbins)) def$bin$maxbins else 20
+      field <- field_ref(def$field)
+      out_field <- out_field_name(def$field, "bin")
+      out_field2 <- paste0(out_field, "_end")
+      statements <- c(
+        sprintf("%s <- dplyr::mutate(%s, .brks = list(pretty(%s, %d)))", var_name, var_name, field, max_bins),
+        sprintf(
+          "%s <- dplyr::mutate(%s, %s = .brks[[1]][findInterval(%s, .brks[[1]], all.inside = TRUE)], %s = .brks[[1]][findInterval(%s, .brks[[1]], all.inside = TRUE) + 1], .brks = NULL)",
+          var_name, var_name, render_name(unescape_field_path(out_field)), field, render_name(unescape_field_path(out_field2)), field
+        )
+      )
+      rewritten <- encoding
+      rewritten[[k]] <- def
+      rewritten[[k]]$field <- out_field
+      rewritten[[k]]$bin <- NULL
+      if (is.null(rewritten[[k]]$type)) rewritten[[k]]$type <- "quantitative"
+      channel2 <- paste0(k, "2")
+      rewritten[[channel2]] <- list(field = out_field2, type = "quantitative")
+      return(list(statements = statements, encoding = rewritten, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE))
+    }
+
     rewritten <- encoding
     assigns <- character(0)
     notes <- character(0)

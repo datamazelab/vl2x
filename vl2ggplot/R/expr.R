@@ -250,13 +250,61 @@ rewrite_string_concat <- function(s) {
   parts <- vapply(seq_len(length(bounds) - 1), function(i) {
     trimws(substr(s, bounds[i] + 1, bounds[i + 1] - 1))
   }, character(1))
-  # A quote *anywhere* in a part, not just at its very start: a ternary
-  # (`cond ? '+' : ''`) already became `ifelse(cond, '+', '')` by this
-  # point (translate_ternary() runs before this), so the string literal
-  # that actually signals "this whole `+` is concatenation, not addition"
-  # is nested inside that call, not a bare literal operand.
-  if (!any(grepl("['\"]", parts))) return(s)
+  # A quote *anywhere* in a part isn't quite enough: a ternary's own
+  # *condition* commonly quotes a string too (`ifelse(type == 'Agree', 1,
+  # 0)`, comparing a string field but still returning plain numbers) --
+  # blanking out just the condition argument of every ifelse() first means
+  # this only reacts to a quote in the true/false *value* arguments, the
+  # actual signal that this whole `+` means concatenation, not addition.
+  if (!any(vapply(parts, function(p) grepl("['\"]", blank_ifelse_conditions(p)), logical(1)))) return(s)
   sprintf("paste0(%s)", paste(parts, collapse = ", "))
+}
+
+# See rewrite_string_concat() above: blanks out the first (condition)
+# argument of every top-level `ifelse(...)` call in `s`, leaving its
+# true/false value arguments (and everything else) untouched.
+blank_ifelse_conditions <- function(s) {
+  result <- ""
+  pos <- 1
+  n <- nchar(s)
+  while (pos <= n) {
+    m <- regexpr("ifelse\\(", substring(s, pos), perl = TRUE)
+    if (m[1] == -1) {
+      result <- paste0(result, substring(s, pos))
+      break
+    }
+    open <- pos + m[1] - 1 + attr(m, "match.length") - 1
+    result <- paste0(result, substring(s, pos, open))
+    depth <- 1
+    in_quote <- FALSE
+    quote_char <- ""
+    i <- open + 1
+    first_comma <- NA
+    while (i <= n && depth > 0) {
+      ch <- substr(s, i, i)
+      if (in_quote) {
+        if (ch == quote_char) in_quote <- FALSE
+      } else if (ch %in% c("'", '"')) {
+        in_quote <- TRUE
+        quote_char <- ch
+      } else if (ch == "(") {
+        depth <- depth + 1
+      } else if (ch == ")") {
+        depth <- depth - 1
+      } else if (ch == "," && depth == 1 && is.na(first_comma)) {
+        first_comma <- i
+      }
+      i <- i + 1
+    }
+    if (is.na(first_comma)) {
+      result <- paste0(result, substring(s, open + 1))
+      pos <- n + 1
+      break
+    }
+    result <- paste0(result, substring(s, first_comma))
+    pos <- first_comma
+  }
+  result
 }
 
 # Find the outer `name(...)` call in `s` (a literal identifier immediately
@@ -302,7 +350,18 @@ rewrite_if_calls <- function(s) {
   bounds <- c(0, positions, nchar(inner) + 1)
   parts <- vapply(seq_len(3), function(i) trimws(substr(inner, bounds[i] + 1, bounds[i + 1] - 1)), character(1))
   replacement <- sprintf("ifelse(%s, %s, %s)", parts[1], rewrite_if_calls(parts[2]), rewrite_if_calls(parts[3]))
-  paste0(substr(s, 1, call$open - 3), replacement, substr(s, call$close + 1, nchar(s)))
+  # .find_call() only ever finds the *first* "if(" in `s` -- a second,
+  # sibling `if(...)` later in the same expression (e.g. `if(a,1,0) +
+  # if(b,2,0) + ...`, several ternaries chained together) sits entirely
+  # inside the trailing `substr(s, call$close + 1, ...)` this used to
+  # return untouched, left as invalid R syntax (`if(x,y,z)` -- R's own
+  # `if` has no such 3-argument comma form) -- recursing into that tail
+  # catches every later occurrence too. Safe to recurse without re-matching
+  # this call's own output: "ifelse(" never matches `.find_call(s, "if")`'s
+  # `if\(` pattern (the "e" right after "if" isn't "(").
+  before <- substr(s, 1, call$open - 3)
+  after <- substr(s, call$close + 1, nchar(s))
+  paste0(before, replacement, rewrite_if_calls(after))
 }
 
 # `isValid(x)` -- Vega's own "not null/undefined/NaN" check, for any value

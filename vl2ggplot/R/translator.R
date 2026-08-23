@@ -168,7 +168,7 @@ transform_produced_fields <- function(transform_list) {
       out <- c(out, unlist(as_names))
     }
     if (!is.null(t$stack)) {
-      as_names <- if (!is.null(t$as)) t$as else list("y0", "y1")
+      as_names <- if (!is.null(t$as)) t$as else list(paste0(t$stack, "_start"), paste0(t$stack, "_end"))
       out <- c(out, unlist(as_names))
     }
     # `pivot` and any transform type this project doesn't implement at all

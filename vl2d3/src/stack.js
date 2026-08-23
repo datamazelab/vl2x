@@ -37,8 +37,17 @@ export function planStacking(mark, encoding) {
     const categoryDef = encoding[categoryChannel];
     if (!posDef || !posDef.field || posDef.type !== 'quantitative') continue;
     if (posDef.stack === null || posDef.stack === false) continue;
+    // An explicit x2/y2 on the value axis is already a fully-specified
+    // range (e.g. a `stack` *transform*'s own precomputed start/end, as
+    // opposed to the implicit per-mark stacking this function handles) --
+    // synthesizing a second stack on top of that would silently overwrite
+    // a genuine, already-correct range with a wrong one.
+    if (encoding[`${posChannel}2`]) continue;
     if (!categoryDef || !categoryDef.field) continue;
-    const offsetChannel = posChannel === 'y' ? 'yOffset' : 'xOffset';
+    // Dodging happens along the *category* axis (e.g. `xOffset` spreads
+    // bars apart within their shared x position) -- not the value axis
+    // being (potentially) stacked, which has no offset channel of its own.
+    const offsetChannel = categoryChannel === 'x' ? 'xOffset' : 'yOffset';
     if (encoding[offsetChannel] && encoding[offsetChannel].field) continue;
     const mode = posDef.stack === 'normalize' ? 'normalize' : posDef.stack === 'center' ? 'center' : 'zero';
     return {posChannel, categoryField: categoryDef.field, groupField: encoding[groupChannel].field, valueField: posDef.field, mode};

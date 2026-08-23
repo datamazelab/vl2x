@@ -20,7 +20,15 @@ axis_kind <- function(def) {
 # Build the scale_*() call(s) for one channel, or character(0) if the
 # defaults suffice.
 build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALSE, .notes = NULL) {
-  if (is.null(def) || is.null(def$type)) return(character(0))
+  if (is.null(def)) return(character(0))
+  # A color field commonly has no explicit "type" at all (Vega-Lite infers
+  # it from the data instead, e.g. a plain string-valued field defaults to
+  # "nominal") -- unlike x/y/size/opacity, build_color_scale() below copes
+  # with that itself (an explicit `scale.range` array is discrete-only
+  # regardless of type, so it doesn't even need to know), so it mustn't be
+  # screened out here the same way a missing type silently drops every
+  # other channel's customization.
+  if (channel != "color" && is.null(def$type)) return(character(0))
 
   if (channel %in% c("x", "y")) return(build_position_scale(channel, def))
   if (channel == "color") return(build_color_scale(color_channel_aes(mark_type), def))
@@ -86,7 +94,6 @@ build_color_scale <- function(aes_name, def) {
   if ("scale" %in% names(def) && is.null(def$scale)) {
     return(format_call(sprintf("ggplot2::scale_%s_identity", aes_name), character(0)))
   }
-  kind <- axis_kind(def)
   scheme <- def$scale$scheme
   domain <- def$scale[["domain"]]
   range <- def$scale[["range"]]
@@ -95,13 +102,23 @@ build_color_scale <- function(aes_name, def) {
   # discrete scale; a bare scheme-name string (e.g. "diverging", "ordinal")
   # is a different, scheme-keyword form of `range` -- jsonlite parses the
   # former as a list and the latter as a plain length-1 character vector, so
-  # is.list() distinguishes them.
+  # is.list() distinguishes them. Checked before axis_kind() below (which
+  # needs def$type) since a manual color list is discrete regardless of
+  # type, and a color field commonly has no explicit type at all.
   if (!is.null(range) && is.null(names(range)) && is.list(range)) {
     args <- character(0)
     if (!is.null(domain)) args <- c(args, sprintf("breaks = %s", format_value(domain)))
     args <- c(args, sprintf("values = %s", format_value(range)))
     return(format_call(sprintf("ggplot2::scale_%s_manual", aes_name), args))
   }
+
+  # Every other customization below (a scheme keyword, or a domain with no
+  # explicit range) does need to know discrete-vs-continuous -- an untyped
+  # field falls back to "discrete", matching Vega-Lite's own inference for
+  # a bare string-valued field (a genuinely continuous field almost always
+  # carries an explicit "quantitative"/"temporal" type already, since
+  # ggplot2 itself needs one for the geom's own aes()).
+  kind <- if (is.null(def$type)) "discrete" else axis_kind(def)
 
   if (kind == "continuous" || kind == "date") {
     if (!is.null(scheme) && scheme %in% .viridis_schemes) {

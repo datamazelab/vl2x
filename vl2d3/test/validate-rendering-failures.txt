@@ -4,12 +4,6 @@
 
 ===== area_ranged_offset_quantitative.vl.json [NaN geometry: 2 shape(s), tags=path] =====
 
-===== bar_bullet_expr_bind.vl.json [NaN geometry: 5 shape(s), tags=rect] =====
-
-===== bar_custom_time_domain.vl.json [NaN geometry: 3 shape(s), tags=rect] =====
-
-===== bar_diverging_stack_transform.vl.json [NaN geometry: 40 shape(s), tags=rect] =====
-
 ===== bar_grouped_thin.vl.json [NaN geometry: 880 shape(s), tags=rect] =====
 
 ===== bar_grouped_thin_minBandSize.vl.json [NaN geometry: 880 shape(s), tags=rect] =====
@@ -18,17 +12,17 @@
 
 ===== boxplot_1D_invalid.vl.json [NaN geometry: 6 shape(s), tags=line] =====
 
-===== facet_bullet.vl.json [NaN geometry: 5 shape(s), tags=rect] =====
-
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
-===== interactive_histogram_full_height_hover.vl.json [NaN geometry: 213 shape(s), tags=rect] =====
-
 ===== line_color_binned.vl.json [NaN geometry: 17 shape(s), tags=path] =====
+
+===== line_color_halo.vl.json [NaN geometry: 2 shape(s), tags=path] =====
 
 ===== line_invalid_null.vl.json [NaN geometry: 1 shape(s), tags=path] =====
 
 ===== lookup.vl.json [NaN geometry: 3 shape(s), tags=rect] =====
+
+===== point_ordinal_bin_offset_random.vl.json [NaN geometry: 1 shape(s), tags=circle] =====
 
 ===== rect_mosaic_labelled_with_offset.vl.json [NaN geometry: 9 shape(s), tags=rect] =====
 
@@ -189,62 +183,6 @@ export default async function chart(container, options = {}) {
       .attr("cx", d => width / 2)
       .attr("cy", d => height / 2)
       .attr("r", d => 3);
-
-  return svg.node();
-}
-
-
-===== rect_mosaic_simple.vl.json [zero shapes] =====
-import * as d3 from "d3";
-
-export default async function chart(container, options = {}) {
-  const width = options.width ?? 640;
-  const height = options.height ?? 400;
-  const marginTop = options.marginTop ?? 20;
-  const marginRight = options.marginRight ?? 20;
-  const marginBottom = options.marginBottom ?? 30;
-  const marginLeft = options.marginLeft ?? 50;
-
-  let data1 = await d3.json(new URL("data/cars.json", options.baseURL ?? import.meta.url));
-  data1 = data1.filter(d => d["x"] != null && !Number.isNaN(d["x"]) && d["y"] != null && !Number.isNaN(d["y"]) && d["Cylinders"] != null && !Number.isNaN(d["Cylinders"]));
-  data1 = Array.from(d3.rollup(data1, rows => ({"Origin": rows[0]["Origin"], "Cylinders": rows[0]["Cylinders"], "count_*": rows.length}), d => JSON.stringify([d["Origin"], d["Cylinders"]])).values());
-  // vl2d3: skipped unsupported transform type "stack" (--ignore-unsupported)
-  data1 = Array.from(d3.group(data1, d => JSON.stringify([d["Origin"]])).values()).flatMap(rows => {
-  const n = rows.length;
-  return rows.map((d, i) => ({...d, "x": d3.min(rows, r => r["stack_count_Origin1"]), "x2": d3.max(rows, r => r["stack_count_Origin2"])}));
-});
-  // vl2d3: skipped unsupported transform type "stack" (--ignore-unsupported)
-
-  const x = d3.scaleLinear(d3.extent(data1, d => d["x"]), [marginLeft, width - marginRight]).nice();
-  const y = d3.scaleLinear(d3.extent(data1, d => d["y"]), [height - marginBottom, marginTop]).nice();
-  const color = d3.scaleOrdinal(Array.from(new Set(data1.map(d => d["Origin"]))).sort((a, b) => d3.ascending(a, b)), d3.schemeTableau10);
-  const opacity = d3.scaleLinear(d3.extent(data1, d => d["Cylinders"]), [0.1, 1]);
-
-  const svg = d3.select(container).append("svg")
-      .attr("width", width)
-      .attr("height", height)
-      .attr("viewBox", [0, 0, width, height])
-      .attr("style", "max-width: 100%; height: auto;");
-
-  svg.append("g")
-    .selectAll("rect")
-    .data(data1)
-    .join("rect")
-      .attr("fill", d => color(d["Origin"]))
-      .attr("x", d => Math.min(x(d["x"]), x(d["x2"])))
-      .attr("width", d => Math.abs(x(d["x2"]) - x(d["x"])))
-      .attr("y", d => Math.min(y(d["y"]), y(d["y2"])))
-      .attr("height", d => Math.abs(y(d["y2"]) - y(d["y"])))
-      .each(function(d) { d3.select(this).append("title").text(`Origin: ${d["Origin"]}\nCylinders: ${d["Cylinders"]}`); });
-
-  {
-    const legend = svg.append("g").attr("transform", `translate(${width - marginRight - 100},${marginTop})`);
-    const entries = color.domain();
-    const rows = legend.selectAll("g").data(entries).join("g")
-        .attr("transform", (d, i) => `translate(0,${i * 16})`);
-    rows.append("rect").attr("width", 10).attr("height", 10).attr("fill", d => color(d));
-    rows.append("text").attr("x", 14).attr("y", 9).attr("font-size", "10px").text(d => d);
-  }
 
   return svg.node();
 }

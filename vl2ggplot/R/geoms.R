@@ -248,6 +248,42 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   }
   y_range <- error_bounds(encoding, "y", ignore_unsupported, .notes)
   x_range <- error_bounds(encoding, "x", ignore_unsupported, .notes)
+  # The companion axis's own full-plot-height/-width fill: `-Inf`/`Inf` when
+  # this mark might share its scale with a sibling layer's real data (a
+  # layer/repeat-layer child -- ggplot2 unions Inf against whatever finite
+  # range that sibling establishes, giving a true full-height band), but a
+  # *finite* symmetric fallback when this view is the only thing setting up
+  # that scale at all (translate_unit's standalone case): every row's
+  # min/max would otherwise be the same +/-Inf, leaving ggplot2 nothing
+  # finite to compute an actual panel range from at all, and the mark
+  # silently fails to draw anything.
+  full_span <- if (isTRUE(plan$standalone)) c("-0.5", "0.5") else c("-Inf", "Inf")
+  # When this view is genuinely standalone (no sibling layer could ever
+  # give the companion axis real meaning), that axis's ticks/labels/title
+  # are just noise -- ggplot2 still auto-generates them from full_span's
+  # own -0.5/0.5 (or whatever finite fallback), which looks like a stray
+  # unlabeled numeric axis rather than the single clean axis Vega-Lite
+  # itself shows for this shape. Appended (via `+`) onto the geom call
+  # itself, the same way an extra scale/theme layer normally would be.
+  blank_axis_theme <- function(axis) {
+    if (!isTRUE(plan$standalone)) return("")
+    sprintf(
+      " + ggplot2::theme(axis.text.%s = ggplot2::element_blank(), axis.ticks.%s = ggplot2::element_blank(), axis.title.%s = ggplot2::element_blank())",
+      axis, axis, axis
+    )
+  }
+  # Vega-Lite's own default for adjacent binned boxes (config.bar.binSpacing)
+  # is a small fixed pixel gap between them; ggplot2 has no direct
+  # pixel-space equivalent, so this shrinks each box toward its own center
+  # by a proportional factor instead (10% total, by default) -- otherwise
+  # adjacent occupied bins (e.g. a dense histogram-like binned field with
+  # no aggregate) all touch edge-to-edge and visually merge into one
+  # solid, undifferentiated block instead of showing as distinct bars.
+  shrink_range <- function(min_expr, max_expr, factor = 0.9) {
+    mid <- sprintf("((%s) + (%s)) / 2", min_expr, max_expr)
+    half <- sprintf("(((%s) - (%s)) / 2) * %s", max_expr, min_expr, format_value(factor))
+    list(min = sprintf("(%s) - (%s)", mid, half), max = sprintf("(%s) + (%s)", mid, half))
+  }
   if (!is.null(y_range) && !is.null(x_range) && mark_type %in% c("bar", "rect")) {
     # A true 2D box (both axes have their own range, e.g. a heatmap-style
     # rect) -- geom_rect wants numeric ymin/ymax *and* xmin/xmax.
@@ -263,16 +299,24 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["ymin"]] <- y_range$min
     aes_pairs[["ymax"]] <- y_range$max
     aes_pairs[["y"]] <- NULL
-    if (mark_type == "rect" && is.null(aes_pairs[["x"]])) {
-      # A `rect` with no x at all (e.g. a min/max reference band spanning
-      # the whole plot) needs a real filled box, not a thin geom_linerange
-      # line -- geom_rect with a fixed -Inf/Inf xmin/xmax spans the full
-      # width without disturbing a continuous x scale a sibling layer uses
-      # (a fake categorical x="" would otherwise force a discrete scale).
+    if (mark_type %in% c("bar", "rect") && is.null(aes_pairs[["x"]])) {
+      # A `rect`/`bar` with no x at all (e.g. a min/max reference band
+      # spanning the whole plot, or -- transforms.R's plan_layer_data()
+      # real-binning case -- a bin-only y channel with no aggregate
+      # anywhere) needs a real filled box, not a thin geom_linerange line
+      # -- geom_rect with a fixed -Inf/Inf xmin/xmax spans the full width
+      # without disturbing a continuous x scale a sibling layer uses (a
+      # fake categorical x="" would otherwise force a discrete scale). The
+      # shrink gives adjacent occupied bins visible separation instead of
+      # touching edge-to-edge (see shrink_range()); harmless on a single
+      # sparse reference band, the other real use of this same shape.
+      shrunk <- shrink_range(aes_pairs[["ymin"]], aes_pairs[["ymax"]])
+      aes_pairs[["ymin"]] <- shrunk$min
+      aes_pairs[["ymax"]] <- shrunk$max
       aes_pairs[["x"]] <- NULL
-      fixed[["xmin"]] <- "-Inf"
-      fixed[["xmax"]] <- "Inf"
-      return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+      fixed[["xmin"]] <- full_span[1]
+      fixed[["xmax"]] <- full_span[2]
+      return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("x")))
     }
     if (mark_type %in% c("bar", "rect")) {
       if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
@@ -304,12 +348,21 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["xmin"]] <- x_range$min
     aes_pairs[["xmax"]] <- x_range$max
     aes_pairs[["x"]] <- NULL
-    if (mark_type == "rect" && is.null(aes_pairs[["y"]])) {
+    if (mark_type %in% c("bar", "rect") && is.null(aes_pairs[["y"]])) {
       # Same reasoning as the y_range branch's "rect" case above, just
-      # transposed: a vertical full-height band instead of horizontal.
-      fixed[["ymin"]] <- "-Inf"
-      fixed[["ymax"]] <- "Inf"
-      return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+      # transposed: a vertical full-height band instead of horizontal. Not
+      # just "rect": a `mark: "bar"` with a position range but genuinely no
+      # y at all (e.g. a bin-only encoding channel, no aggregate anywhere --
+      # transforms.R's plan_layer_data() real-binning case) means the same
+      # thing here as it would for "rect" -- there's no categorical
+      # position to anchor a Gantt-style thick line at (the fallback just
+      # below, meant for an actual Gantt chart, which always has one).
+      shrunk <- shrink_range(aes_pairs[["xmin"]], aes_pairs[["xmax"]])
+      aes_pairs[["xmin"]] <- shrunk$min
+      aes_pairs[["xmax"]] <- shrunk$max
+      fixed[["ymin"]] <- full_span[1]
+      fixed[["ymax"]] <- full_span[2]
+      return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("y")))
     }
     if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && identical(encoding$y$type, "quantitative")) {
       # A real quantitative y value alongside a binned x range (e.g. a
@@ -342,17 +395,6 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     fixed[["width"]] <- "1"
     fixed[["stat"]] <- fixed[["stat"]] %||% '"identity"'
   }
-  # The companion axis's own full-plot-height/-width fill: `-Inf`/`Inf` when
-  # this mark might share its scale with a sibling layer's real data (a
-  # layer/repeat-layer child -- ggplot2 unions Inf against whatever finite
-  # range that sibling establishes, giving a true full-height band), but a
-  # *finite* symmetric fallback when this view is the only thing setting up
-  # that scale at all (translate_unit's standalone case): every row's
-  # min/max would otherwise be the same +/-Inf, leaving ggplot2 nothing
-  # finite to compute an actual panel range from at all, and the mark
-  # silently fails to draw anything.
-  full_span <- if (isTRUE(plan$standalone)) c("-0.5", "0.5") else c("-Inf", "Inf")
-
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
       !isTRUE(plan$aggregated)) {
@@ -373,7 +415,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     # case just below instead, not a position to draw a reference band at.
     x_expr <- aes_pairs[["x"]]
     half_width_expr <- sprintf(
-      "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 else 0.5 })(%s)",
+      "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 * 0.9 else 0.45 })(%s)",
       x_expr
     )
     aes_pairs[["xmin"]] <- sprintf("(%s) - (%s)", x_expr, half_width_expr)
@@ -381,7 +423,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["x"]] <- NULL
     fixed[["ymin"]] <- full_span[1]
     fixed[["ymax"]] <- full_span[2]
-    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("y")))
   }
   # Mirrors the x-present/y-absent branch just above, transposed: a bare
   # (un-aggregated) y position with no x at all -- e.g. `bar_1d_dimension_only`,
@@ -391,7 +433,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       !isTRUE(plan$aggregated)) {
     y_expr <- aes_pairs[["y"]]
     half_width_expr <- sprintf(
-      "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 else 0.5 })(%s)",
+      "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 * 0.9 else 0.45 })(%s)",
       y_expr
     )
     aes_pairs[["ymin"]] <- sprintf("(%s) - (%s)", y_expr, half_width_expr)
@@ -399,7 +441,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["y"]] <- NULL
     fixed[["xmin"]] <- full_span[1]
     fixed[["xmax"]] <- full_span[2]
-    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("x")))
   }
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
@@ -415,7 +457,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["x"]] <- NULL
     fixed[["ymin"]] <- full_span[1]
     fixed[["ymax"]] <- full_span[2]
-    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("y")))
   }
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && is.null(aes_pairs[["x"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
@@ -426,7 +468,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     aes_pairs[["y"]] <- NULL
     fixed[["xmin"]] <- full_span[1]
     fixed[["xmax"]] <- full_span[2]
-    return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
+    return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("x")))
   }
   if (mark_type == "text") {
     # A `text` mark's x/y is usually an encoding channel, but Vega-Lite also

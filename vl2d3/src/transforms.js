@@ -108,6 +108,40 @@ function renderOne(t, dataVar, ignoreUnsupported) {
     if (!unsupportedOp) return renderWindowTransform({window: t.joinaggregate, groupby: t.groupby}, dataVar);
     return [`// vl2d3: skipped unsupported joinaggregate op "${unsupportedOp}" (--ignore-unsupported)`];
   }
+  if ('stack' in t) {
+    // An explicit top-level `stack` transform (as opposed to the implicit
+    // per-encoding stacking stack.js's planStacking() computes for a plain
+    // `bar`/`area` mark) -- same cumulative-sum-within-group idea, just
+    // parameterized directly from the transform's own field/groupby/as
+    // rather than inferred from the mark's encoding. `sort` (ordering
+    // within each group) isn't implemented -- rows keep whatever order
+    // they already had per group (d3.group()'s own stable, first-
+    // encountered order), a reasonable default absent it.
+    const valueField = t.stack;
+    const groupFields = t.groupby || [];
+    const [as0, as1] = Array.isArray(t.as) ? t.as : [`${t.stack}_start`, `${t.stack}_end`];
+    const mode = t.offset === 'normalize' ? 'normalize' : t.offset === 'center' ? 'center' : 'zero';
+    const groupKeyExpr =
+      groupFields.length > 0 ? `JSON.stringify([${groupFields.map(f => `d[${JSON.stringify(f)}]`).join(', ')}])` : '0';
+    const scaleLine =
+      mode === 'normalize'
+        ? `      return {...d, ${JSON.stringify(as0)}: total ? y0 / total : 0, ${JSON.stringify(as1)}: total ? y1 / total : 0};`
+        : mode === 'center'
+          ? `      return {...d, ${JSON.stringify(as0)}: y0 - total / 2, ${JSON.stringify(as1)}: y1 - total / 2};`
+          : `      return {...d, ${JSON.stringify(as0)}: y0, ${JSON.stringify(as1)}: y1};`;
+    return [
+      `${dataVar} = Array.from(d3.group(${dataVar}, d => ${groupKeyExpr}), ([, rows]) => {`,
+      `    const total = d3.sum(rows, d => d[${JSON.stringify(valueField)}]);`,
+      `    let acc = 0;`,
+      `    return rows.map(d => {`,
+      `      const y0 = acc;`,
+      `      acc += +d[${JSON.stringify(valueField)}];`,
+      `      const y1 = acc;`,
+      scaleLine,
+      `    });`,
+      `  }).flat();`,
+    ];
+  }
   if ('fold' in t) {
     return renderFoldTransform(t, dataVar);
   }
