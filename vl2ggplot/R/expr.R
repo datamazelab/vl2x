@@ -256,7 +256,7 @@ rewrite_string_concat <- function(s) {
   # blanking out just the condition argument of every ifelse() first means
   # this only reacts to a quote in the true/false *value* arguments, the
   # actual signal that this whole `+` means concatenation, not addition.
-  if (!any(vapply(parts, function(p) grepl("['\"]", blank_ifelse_conditions(p)), logical(1)))) return(s)
+  if (!any(vapply(parts, function(p) grepl("['\"]", blank_format_calls(blank_ifelse_conditions(p))), logical(1)))) return(s)
   sprintf("paste0(%s)", paste(parts, collapse = ", "))
 }
 
@@ -303,6 +303,57 @@ blank_ifelse_conditions <- function(s) {
     }
     result <- paste0(result, substring(s, first_comma))
     pos <- first_comma
+  }
+  result
+}
+
+# See rewrite_string_concat() above: blanks out every top-level
+# `format(...)` call's own arguments in `s` (replacing them with spaces,
+# preserving length/positions), leaving everything else untouched. Every
+# `format(...)` this project ever generates is `.date_funcs`' own
+# implementation of a Vega hours()/minutes()/year()/etc. date-part
+# accessor (expr.R) -- always wrapped in `as.integer(...)`, so its result
+# is numeric regardless of the quoted format-pattern string ("%H", "%M", ...)
+# passed as its second argument. That pattern string being present is not a
+# "this whole expression is a string" signal the way an ifelse() branch's
+# own quoted string is -- left unblanked, `hours(datum.date) + minutes(...)
+# / 60` (a genuine numeric sum) was wrongly rewritten into a paste0() string
+# concatenation, since both operands' translated R code carries a quote
+# from the pattern string alone.
+blank_format_calls <- function(s) {
+  result <- ""
+  pos <- 1
+  n <- nchar(s)
+  while (pos <= n) {
+    m <- regexpr("format\\(", substring(s, pos), perl = TRUE)
+    if (m[1] == -1) {
+      result <- paste0(result, substring(s, pos))
+      break
+    }
+    open <- pos + m[1] - 1 + attr(m, "match.length") - 1
+    result <- paste0(result, substring(s, pos, open))
+    depth <- 1
+    in_quote <- FALSE
+    quote_char <- ""
+    i <- open + 1
+    while (i <= n && depth > 0) {
+      ch <- substr(s, i, i)
+      if (in_quote) {
+        if (ch == quote_char) in_quote <- FALSE
+      } else if (ch %in% c("'", '"')) {
+        in_quote <- TRUE
+        quote_char <- ch
+      } else if (ch == "(") {
+        depth <- depth + 1
+      } else if (ch == ")") {
+        depth <- depth - 1
+      }
+      i <- i + 1
+    }
+    close <- i - 1
+    inner_len <- max(close - (open + 1), 0)
+    result <- paste0(result, strrep(" ", inner_len), ")")
+    pos <- close + 1
   }
   result
 }

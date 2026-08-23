@@ -42,6 +42,21 @@ function accessor(def, scales, channel) {
   return scale ? `${scale.varName}(${field})` : field;
 }
 
+// d3.scaleBand()(value) returns the band's own *start* edge, not its
+// center -- exactly what a bar/rect mark wants (it's drawing the whole
+// band as a box), but wrong for any single-point mark (point/circle/tick/
+// rule/text) positioned against a nominal/ordinal companion axis, which
+// wants to land in the middle of its category the way Vega-Lite itself
+// does. `kind === 'ambiguous'` mirrors this at runtime via the same
+// `isNominalVar` flag the scale declaration itself used, since whether
+// this axis turned out banded at all isn't known until the data loads.
+function bandCenterOffset(scale) {
+  if (!scale) return '';
+  if (scale.kind === 'band') return ` + ${scale.varName}.bandwidth() / 2`;
+  if (scale.kind === 'ambiguous') return ` + (${scale.isNominalVar} ? ${scale.varName}.bandwidth() / 2 : 0)`;
+  return '';
+}
+
 // Same idea as accessor(), but folds in a dodged/grouped position offset
 // (xOffset/yOffset) when this channel has one and scales.js built a
 // sub-band scale for it (see resolveOffsetScale()) -- centers the mark
@@ -56,7 +71,9 @@ function dodgeAwareAccessor(encoding, scales, channel) {
   const offsetChannel = channel === 'x' ? 'xOffset' : 'yOffset';
   const offsetDef = encoding[offsetChannel];
   const offsetScale = scales[offsetChannel];
-  if (!offsetDef || !offsetDef.field || !offsetScale) return base;
+  // No dodge -- still needs to land on the CENTER of a band position, not
+  // its left/top edge (see bandCenterOffset()).
+  if (!offsetDef || !offsetDef.field || !offsetScale) return `${base}${bandCenterOffset(scales[channel])}`;
   const withOffset = `${base} + ${offsetScale.varName}(d[${JSON.stringify(offsetDef.field)}]) + ${offsetScale.varName}.bandwidth() / 2`;
   return offsetScale.conditional ? `(${offsetScale.varName} ? (${withOffset}) : (${base}))` : withOffset;
 }
@@ -128,13 +145,192 @@ function renderApproximateMark(type, encoding, scales, dims, dataVar, markProps,
   if ((type === 'rect' || type === 'errorbar' || type === 'errorband') && (encoding.x2 || encoding.y2)) {
     return note('bar') + '\n' + renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
   }
-  if (type === 'boxplot' && (scales.x || scales.y)) {
-    return note('tick') + '\n' + renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
-  }
   if (type === 'trail') {
     return note('line') + '\n' + renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
   }
   return note('point') + '\n' + renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+}
+
+// A "boxplot" mark is Vega-Lite's own composite -- unlike every other mark
+// type here, it doesn't draw one shape per input row; it first collapses
+// each distinct category (x/y's nominal channel, further split by `color`/
+// `xOffset`/`yOffset` when given -- distinct fields only, since a spec
+// commonly reuses the same field for the category and the color/dodge, as
+// `color`/`xOffset` on the same field does in a grouped boxplot) down to
+// its own five-number summary (Tukey's: q1/median/q3 plus the whisker
+// bounds and outliers, computed the same way `stat_boxplot()` does),
+// *then* draws a box + whiskers + outlier points per group. That grouping
+// step has no equivalent anywhere else in this file, so it's generated as
+// its own runtime block (an IIFE-free `d3.group()` + summarize pass,
+// mirroring the inline aggregation prepare.js emits for a plain
+// aggregate) rather than reusing any other mark's row-by-row `.data(dataVar)`
+// join directly.
+function renderBoxplot(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
+  const xIsValue = encoding.x && encoding.x.type === 'quantitative';
+  const yIsValue = encoding.y && encoding.y.type === 'quantitative';
+  if (!xIsValue && !yIsValue) {
+    if (ignoreUnsupported) {
+      return (
+        `// vl2d3: unsupported "boxplot" orientation (no quantitative x or y encoding), drawing a point per row instead (--ignore-unsupported)\n` +
+        renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported)
+      );
+    }
+    throw new Error('"boxplot" mark requires a quantitative x or y encoding');
+  }
+  // Vega-Lite's own default orientation when (unusually) both axes look
+  // quantitative is vertical (the value axis is y).
+  const valueChannel = yIsValue ? 'y' : 'x';
+  const catChannel = valueChannel === 'y' ? 'x' : 'y';
+  const valueField = encoding[valueChannel].field;
+  const catDef = encoding[catChannel];
+  const catScale = scales[catChannel];
+  const offsetChannel = catChannel === 'x' ? 'xOffset' : 'yOffset';
+  const offsetDef = encoding[offsetChannel];
+  const offsetScale = scales[offsetChannel];
+
+  // `extent` (mark-level): "min-max" widens the whisker fence to +/-
+  // Infinity * IQR, i.e. the whiskers always reach the true min/max and no
+  // point is ever an outlier -- otherwise a bare number is the IQR
+  // multiplier (Vega-Lite's own default: 1.5, matching Tukey's rule and
+  // ggplot2/stat_boxplot's own `coef` default).
+  const extent = markProps.extent;
+  const coef = extent === 'min-max' ? 'Infinity' : formatValue(typeof extent === 'number' ? extent : 1.5);
+
+  // Every non-quantitative channel that could split the data into distinct
+  // boxes -- deduplicated by field, since `color`/`xOffset` commonly name
+  // the very same field as the category axis itself (a grouped boxplot's
+  // usual shape) and shouldn't be grouped by twice.
+  const groupFields = [];
+  for (const ch of [catChannel, 'color', offsetChannel]) {
+    const def = encoding[ch];
+    if (def && def.field && !groupFields.includes(def.field)) groupFields.push(def.field);
+  }
+  const keyExpr = groupFields.length
+    ? `JSON.stringify([${groupFields.map(f => `d[${JSON.stringify(f)}]`).join(', ')}])`
+    : '0'; // No groupby channel at all -- a single shared 1D box.
+
+  const boxVar = 'boxStats';
+  const lines = [];
+  lines.push(
+    `const ${boxVar} = Array.from(d3.group(${dataVar}, d => ${keyExpr}), ([, rows]) => {\n` +
+      `  const values = rows.map(d => d[${JSON.stringify(valueField)}]).filter(v => v != null).sort(d3.ascending);\n` +
+      `  const q1 = d3.quantile(values, 0.25), median = d3.quantile(values, 0.5), q3 = d3.quantile(values, 0.75);\n` +
+      `  const iqr = q3 - q1;\n` +
+      `  const lowerFence = q1 - ${coef} * iqr, upperFence = q3 + ${coef} * iqr;\n` +
+      `  const within = values.filter(v => v >= lowerFence && v <= upperFence);\n` +
+      `  return {\n` +
+      `    ...rows[0],\n` +
+      `    q1, median, q3,\n` +
+      `    whiskerLow: within.length ? within[0] : q1,\n` +
+      `    whiskerHigh: within.length ? within[within.length - 1] : q3,\n` +
+      `    outliers: values.filter(v => v < lowerFence || v > upperFence),\n` +
+      `  };\n` +
+      `});`
+  );
+
+  // Position along the category axis: the center of its band (dodged into
+  // an offset sub-band when present) -- boxStats rows still carry the
+  // original category/offset/color field values via the `...rows[0]`
+  // spread above, so the same field-based accessors every other mark uses
+  // work unchanged. With no category channel at all (a plain 1D boxplot),
+  // there's nothing to position against but the plot's own center.
+  const catCenter = catDef
+    ? dodgeAwareAccessor(encoding, scales, catChannel)
+    : catChannel === 'x'
+      ? dims.centerXExpr
+      : dims.centerYExpr;
+  const sizeProp = markProps.size;
+  const boxWidthExpr =
+    sizeProp !== undefined
+      ? formatValue(sizeProp)
+      : offsetDef && offsetDef.field && offsetScale
+        ? offsetScale.conditional
+          ? `(${offsetScale.varName} ? ${offsetScale.varName}.bandwidth() : 14)`
+          : `${offsetScale.varName}.bandwidth()`
+        : catScale && catScale.kind === 'band'
+          ? `Math.min(${catScale.varName}.bandwidth(), 14)`
+          : '14';
+
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+  const stroke = markColorFallback(markProps, 'stroke', 'black');
+  // Vega-Lite's own boxplot defaults: a white median tick, and outlier
+  // points in the mark's base color (not the box's own per-category fill,
+  // which is `config.boxplot.color`-driven fill -- but this project has no
+  // general `config.<mark>` passthrough, matching every other mark here).
+  const medianColor = 'white';
+  const outlierFill = markColorFallback(markProps, 'color', DEFAULT_FILL);
+  const valueScaleVar = valueChannel;
+  const outlierData = `${boxVar}.flatMap(d => d.outliers.map(v => ({...d, ${JSON.stringify(valueField)}: v})))`;
+
+  lines.push(`svg.append("g")`);
+  lines.push(`    .attr("stroke", ${JSON.stringify(stroke)})`);
+  lines.push(`  .selectAll("line")`);
+  lines.push(`  .data(${boxVar})`);
+  lines.push(`  .join("line")`);
+  if (valueChannel === 'y') {
+    lines.push(`    .attr("x1", d => ${catCenter})`);
+    lines.push(`    .attr("x2", d => ${catCenter})`);
+    lines.push(`    .attr("y1", d => ${valueScaleVar}(d.whiskerLow))`);
+    lines.push(`    .attr("y2", d => ${valueScaleVar}(d.whiskerHigh))`);
+  } else {
+    lines.push(`    .attr("y1", d => ${catCenter})`);
+    lines.push(`    .attr("y2", d => ${catCenter})`);
+    lines.push(`    .attr("x1", d => ${valueScaleVar}(d.whiskerLow))`);
+    lines.push(`    .attr("x2", d => ${valueScaleVar}(d.whiskerHigh))`);
+  }
+
+  const rowDependent = hasRowDependentColor(encoding);
+  lines.push(`svg.append("g")`);
+  if (!rowDependent) lines.push(`    .attr("fill", ${fill})`);
+  lines.push(`  .selectAll("rect")`);
+  lines.push(`  .data(${boxVar})`);
+  lines.push(`  .join("rect")`);
+  if (rowDependent) lines.push(`    .attr("fill", d => ${fill})`);
+  if (valueChannel === 'y') {
+    lines.push(`    .attr("x", d => ${catCenter} - (${boxWidthExpr}) / 2)`);
+    lines.push(`    .attr("width", d => ${boxWidthExpr})`);
+    lines.push(`    .attr("y", d => Math.min(y(d.q1), y(d.q3)))`);
+    lines.push(`    .attr("height", d => Math.abs(y(d.q3) - y(d.q1)))`);
+  } else {
+    lines.push(`    .attr("y", d => ${catCenter} - (${boxWidthExpr}) / 2)`);
+    lines.push(`    .attr("height", d => ${boxWidthExpr})`);
+    lines.push(`    .attr("x", d => Math.min(x(d.q1), x(d.q3)))`);
+    lines.push(`    .attr("width", d => Math.abs(x(d.q3) - x(d.q1)))`);
+  }
+
+  lines.push(`svg.append("g")`);
+  lines.push(`    .attr("stroke", ${JSON.stringify(medianColor)})`);
+  lines.push(`  .selectAll("line")`);
+  lines.push(`  .data(${boxVar})`);
+  lines.push(`  .join("line")`);
+  if (valueChannel === 'y') {
+    lines.push(`    .attr("x1", d => ${catCenter} - (${boxWidthExpr}) / 2)`);
+    lines.push(`    .attr("x2", d => ${catCenter} + (${boxWidthExpr}) / 2)`);
+    lines.push(`    .attr("y1", d => y(d.median))`);
+    lines.push(`    .attr("y2", d => y(d.median))`);
+  } else {
+    lines.push(`    .attr("y1", d => ${catCenter} - (${boxWidthExpr}) / 2)`);
+    lines.push(`    .attr("y2", d => ${catCenter} + (${boxWidthExpr}) / 2)`);
+    lines.push(`    .attr("x1", d => x(d.median))`);
+    lines.push(`    .attr("x2", d => x(d.median))`);
+  }
+
+  lines.push(`svg.append("g")`);
+  lines.push(`    .attr("fill", ${JSON.stringify(outlierFill)})`);
+  lines.push(`    .attr("fill-opacity", 0.8)`);
+  lines.push(`  .selectAll("circle")`);
+  lines.push(`  .data(${outlierData})`);
+  lines.push(`  .join("circle")`);
+  if (valueChannel === 'y') {
+    lines.push(`    .attr("cx", d => ${catCenter})`);
+    lines.push(`    .attr("cy", d => y(d[${JSON.stringify(valueField)}]))`);
+  } else {
+    lines.push(`    .attr("cy", d => ${catCenter})`);
+    lines.push(`    .attr("cx", d => x(d[${JSON.stringify(valueField)}]))`);
+  }
+  lines.push(`    .attr("r", 3)`);
+
+  return '{\n' + lines.join('\n').replace(/^/gm, '  ') + '\n}';
 }
 
 export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsupported = false, extentParams = {}) {
@@ -193,6 +389,8 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       return renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     case 'arc':
       return renderArc(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+    case 'boxplot':
+      return renderBoxplot(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     default:
       if (ignoreUnsupported) {
         return renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
@@ -585,6 +783,8 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   } else {
     throw new Error('Unsupported bar orientation: expected at least one x or y position channel');
   }
+  const barOpacity = opacityAttr(encoding, scales);
+  if (barOpacity) lines.push(`    .attr("opacity", d => ${barOpacity})`);
   appendTitle(lines, '    ', encoding);
   if (needsWidthBlock) {
     return '{\n' + lines.map(l => l.replace(/^/gm, '  ')).join('\n') + '\n}';
@@ -606,7 +806,7 @@ function binCenterAccessor(encoding, scales, channel) {
 }
 
 function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
-  const {x, y, size} = scales;
+  const {x, y, size, shape} = scales;
   // A 1D strip/dot plot (only one of x/y given) centers points on the
   // missing axis rather than requiring both; with neither given, every
   // point is centered on both (all overlapping) rather than refusing to
@@ -622,6 +822,34 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
   const opacity = opacityAttr(encoding, scales);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
+
+  if (encoding.shape && shape) {
+    // A distinct marker shape per category (not just a plain circle) --
+    // SVG has no built-in "draw this shape" primitive, so this needs
+    // d3-shape's own symbol *path* generator instead of a <circle>. Its
+    // `.size()` is an area (px^2), not a radius, so it's derived from the
+    // same `r` this mark would otherwise use as a circle's own radius
+    // (pi*r^2), keeping the two visually comparable regardless of which
+    // one a given row ends up using.
+    const symbolVar = 'pointSymbol';
+    const symLines = [];
+    symLines.push(
+      `const ${symbolVar} = d3.symbol().type(d => shape(d[${JSON.stringify(encoding.shape.field)}])).size(d => Math.PI * Math.pow(${r}, 2));`
+    );
+    symLines.push(`svg.append("g")`);
+    if (!rowDependent) symLines.push(`  .attr("fill", ${fill})`);
+    symLines.push(`  .attr("fill-opacity", ${markProps.filled === false ? 0 : 0.8})`);
+    symLines.push(`  .selectAll("path")`);
+    symLines.push(`  .data(${dataVar})`);
+    symLines.push(`  .join("path")`);
+    if (rowDependent) symLines.push(`    .attr("fill", d => ${fill})`);
+    symLines.push(`    .attr("transform", d => "translate(" + (${cx}) + "," + (${cy}) + ")")`);
+    symLines.push(`    .attr("d", ${symbolVar})`);
+    if (opacity) symLines.push(`    .attr("opacity", d => ${opacity})`);
+    appendTitle(symLines, '    ', encoding);
+    return '{\n' + symLines.join('\n').replace(/^/gm, '  ') + '\n}';
+  }
+
   lines.push(`svg.append("g")`);
   if (!rowDependent) lines.push(`  .attr("fill", ${fill})`);
   lines.push(`  .attr("fill-opacity", ${markProps.filled === false ? 0 : 0.8})`);
@@ -793,13 +1021,13 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   if (encoding.x && encoding.x2) {
     lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
     lines.push(`    .attr("x2", d => x(d[${JSON.stringify(encoding.x2.field)}]))`);
-    lines.push(`    .attr("y1", d => ${y ? accessor(encoding.y, scales, 'y') : dims.marginTopExpr})`);
-    lines.push(`    .attr("y2", d => ${y ? accessor(encoding.y, scales, 'y') : dims.heightMinusBottomExpr})`);
+    lines.push(`    .attr("y1", d => ${y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.marginTopExpr})`);
+    lines.push(`    .attr("y2", d => ${y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.heightMinusBottomExpr})`);
   } else if (encoding.y && encoding.y2) {
     lines.push(`    .attr("y1", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
     lines.push(`    .attr("y2", d => y(d[${JSON.stringify(encoding.y2.field)}]))`);
-    lines.push(`    .attr("x1", d => ${x ? accessor(encoding.x, scales, 'x') : dims.marginLeftExpr})`);
-    lines.push(`    .attr("x2", d => ${x ? accessor(encoding.x, scales, 'x') : dims.widthMinusRightExpr})`);
+    lines.push(`    .attr("x1", d => ${x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.marginLeftExpr})`);
+    lines.push(`    .attr("x2", d => ${x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.widthMinusRightExpr})`);
   } else if (encoding.x && !encoding.y) {
     if (encoding.x.field) {
       lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
@@ -874,20 +1102,23 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
           ? `(${xOffsetScale.varName} ? ${xOffsetScale.varName}.bandwidth() / 2 : ${plainHalf})`
           : `${xOffsetScale.varName}.bandwidth() / 2`
         : plainHalf;
+    const centerY = dodgeAwareAccessor(encoding, scales, 'y');
     lines.push(`    .attr("x1", d => ${centerX} - ${half})`);
     lines.push(`    .attr("x2", d => ${centerX} + ${half})`);
-    lines.push(`    .attr("y1", d => y(d[${yField}]))`);
-    lines.push(`    .attr("y2", d => y(d[${yField}]))`);
+    lines.push(`    .attr("y1", d => ${centerY})`);
+    lines.push(`    .attr("y2", d => ${centerY})`);
   } else if (x && !y) {
     // 1D strip plot along x: short vertical ticks centered on the plot.
-    lines.push(`    .attr("x1", d => x(d[${xField}]))`);
-    lines.push(`    .attr("x2", d => x(d[${xField}]))`);
+    const centerX2 = dodgeAwareAccessor(encoding, scales, 'x');
+    lines.push(`    .attr("x1", d => ${centerX2})`);
+    lines.push(`    .attr("x2", d => ${centerX2})`);
     lines.push(`    .attr("y1", ${dims.centerYExpr} - ${TICK_HALF})`);
     lines.push(`    .attr("y2", ${dims.centerYExpr} + ${TICK_HALF})`);
   } else {
     // 1D strip plot along y: short horizontal ticks centered on the plot.
-    lines.push(`    .attr("y1", d => y(d[${yField}]))`);
-    lines.push(`    .attr("y2", d => y(d[${yField}]))`);
+    const centerY2 = dodgeAwareAccessor(encoding, scales, 'y');
+    lines.push(`    .attr("y1", d => ${centerY2})`);
+    lines.push(`    .attr("y2", d => ${centerY2})`);
     lines.push(`    .attr("x1", ${dims.centerXExpr} - ${TICK_HALF})`);
     lines.push(`    .attr("x2", ${dims.centerXExpr} + ${TICK_HALF})`);
   }

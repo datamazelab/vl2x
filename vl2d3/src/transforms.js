@@ -242,7 +242,7 @@ function renderDensityTransform(t, dataVar) {
 // Percentile/selection ops with no simple direct equivalent (percent_rank,
 // cume_dist, ntile, first_value/last_value/nth_value) aren't supported.
 const WINDOW_POSITIONAL_OPS = ['row_number', 'rank', 'dense_rank', 'lag', 'lead'];
-const WINDOW_AGGREGATE_OPS = ['sum', 'mean', 'average', 'count', 'min', 'max', 'median'];
+const WINDOW_AGGREGATE_OPS = ['sum', 'mean', 'average', 'count', 'min', 'max', 'median', 'distinct'];
 
 function isSupportedWindowOp(op) {
   return WINDOW_POSITIONAL_OPS.includes(op) || WINDOW_AGGREGATE_OPS.includes(op);
@@ -264,6 +264,7 @@ function windowAggregateExpr(op, field, frame) {
   const sliceExpr = windowFrameSliceExpr(frame);
   if (op === 'count') return `(${sliceExpr}).length`;
   const acc = `r => r[${JSON.stringify(field)}]`;
+  if (op === 'distinct') return `new Set((${sliceExpr}).map(${acc})).size`;
   const fn = {sum: 'sum', mean: 'mean', average: 'mean', min: 'min', max: 'max', median: 'median'}[op];
   return `d3.${fn}(${sliceExpr}, ${acc})`;
 }

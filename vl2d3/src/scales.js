@@ -308,6 +308,35 @@ export function resolveColorScale(def, {dataVar, ignoreUnsupported = false}) {
   };
 }
 
+// Vega-Lite's own default shape palette, in order -- an ordinal scale maps
+// each distinct value of the `shape` field onto one of these, the same way
+// `color` maps onto a color palette. d3-shape's built-in symbol types don't
+// cover every Vega-Lite shape name 1:1 (no separate down/left/right-facing
+// triangle, no "arrow"/"wedge"/"triangle" aliases) -- close visual
+// equivalents stand in for those.
+const SHAPE_SYMBOLS = [
+  'd3.symbolCircle',
+  'd3.symbolSquare',
+  'd3.symbolCross',
+  'd3.symbolDiamond',
+  'd3.symbolTriangle',
+  'd3.symbolTriangle2',
+  'd3.symbolStar',
+  'd3.symbolWye',
+];
+
+export function resolveShapeScale(def, {dataVar, ignoreUnsupported = false}) {
+  const field = def.field;
+  const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
+  const domainNote = domainFallbackNote(def, ignoreUnsupported);
+  const domain = explicitDomain ?? ordinalDomainFromData(dataVar, field, def.sort);
+  return {
+    varName: 'shape',
+    decl: `const shape = d3.scaleOrdinal(${domain}, [${SHAPE_SYMBOLS.join(', ')}]);${domainNote}`,
+    kind: 'ordinal',
+  };
+}
+
 export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);

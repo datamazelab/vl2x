@@ -25,6 +25,7 @@ import {
   resolveColorScale,
   resolveSizeScale,
   resolveOpacityScale,
+  resolveShapeScale,
   resolveOffsetScale,
   sharedChannelDomainExpr,
 } from './scales.js';
@@ -121,7 +122,12 @@ function collectProducedFields(transformList = []) {
   for (const t of transformList) {
     if ((t.calculate !== undefined || t.timeUnit !== undefined) && t.as) produced.add(t.as);
     if (t.bin) {
-      (Array.isArray(t.as) ? t.as : [t.as, `${t.as}2`]).forEach(a => produced.add(a));
+      // A single-string `as`'s second (end) output field is `<as>_end`,
+      // not `<as>2` -- see transforms.js's own render_bin_transform for the
+      // same fix (and the past bug it documents: this mismatch silently
+      // left `<as>_end` unrecognized as produced, which mattered nothing
+      // until collectInvalidFilterFields() started trusting it too).
+      (Array.isArray(t.as) ? t.as : [t.as, `${t.as}_end`]).forEach(a => produced.add(a));
     }
     if (t.aggregate) {
       for (const a of t.aggregate) if (a.as) produced.add(a.as);
@@ -197,7 +203,18 @@ function collectInvalidFilterFields(encoding, transformList) {
   const fields = new Set();
   for (const ch of INVALID_FILTER_CHANNELS) {
     const def = encoding[ch];
-    if (!def || typeof def !== 'object' || !def.field || !(def.type === 'quantitative' || def.type === 'temporal')) continue;
+    // An explicitly nominal/ordinal field is skipped (a real category value
+    // has no "invalid" numeric reading to speak of) -- but a field with NO
+    // type at all (resolved "ambiguous" at runtime, scales.js) still gets
+    // filtered here: `d[field] != null && !Number.isNaN(d[field])` never
+    // drops a genuine string/category value (Number.isNaN() only flags the
+    // actual NaN value), so this is safe regardless of which way the
+    // ambiguous field ultimately resolves, and is exactly what an
+    // approximated/fallback mark (e.g. an unsupported "errorband" drawn as
+    // a plain point, marks.js) needs: its accessor has no aggregate of its
+    // own to already skip a null/missing raw value the way build_layer_*
+    // aggregation paths do.
+    if (!def || typeof def !== 'object' || !def.field || !(def.type === 'quantitative' || def.type === 'temporal' || def.type === undefined)) continue;
     // A bracket-indexed compound-aggregate reference (`argmax_x['y']`) reads
     // out of a *produced* field (its base), even though the whole string
     // isn't itself a key `collectProducedFields` ever added -- same "doesn't
@@ -447,7 +464,12 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     b(scale.decl);
     scales[channel] = scale;
   }
-  for (const [channel, resolver] of [['color', resolveColorScale], ['size', resolveSizeScale], ['opacity', resolveOpacityScale]]) {
+  for (const [channel, resolver] of [
+    ['color', resolveColorScale],
+    ['size', resolveSizeScale],
+    ['opacity', resolveOpacityScale],
+    ['shape', resolveShapeScale],
+  ]) {
     const def = prepared.map(p => p.encoding[channel]).find(Boolean);
     // `"scale": null` is Vega-Lite's own "use the raw field value directly
     // as the visual channel value, no mapping at all" escape hatch (e.g. a

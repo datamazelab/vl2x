@@ -82,6 +82,17 @@ mark_fixed_params <- function(mark_props, mark_type, ignore_unsupported = FALSE,
   if (!is.null(mark_props[["size"]]) && !(mark_type %in% c("bar", "area", "line"))) {
     fixed[["size"]] <- mark_scalar_value(mark_props[["size"]], "1.5", ignore_unsupported, .notes)
   }
+  # A boxplot's `extent` picks how far the whiskers reach: "min-max" means
+  # the true data min/max (no point is ever an outlier), while a bare
+  # number is an IQR multiplier (Vega-Lite default: 1.5, matching
+  # stat_boxplot()'s own `coef` default -- so this only needs to emit
+  # anything for the "min-max" case, via `coef = Inf` (no finite multiple
+  # of the IQR excludes a point, so the whisker reaches every point)).
+  if (mark_type == "boxplot" && identical(mark_props[["extent"]], "min-max")) {
+    fixed[["coef"]] <- "Inf"
+  } else if (mark_type == "boxplot" && is.numeric(mark_props[["extent"]])) {
+    fixed[["coef"]] <- format_value(mark_props[["extent"]])
+  }
   # A `text` mark's label is usually an encoding channel, but Vega-Lite also
   # allows a literal constant directly on the mark definition (a string, or
   # an array of strings meaning multiple lines).

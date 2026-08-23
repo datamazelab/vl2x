@@ -8,9 +8,7 @@
 
 ===== bar_grouped_thin_minBandSize.vl.json [NaN geometry: 880 shape(s), tags=rect] =====
 
-===== bar_layered_weather.vl.json [NaN geometry: 60 shape(s), tags=rect] =====
-
-===== boxplot_1D_invalid.vl.json [NaN geometry: 6 shape(s), tags=line] =====
+===== boxplot_1D_invalid.vl.json [NaN geometry: 5 shape(s), tags=rect,line] =====
 
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
@@ -20,17 +18,11 @@
 
 ===== line_invalid_null.vl.json [NaN geometry: 1 shape(s), tags=path] =====
 
-===== lookup.vl.json [NaN geometry: 3 shape(s), tags=rect] =====
-
 ===== point_ordinal_bin_offset_random.vl.json [NaN geometry: 1 shape(s), tags=circle] =====
-
-===== rect_mosaic_labelled_with_offset.vl.json [NaN geometry: 9 shape(s), tags=rect] =====
 
 ===== rect_params.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
 ===== repeat_layer.vl.json [NaN geometry: 1 shape(s), tags=path] =====
-
-===== wheat_wages.vl.json [NaN geometry: 3 shape(s), tags=path] =====
 
 ===== geo_graticule.vl.json [zero shapes] =====
 import * as d3 from "d3";
