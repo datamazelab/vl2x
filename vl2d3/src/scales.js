@@ -146,7 +146,14 @@ function sortArrayDomainExpr(base, sort) {
 
 function ordinalDomainFromData(dataVar, field, sort) {
   const acc = `d => d[${JSON.stringify(field)}]`;
-  const base = `Array.from(new Set(${dataVar}.map(${acc})))`;
+  // `d3.InternSet` (not the built-in `Set`) so a Date-valued ordinal domain
+  // (a cyclic-timeUnit channel, e.g. line_quarter_legend.vl.json's `color:
+  // {timeUnit: "quarter", ...}` -- see prepare.js's timeUnitFieldType())
+  // still dedupes by real value (InternSet keys off `.valueOf()`) instead
+  // of by object reference, which a plain `Set` would treat as all-distinct
+  // even for two rows sharing the exact same quarter -- string/number
+  // domains behave identically either way.
+  const base = `Array.from(new d3.InternSet(${dataVar}.map(${acc})))`;
   if (sort === 'descending') return `${base}.sort((a, b) => d3.descending(a, b))`;
   if (sort === null || sort === false) return base;
   if (Array.isArray(sort)) return sortArrayDomainExpr(base, sort);
@@ -172,7 +179,7 @@ function zeroExtentDomain(valuesExpr) {
 }
 
 function ordinalExtentDomain(valuesExpr, sort) {
-  const base = `Array.from(new Set(${valuesExpr}))`;
+  const base = `Array.from(new d3.InternSet(${valuesExpr}))`;
   if (sort === 'descending') return `${base}.sort((a, b) => d3.descending(a, b))`;
   if (sort === null || sort === false) return base;
   if (Array.isArray(sort)) return sortArrayDomainExpr(base, sort);

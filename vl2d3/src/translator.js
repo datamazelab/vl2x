@@ -32,7 +32,7 @@ import {
 import {renderMark} from './marks.js';
 import {formatValue} from './literals.js';
 import {extractDateFunctionFields} from './expr.js';
-import {timeUnitExpr, isSupportedTimeUnit} from './timeunit.js';
+import {timeUnitExpr, isSupportedTimeUnit, cyclicLabelExpr} from './timeunit.js';
 
 // Every function name runtime.js exports, in preference order for the
 // generated `import {...} from "./vl2d3-runtime.js"` line -- see
@@ -265,11 +265,33 @@ function collectExtentParams(transformList = []) {
 // occasionally redundant) -- excluding any field a top-level `transform`
 // produces rather than one the raw data actually has (see
 // collectProducedFields()).
-function collectInvalidFilterFields(encoding, transformList) {
+// A "line"/"area" mark's own position channels (the ones its d3.line()/
+// d3.area() path generator walks) are deliberately excluded from the
+// upfront row-drop filter below -- real Vega-Lite's "filter" default
+// doesn't drop an invalid row from a *continuous* mark's data at all, it
+// breaks the drawn path into separate segments at that point instead (e.g.
+// line_skip_invalid_mid_cap_square.vl.json's own two disconnected
+// segments, with the lone valid point *between* two invalid neighbors
+// left entirely undrawn -- a single point can't form a segment on its
+// own). Dropping the row here instead would silently reconnect the path
+// straight across the gap, one vertex short. renderLine()/renderArea()
+// (marks.js) handle the actual gap themselves, via a `.defined()` clause
+// on the very same fields -- every *other* channel (color/size/opacity)
+// still gets its row dropped upfront as before, since an invalid value
+// there has no equivalent "break the path" meaning.
+function pathContinuityChannels(mark) {
+  const markType = typeof mark === 'string' ? mark : mark && mark.type;
+  if (markType === 'line') return ['x', 'y'];
+  if (markType === 'area') return ['x', 'y', 'x2', 'y2'];
+  return [];
+}
+
+function collectInvalidFilterFields(encoding, transformList, excludeChannels = []) {
   if (hasDynamicProducedFields(transformList)) return [];
   const produced = collectProducedFields(transformList);
   const fields = new Set();
   for (const ch of INVALID_FILTER_CHANNELS) {
+    if (excludeChannels.includes(ch)) continue;
     const def = encoding[ch];
     // An explicitly nominal/ordinal field is skipped (a real category value
     // has no "invalid" numeric reading to speak of) -- but a field with NO
@@ -463,7 +485,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     }
 
     if (invalidHandlingMode(root, child.mark) === 'filter') {
-      renderInvalidFilter(dataVar, collectInvalidFilterFields(encodingIn, child.transform)).forEach(b);
+      renderInvalidFilter(dataVar, collectInvalidFilterFields(encodingIn, child.transform, pathContinuityChannels(child.mark))).forEach(b);
     }
 
     const temporalFields = collectTemporalFields(encodingIn, child.transform || []);
@@ -493,7 +515,6 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
   // -- shared scales --
   const scales = {};
-  const zeroBaseline = prepared.some(p => isBarOrArea(p.mark));
 
   for (const channel of ['x', 'y']) {
     const def = prepared.map(p => p.encoding[channel]).find(Boolean);
@@ -532,6 +553,29 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     const combinedValuesExpr = needsCombining
       ? `[].concat(${declaringChildren.flatMap(valuesExprsFor).join(', ')})`
       : null;
+    // Whether *this* channel is some bar/area layer's own zero-anchored
+    // VALUE axis -- per-channel (not one flag shared across x and y), and
+    // only counting a layer where this is actually that layer's value
+    // axis (matching renderArea's own "xIsValue/yIsValue/horizontal"
+    // orientation convention, marks.js: y is the value axis unless x is
+    // quantitative and y isn't) with no explicit x2/y2 companion range of
+    // its own already (wheat_wages.vl.json's own binned `x`/`x2` bar
+    // layer, e.g., already has a real range on x -- forcing 0 into x's
+    // shared domain too, on the strength of that same layer's bar mark,
+    // squeezed the whole 1565-1820 chart into a sliver at the domain's
+    // far end instead of the bin edges alone bounding it. Naively
+    // excluding x from EVERY bar/area layer whenever it lacks its own
+    // x2/y2 -- rather than checking which axis is the value one -- would
+    // in turn wrongly exclude a plain, un-ranged area/bar's actual value
+    // axis too, e.g. this same spec's `area`-marked wages layer, which has
+    // no y2 either but still needs its own zero baseline).
+    const zeroBaseline = prepared.some(p => {
+      if (!isBarOrArea(p.mark) || !p.encoding[channel] || p.encoding[`${channel}2`]) return false;
+      const xIsValue = p.encoding.x && p.encoding.x.type === 'quantitative';
+      const yIsValue = p.encoding.y && p.encoding.y.type === 'quantitative';
+      const valueChannel = xIsValue && !yIsValue ? 'x' : 'y';
+      return channel === valueChannel;
+    });
     // A temporal field standing in as a bar/area's own *category* axis
     // (dodged/binned bars, one per distinct date) rather than its value
     // axis -- padded so the first/last bar isn't centered flush on the
@@ -669,13 +713,20 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
   // -- basic categorical color legend --
   if (scales.color && scales.color.kind === 'ordinal') {
+    // A cyclic-timeUnit color channel (prepare.js's `ordinalTimeUnit`, e.g.
+    // line_quarter_legend.vl.json's `color: {timeUnit: "quarter", ...}`)
+    // still holds real Date values, not display-ready strings -- shown as
+    // "Q1"/"Jan"/etc (cyclicLabelExpr(), timeunit.js) instead of a raw
+    // `Date.toString()`, matching Vega-Lite's own legend labels.
+    const colorDef = prepared.map(p => p.encoding.color).find(Boolean);
+    const labelExpr = colorDef && colorDef.ordinalTimeUnit ? cyclicLabelExpr(colorDef.ordinalTimeUnit, 'd') : null;
     b('{');
     b('  const legend = svg.append("g").attr("transform", `translate(${width - marginRight - 100},${marginTop})`);');
     b('  const entries = color.domain();');
     b('  const rows = legend.selectAll("g").data(entries).join("g")');
     b('      .attr("transform", (d, i) => `translate(0,${i * 16})`);');
     b('  rows.append("rect").attr("width", 10).attr("height", 10).attr("fill", d => color(d));');
-    b('  rows.append("text").attr("x", 14).attr("y", 9).attr("font-size", "10px").text(d => d);');
+    b(`  rows.append("text").attr("x", 14).attr("y", 9).attr("font-size", "10px").text(d => ${labelExpr || 'd'});`);
     b('}');
     lines.push('');
   }

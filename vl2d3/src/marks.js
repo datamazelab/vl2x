@@ -1060,14 +1060,23 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       lines.push(`    .attr("width", x.bandwidth())`);
     } else if (encoding.x && xAmbiguous) {
       lines.push(
-        `    .attr("x", d => ${x.isNominalVar} ? x(d[${JSON.stringify(encoding.x.field)}]) : Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`
+        `    .attr("x", d => ${x.isNominalVar} ? x(d[${JSON.stringify(encoding.x.field)}]) : x(d[${JSON.stringify(encoding.x.field)}]) - 2.5)`
       );
-      lines.push(
-        `    .attr("width", d => ${x.isNominalVar} ? x.bandwidth() : Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`
-      );
+      lines.push(`    .attr("width", d => ${x.isNominalVar} ? x.bandwidth() : 5)`);
     } else if (encoding.x) {
-      lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
-      lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+      // `x` here is only ever the *other*, non-stacked/ranged axis (`y2`
+      // already carries the real value range) -- a plain quantitative field
+      // standing in for a discrete category (e.g.
+      // bar_invalid_color_show_override.vl.json's `x: {field: "a", type:
+      // "quantitative"}`, values 1/2/3, with `y`/color doing the actual
+      // stacking), not a magnitude of its own. Vega-Lite's own
+      // `config.bar.continuousBandSize` (5px) fixed-width bar centered at
+      // each row's x position -- same convention the plain `encoding.x &&
+      // encoding.y` branch above uses -- not a zero-baseline-to-value bar
+      // (which drew one enormous, overlapping bar per row, spanning from
+      // x=0 out to each row's own x, instead of a normal-width column).
+      lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - 2.5)`);
+      lines.push(`    .attr("width", 5)`);
     } else {
       lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
       lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
@@ -1284,6 +1293,14 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const cy = y ? accessor(encoding.y, scales, 'y') : dims.centerYExpr;
   const sortField = x ? encoding.x.field : encoding.y.field;
   const groupField = seriesGroupField(encoding);
+  // The row-drop filter for x/y is deliberately skipped upstream for a
+  // "line" mark (see pathContinuityChannels(), translator.js) -- an
+  // invalid row is still IN `dataVar` here, and needs this `.defined()`
+  // clause so d3.line() breaks the path there instead of interpolating
+  // straight through a `NaN` coordinate (or, worse, silently reconnecting
+  // across the gap the way filtering the row out entirely would).
+  const definedClause = positionDefinedClause(encoding, ['x', 'y']);
+  const curve = curveClause(markProps, ignoreUnsupported);
   const lines = [];
 
   if (groupField) {
@@ -1296,7 +1313,7 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     lines.push(`  .join("path")`);
     lines.push(`    .attr("stroke", ([key]) => ${stroke})`);
     lines.push(
-      `    .attr("d", ([, rows]) => d3.line().x(d => ${cx}).y(d => ${cy})` +
+      `    .attr("d", ([, rows]) => d3.line()${definedClause}${curve}.x(d => ${cx}).y(d => ${cy})` +
         `(rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
     );
   } else {
@@ -1306,11 +1323,61 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     lines.push(`    .attr("stroke", ${stroke})`);
     lines.push(`    .attr("stroke-width", ${formatValue(simpleMarkProp(markProps.strokeWidth, 1.5, 'strokeWidth', ignoreUnsupported))}${markPropNote(markProps.strokeWidth, 'strokeWidth', ignoreUnsupported)})`);
     lines.push(
-      `    .attr("d", d3.line().x(d => ${cx}).y(d => ${cy})` +
+      `    .attr("d", d3.line()${definedClause}${curve}.x(d => ${cx}).y(d => ${cy})` +
         `(${dataVar}.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
     );
   }
   return singleAxisNote + lines.join('\n');
+}
+
+// A `.defined(d => ...)` clause (with a leading "." so it splices directly
+// into a d3.line()/d3.area() chain) checking every one of `channels`' own
+// source fields for null/NaN -- "" (no clause at all) when none of them
+// have a plain field reference to check (e.g. every position channel here
+// is a literal `value`, never invalid). Mirrors renderInvalidFilter()'s own
+// condition shape (translator.js) exactly, since this is checking for the
+// precise rows that filter deliberately left in `dataVar` instead of
+// dropping outright, for this mark's own x/y (or x/y/x2/y2) fields only.
+// Vega-Lite's `interpolate` mark property -> the equivalent d3-shape curve
+// factory. "monotone"/"basis"/"cardinal" each have separate X- and
+// Y-oriented d3 variants (curveMonotoneX vs curveMonotoneY, ...) -- this
+// project always draws along a horizontal-ish x axis (renderArea() itself
+// picks x as the "along" axis unless the chart is explicitly flipped, see
+// its own `horizontal` check), so the X variant is used uniformly rather
+// than threading orientation through here too; a spec that flips a line
+// mark's own along-axis to y is rare enough not to warrant it.
+const CURVE_FOR_INTERPOLATE = {
+  linear: 'curveLinear',
+  'linear-closed': 'curveLinearClosed',
+  step: 'curveStep',
+  'step-before': 'curveStepBefore',
+  'step-after': 'curveStepAfter',
+  basis: 'curveBasis',
+  'basis-open': 'curveBasisOpen',
+  'basis-closed': 'curveBasisClosed',
+  cardinal: 'curveCardinal',
+  'cardinal-open': 'curveCardinalOpen',
+  'cardinal-closed': 'curveCardinalClosed',
+  bundle: 'curveBundle',
+  monotone: 'curveMonotoneX',
+  natural: 'curveNatural',
+};
+
+// A `.curve(d3.curveXxx)` clause (leading "." so it splices directly into
+// a d3.line()/d3.area() chain) for `markProps.interpolate`, or "" (d3's own
+// default curveLinear) when absent/unrecognized/not a literal.
+function curveClause(markProps, ignoreUnsupported = false) {
+  const interpolate = simpleMarkProp(markProps.interpolate, undefined, 'interpolate', ignoreUnsupported);
+  const curve = interpolate && CURVE_FOR_INTERPOLATE[interpolate];
+  return curve ? `.curve(d3.${curve})` : '';
+}
+
+function positionDefinedClause(encoding, channels) {
+  const conds = channels
+    .map(ch => encoding[ch])
+    .filter(def => def && def.field)
+    .map(def => `d[${JSON.stringify(def.field)}] != null && !Number.isNaN(d[${JSON.stringify(def.field)}])`);
+  return conds.length ? `.defined(d => ${conds.join(' && ')})` : '';
 }
 
 function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
@@ -1359,9 +1426,15 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const lines = [];
   const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
 
+  // Same reasoning as renderLine()'s own `definedClause` -- x2/y2's own
+  // field (not a fixed `datum`/implicit-0 baseline, which is never
+  // invalid) is included too, since a broken baseline is just as much a
+  // path gap as a broken top edge.
+  const definedClause = positionDefinedClause(encoding, [alongChannel, valueChannel, `${valueChannel}2`]);
+  const curve = curveClause(markProps, ignoreUnsupported);
   const areaCall = horizontal
-    ? `d3.area().y(d => ${alongPos}).x0(d => ${valueBase}).x1(d => ${valueTop})`
-    : `d3.area().x(d => ${alongPos}).y0(d => ${valueBase}).y1(d => ${valueTop})`;
+    ? `d3.area()${definedClause}${curve}.y(d => ${alongPos}).x0(d => ${valueBase}).x1(d => ${valueTop})`
+    : `d3.area()${definedClause}${curve}.x(d => ${alongPos}).y0(d => ${valueBase}).y1(d => ${valueTop})`;
 
   if (groupField) {
     lines.push(`svg.append("g")`);

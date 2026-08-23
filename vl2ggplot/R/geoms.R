@@ -106,6 +106,46 @@ resolve_mark_prop_exprs <- function(mark_props, param_values) {
   mark_props
 }
 
+# Vega-Lite's point/circle/square/tick mark `size` is the marker's *area*
+# in px^2 (default 30) -- ggplot2's own `size` aesthetic for the same geoms
+# is a diameter-ish measurement in mm (`geom_point()` renders a symbol
+# `size * .pt` points across, where `.pt <- 72.27 / 25.4` is points-per-mm,
+# and a "point" (1/72.27 inch) is close enough to a px at the nominal
+# ~72dpi both Vega-Lite and ggsave() render at to treat as equivalent
+# here). Passing a raw Vega-Lite area value straight through as ggplot2's
+# `size`, as if the two units already matched, produces a wildly, unusably
+# oversized marker (e.g. stocks-2009-layered-line-point.vl.json's `size:
+# 60` swallows the entire plot panel) -- converted via the two shapes'
+# actual geometric relationship (`diameter = 2 * sqrt(area / pi)`) instead.
+.pt_per_mm <- 72.27 / 25.4
+
+vl_point_size_to_ggplot <- function(area) {
+  if (!is.numeric(area) || is.na(area) || area <= 0) return(area)
+  (2 * sqrt(area / pi)) / .pt_per_mm
+}
+
+# Same literal-vs-expr resolution as mark_scalar_value() below, but for the
+# `size` mark property specifically -- the numeric result (whether a plain
+# literal or a static expression) needs the area->ggplot2-size conversion
+# above; the "no static value, fall back to ggplot2's own default" case
+# does NOT (that fallback, "1.5", is already a ggplot2-native size, not a
+# Vega-Lite area needing conversion).
+mark_size_value <- function(value, ignore_unsupported = FALSE, .notes = NULL) {
+  if (is.list(value) && !is.null(value[["expr"]])) {
+    translated <- translate_expr(value[["expr"]])
+    if (grepl("^-?[0-9.]+$", translated)) return(format_value(vl_point_size_to_ggplot(as.numeric(translated))))
+    if (ignore_unsupported) {
+      .push_note(.notes, sprintf(
+        'unsupported mark property bound to a non-literal expression/signal ("%s"), using the default point size instead (ignore_unsupported)',
+        value[["expr"]]
+      ))
+      return("1.5")
+    }
+    stop(sprintf('Unsupported: mark property is bound to an expression/signal ("%s") with no static value', value[["expr"]]))
+  }
+  format_value(vl_point_size_to_ggplot(value))
+}
+
 mark_scalar_value <- function(value, default_literal, ignore_unsupported = FALSE, .notes = NULL) {
   if (is.list(value) && !is.null(value[["expr"]])) {
     translated <- translate_expr(value[["expr"]])
@@ -139,7 +179,7 @@ mark_fixed_params <- function(mark_props, mark_type, ignore_unsupported = FALSE,
     fixed[[stroke_width_aes]] <- mark_scalar_value(mark_props[["strokeWidth"]], "1", ignore_unsupported, .notes)
   }
   if (!is.null(mark_props[["size"]]) && !(mark_type %in% c("bar", "area", "line"))) {
-    fixed[["size"]] <- mark_scalar_value(mark_props[["size"]], "1.5", ignore_unsupported, .notes)
+    fixed[["size"]] <- mark_size_value(mark_props[["size"]], ignore_unsupported, .notes)
   }
   # A boxplot's `extent` picks how far the whiskers reach: "min-max" means
   # the true data min/max (no point is ever an outlier), while a bare

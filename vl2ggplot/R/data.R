@@ -194,26 +194,15 @@ render_data_load <- function(data, var_name, ignore_unsupported = FALSE) {
 
 render_temporal_coercion <- function(var_name, fields, subday_fields = character(0)) {
   if (length(fields) == 0) return(character(0))
-  formats <- format_value(as.list(.date_try_formats))
-  datetime_formats <- format_value(as.list(.datetime_try_formats))
+  # vl_parse_date()/vl_parse_datetime() (runtime.R, exported by this
+  # package) do the actual numeric-vs-string, tryFormats-list parsing --
+  # kept as plain function calls here (rather than inlined) so a chart with
+  # several temporal fields across several layers doesn't repeat that same
+  # multi-line, multi-format expression once per field.
   assigns <- vapply(fields, function(f) {
     ref <- field_ref(f)
-    # Vega-Lite (like JS) always represents a temporal field's raw numeric
-    # value as epoch *milliseconds*, not days -- as.Date()'s own numeric
-    # form expects days-since-origin, so this must convert first (and
-    # as.POSIXct()'s own numeric form already expects *seconds*, so that
-    # conversion is simpler).
-    if (f %in% subday_fields) {
-      sprintf(
-        "%s = if (is.numeric(%s)) as.POSIXct(%s / 1000, origin = \"1970-01-01\", tz = \"UTC\") else as.POSIXct(as.character(%s), tryFormats = %s, tz = \"UTC\")",
-        render_name(unescape_field_path(f)), ref, ref, ref, datetime_formats
-      )
-    } else {
-      sprintf(
-        "%s = if (is.numeric(%s)) as.Date(%s / 86400000, origin = \"1970-01-01\") else as.Date(as.character(%s), tryFormats = %s)",
-        render_name(unescape_field_path(f)), ref, ref, ref, formats
-      )
-    }
+    parse_fn <- if (f %in% subday_fields) "vl_parse_datetime" else "vl_parse_date"
+    sprintf("%s = %s(%s)", render_name(unescape_field_path(f)), parse_fn, ref)
   }, character(1))
   sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))
 }

@@ -50,7 +50,25 @@ export function planStacking(mark, encoding) {
     const offsetChannel = categoryChannel === 'x' ? 'xOffset' : 'yOffset';
     if (encoding[offsetChannel] && encoding[offsetChannel].field) continue;
     const mode = posDef.stack === 'normalize' ? 'normalize' : posDef.stack === 'center' ? 'center' : 'zero';
-    return {posChannel, categoryField: categoryDef.field, groupField: encoding[groupChannel].field, valueField: posDef.field, mode};
+    // The category axis's own companion range (e.g. a binned x's `x2`,
+    // repeat_histogram.vl.json's own `bin1_Horsepower`) -- distinct from
+    // the value axis's `${posChannel}2` excluded above, and carried
+    // through here (rather than left for renderStackingStatements() to
+    // rediscover) so a densified/filled-in row (a category+group
+    // combination with no real data, see renderStackingStatements()) can
+    // still be given the right bin-end value instead of leaving it
+    // `undefined` -- every OTHER row on that same category already has
+    // the same bin1, since bin edges are a property of the category value
+    // itself, not of which group happens to have data there.
+    const categoryDef2 = encoding[`${categoryChannel}2`];
+    return {
+      posChannel,
+      categoryField: categoryDef.field,
+      categoryField2: categoryDef2 && categoryDef2.field,
+      groupField: encoding[groupChannel].field,
+      valueField: posDef.field,
+      mode,
+    };
   }
   return null;
 }
@@ -62,7 +80,7 @@ export function planStacking(mark, encoding) {
 // stack totals/heights are correct regardless of layer order), and attach
 // a baseline+top pair of new fields per row.
 export function renderStackingStatements(dataVar, plan) {
-  const {categoryField, groupField, valueField, mode} = plan;
+  const {categoryField, categoryField2, groupField, valueField, mode} = plan;
   const stack0 = `${valueField}_stack0`;
   const stack1 = `${valueField}_stack1`;
   const scaleLine =
@@ -72,6 +90,36 @@ export function renderStackingStatements(dataVar, plan) {
         ? `      return {...d, ${JSON.stringify(stack0)}: y0 - total / 2, ${JSON.stringify(stack1)}: y1 - total / 2};`
         : `      return {...d, ${JSON.stringify(stack0)}: y0, ${JSON.stringify(stack1)}: y1};`;
   return [
+    // Real-world grouped data is commonly *sparse*: not every (category,
+    // group) combination actually has a row (e.g.
+    // stacked_area_ordinal.vl.json's own `Cylinders` count didn't exist in
+    // every single `Year`) -- stacking only the rows that happen to exist
+    // for each category would then give that category fewer/differently-
+    // ordered stack slots than its neighbors, and since each *group*'s own
+    // area/bar is drawn as one continuous shape across every category it
+    // has a row for, a neighboring category with one more/fewer group
+    // present shifts that shape's baseline out from under its neighbor's
+    // top edge -- a visibly broken, gapped stack instead of a smooth one.
+    // Filled in with an explicit 0 for every category/group pair missing
+    // one, before grouping+summing below, so every category always stacks
+    // the exact same full set of groups (in the same sorted order).
+    `${dataVar} = (() => {`,
+    `  const __cats = Array.from(new d3.InternSet(${dataVar}.map(d => d[${JSON.stringify(categoryField)}])));`,
+    `  const __groups = Array.from(new d3.InternSet(${dataVar}.map(d => d[${JSON.stringify(groupField)}])));`,
+    `  const __present = new Set(${dataVar}.map(d => JSON.stringify([d[${JSON.stringify(categoryField)}], d[${JSON.stringify(groupField)}]])));`,
+    // A filled row's own category-companion value (e.g. a binned x's own
+    // `x2`) is looked up from any real row sharing that same category
+    // value, rather than left unset -- every row on a given category
+    // already has the same bin end regardless of which group it's for.
+    ...(categoryField2
+      ? [
+          `  const __cat2 = new d3.InternMap(${dataVar}.map(d => [d[${JSON.stringify(categoryField)}], d[${JSON.stringify(categoryField2)}]]));`,
+        ]
+      : []),
+    `  const __filled = [];`,
+    `  for (const __c of __cats) for (const __g of __groups) if (!__present.has(JSON.stringify([__c, __g]))) __filled.push({${JSON.stringify(categoryField)}: __c, ${JSON.stringify(groupField)}: __g, ${JSON.stringify(valueField)}: 0${categoryField2 ? `, ${JSON.stringify(categoryField2)}: __cat2.get(__c)` : ''}});`,
+    `  return [...${dataVar}, ...__filled];`,
+    `})();`,
     `${dataVar} = Array.from(d3.group(${dataVar}, d => d[${JSON.stringify(categoryField)}]), ([, rows]) => {`,
     `    rows = rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(groupField)}], b[${JSON.stringify(groupField)}]));`,
     `    const total = d3.sum(rows, d => d[${JSON.stringify(valueField)}]);`,

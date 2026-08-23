@@ -15,7 +15,49 @@
 // rather than emitting incorrect numbers.
 
 import {isSupportedAggregateOp, aggregateExpr} from './aggops.js';
-import {isSupportedTimeUnit, timeUnitExpr} from './timeunit.js';
+import {isSupportedTimeUnit, timeUnitExpr, isCyclicTimeUnit} from './timeunit.js';
+
+// True position channels (as opposed to `color`/`size`/etc, which also
+// live in POSITION_LIKE below purely so prepare.js drives their aggregate
+// grouping too) -- kept a continuous time scale even for a cyclic timeUnit,
+// since a band/point x/y axis of raw Date values (with no per-channel tick
+// re-formatting) would just show ugly, un-labeled ticks. Only a
+// *non*-positional channel's field `type` is downgraded to "ordinal" for a
+// cyclic timeUnit below (see timeUnitFieldType()) -- exactly where
+// Vega-Lite's own default scale-type inference switches from time to
+// ordinal/discrete for such a field (e.g. line_quarter_legend.vl.json's
+// `color` channel gets 4 discrete Q1-Q4 swatches, not a blue gradient, and
+// needs `type: "ordinal"` here so both resolveColorScale() and
+// seriesGroupField() (scales.js/marks.js) treat it as the discrete,
+// line-splitting field it actually is instead of a non-groupable continuum).
+const TRUE_POSITION_CHANNELS = ['x', 'y', 'x2', 'y2', 'xOffset', 'yOffset', 'theta', 'theta2', 'radius', 'radius2'];
+
+// An explicit non-"temporal" type (e.g. a deliberate "nominal" override) is
+// always respected as-is; otherwise (no type given, or the field's own
+// "temporal" type -- which doesn't by itself pin the *scale* to continuous
+// time in real Vega-Lite either) the cyclic-timeUnit-on-a-non-positional-
+// channel downgrade above applies.
+function timeUnitFieldType(channel, def) {
+  if (def.type && def.type !== 'temporal') return def.type;
+  return !TRUE_POSITION_CHANNELS.includes(channel) && isCyclicTimeUnit(def.timeUnit) ? 'ordinal' : 'temporal';
+}
+
+// Sets `rewritten[channel]`'s `type` (via timeUnitFieldType() above) and
+// removes the now-consumed `timeUnit`, same as every other timeUnit-derived
+// channel -- but when the ordinal downgrade actually applied, also keeps
+// the original timeUnit name around under `ordinalTimeUnit` (a normal
+// field would never have this property) so a later ordinal-domain
+// consumer -- currently just the color legend, translator.js -- can still
+// format its (real Date-valued) domain entries as "Q1"/"Q2"/... instead of
+// a raw `Date.toString()`, without needing to separately re-derive
+// "was this cyclic" from a `type: "ordinal"` field that could just as
+// easily be a genuinely nominal string field instead.
+function applyTimeUnitType(rewritten, channel, def) {
+  const type = timeUnitFieldType(channel, def);
+  rewritten[channel].type = type;
+  if (type === 'ordinal' && def.timeUnit) rewritten[channel].ordinalTimeUnit = def.timeUnit;
+  delete rewritten[channel].timeUnit;
+}
 
 // Turn an arbitrary field name (which may contain spaces, punctuation, or
 // start with a digit) into a valid, dataVar-scoped-unique JS identifier for
@@ -111,12 +153,12 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
     statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${assigns.join(', ')}}));`);
     for (const [channel, def, outField] of mapEntries) {
       rewritten[channel] = {...def, field: outField};
+      delete rewritten[channel].bin;
       // A timeUnit-derived field is a real Date object; a bin-derived one is
       // numeric (quantitative) -- Vega-Lite infers `type` the same way when
       // it's not given explicitly, so only fill it in when absent.
-      if (!def.type) rewritten[channel].type = def.timeUnit ? 'temporal' : 'quantitative';
-      delete rewritten[channel].bin;
-      delete rewritten[channel].timeUnit;
+      if (def.timeUnit) applyTimeUnitType(rewritten, channel, def);
+      else rewritten[channel].type = def.type || 'quantitative';
     }
     return {statements, encoding: rewritten};
   }
@@ -139,23 +181,31 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
   // From here on, at least one channel aggregates -- the data is being
   // summarized down to one row per group (or a single row if there's no
   // grouping channel at all).
-  const binGroupConflict =
-    binChannels.length > 1 || (binChannels.length === 1 && (plainGroupChannels.length > 0 || timeUnitOnlyChannels.length > 0));
-  if (binGroupConflict) {
+  if (binChannels.length > 1) {
     if (!ignoreUnsupported) {
-      throw new Error(
-        'Unsupported: binning combined with additional groupby channels is not yet supported'
-      );
+      throw new Error('Unsupported: binning more than one channel (outside the 2D-histogram case above) is not yet supported');
     }
     // Keep just the first binned channel and drop every other groupby
     // channel -- a plain histogram of that one field, rather than nothing.
-    binChannels.length = Math.min(binChannels.length, 1);
+    binChannels.length = 1;
     plainGroupChannels.length = 0;
     timeUnitOnlyChannels.length = 0;
   }
 
   if (binChannels.length === 1) {
-    return prepareHistogram(binChannels[0], aggChannels, dataVar, rewritten, ignoreUnsupported);
+    // 1 binned channel plus up to 2 extra plain/timeUnit groupby channels
+    // (e.g. stacked_area_binned.vl.json's `color: {field: "Major Genre"}`
+    // alongside its own `x: {bin: true, ...}`) -- same "0-2 groupby
+    // channels" scope prepareHistogram()'s own non-binned sibling below
+    // allows, now honored here too instead of silently dropped.
+    let histogramGroupChannels = [...plainGroupChannels, ...timeUnitOnlyChannels];
+    if (histogramGroupChannels.length > 2) {
+      if (!ignoreUnsupported) {
+        throw new Error('Unsupported: binning combined with more than 2 additional groupby channels is not yet supported');
+      }
+      histogramGroupChannels = histogramGroupChannels.slice(0, 2);
+    }
+    return prepareHistogram(binChannels[0], aggChannels, dataVar, rewritten, ignoreUnsupported, histogramGroupChannels);
   }
 
   let groupChannels = [...plainGroupChannels, ...timeUnitOnlyChannels];
@@ -214,8 +264,7 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
         `([key, vals]) => ({${JSON.stringify(outField)}: key, ...vals}));`
     );
     rewritten[channel] = {...def, field: outField};
-    if (def.timeUnit && !def.type) rewritten[channel].type = 'temporal';
-    delete rewritten[channel].timeUnit;
+    if (def.timeUnit) applyTimeUnitType(rewritten, channel, def);
   } else {
     const [[channel1, def1], [channel2, def2]] = groupChannels;
     const outField1 = def1.timeUnit ? outFieldName(def1.field, def1.timeUnit) : def1.field;
@@ -227,11 +276,9 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
         `({${JSON.stringify(outField1)}: k1, ${JSON.stringify(outField2)}: k2, ...vals}))).flat();`
     );
     rewritten[channel1] = {...def1, field: outField1};
-    if (def1.timeUnit && !def1.type) rewritten[channel1].type = 'temporal';
-    delete rewritten[channel1].timeUnit;
+    if (def1.timeUnit) applyTimeUnitType(rewritten, channel1, def1);
     rewritten[channel2] = {...def2, field: outField2};
-    if (def2.timeUnit && !def2.type) rewritten[channel2].type = 'temporal';
-    delete rewritten[channel2].timeUnit;
+    if (def2.timeUnit) applyTimeUnitType(rewritten, channel2, def2);
   }
 
   for (const {channel, def, outField} of valueAssigns) {
@@ -296,7 +343,7 @@ function prepare2DHistogram(xyBinChannels, aggChannels, dataVar, rewritten) {
   return {statements, encoding: rewritten};
 }
 
-function prepareHistogram([channel, def], aggChannels, dataVar, rewritten, ignoreUnsupported = false) {
+function prepareHistogram([channel, def], aggChannels, dataVar, rewritten, ignoreUnsupported = false, groupChannels = []) {
   const statements = [];
   const field = def.field;
   const thresholds = typeof def.bin === 'object' && def.bin.maxbins ? def.bin.maxbins : 20;
@@ -305,18 +352,65 @@ function prepareHistogram([channel, def], aggChannels, dataVar, rewritten, ignor
     `const ${binsVar} = d3.bin().value(d => d[${JSON.stringify(field)}]).thresholds(${thresholds})(${dataVar});`
   );
 
-  const valueAssigns = aggChannels.map(([, adef]) => {
-    const outField = adef.aggregate === 'count' ? 'count' : outFieldName(adef.field, adef.aggregate);
-    const accessor = adef.field ? `d => d[${JSON.stringify(adef.field)}]` : undefined;
-    return {outField, code: aggregateExpr(adef.aggregate, 'bin', accessor, ignoreUnsupported)};
-  });
-  const valueObjectCode = valueAssigns.map(v => `${JSON.stringify(v.outField)}: ${v.code}`).join(', ');
-
   const outField0 = outFieldName(field, 'bin0');
   const outField1 = outFieldName(field, 'bin1');
-  statements.push(
-    `${dataVar} = ${binsVar}.map(bin => ({${JSON.stringify(outField0)}: bin.x0, ${JSON.stringify(outField1)}: bin.x1, ${valueObjectCode}}));`
-  );
+
+  if (groupChannels.length === 0) {
+    const valueAssigns = aggChannels.map(([, adef]) => {
+      const outField = adef.aggregate === 'count' ? 'count' : outFieldName(adef.field, adef.aggregate);
+      const accessor = adef.field ? `d => d[${JSON.stringify(adef.field)}]` : undefined;
+      return {outField, code: aggregateExpr(adef.aggregate, 'bin', accessor, ignoreUnsupported)};
+    });
+    const valueObjectCode = valueAssigns.map(v => `${JSON.stringify(v.outField)}: ${v.code}`).join(', ');
+    statements.push(
+      `${dataVar} = ${binsVar}.map(bin => ({${JSON.stringify(outField0)}: bin.x0, ${JSON.stringify(outField1)}: bin.x1, ${valueObjectCode}}));`
+    );
+  } else {
+    // 1-2 extra plain/timeUnit groupby channels alongside the bin (e.g.
+    // stacked_area_binned.vl.json's own `color: {field: "Major Genre"}`,
+    // stacking each rating bin by genre) -- each bin's own member rows are
+    // further grouped by those channel(s), same nested-rollup shape the
+    // plain (non-binned) N-groupby-channel aggregate path below uses,
+    // just run once per bin instead of once over the whole dataset.
+    // Previously any extra groupby channel here was simply dropped
+    // (documented as unsupported), which silently collapsed every bin's
+    // sub-groups into one combined row -- a stacked/grouped chart with
+    // only one (wrong-totaled) series instead of one per group.
+    const valueAssigns = aggChannels.map(([, adef]) => {
+      const outField = adef.aggregate === 'count' ? 'count' : outFieldName(adef.field, adef.aggregate);
+      const accessor = adef.field ? `d => d[${JSON.stringify(adef.field)}]` : undefined;
+      return {outField, code: aggregateExpr(adef.aggregate, 'rows', accessor, ignoreUnsupported)};
+    });
+    const valueObjectCode = `{${valueAssigns.map(v => `${JSON.stringify(v.outField)}: ${v.code}`).join(', ')}}`;
+    const keyExprFor = gdef =>
+      gdef.timeUnit ? timeUnitExpr(gdef.timeUnit, `d[${JSON.stringify(gdef.field)}]`, ignoreUnsupported) : `d[${JSON.stringify(gdef.field)}]`;
+
+    if (groupChannels.length === 1) {
+      const [gChannel, gDef] = groupChannels[0];
+      const gOutField = gDef.timeUnit ? outFieldName(gDef.field, gDef.timeUnit) : gDef.field;
+      statements.push(
+        `${dataVar} = ${binsVar}.flatMap(bin => Array.from(` +
+          `d3.rollup(bin, rows => (${valueObjectCode}), d => ${keyExprFor(gDef)}), ` +
+          `([key, vals]) => ({${JSON.stringify(outField0)}: bin.x0, ${JSON.stringify(outField1)}: bin.x1, ${JSON.stringify(gOutField)}: key, ...vals})));`
+      );
+      rewritten[gChannel] = {...gDef, field: gOutField};
+      if (gDef.timeUnit) applyTimeUnitType(rewritten, gChannel, gDef);
+    } else {
+      const [[gChannel1, gDef1], [gChannel2, gDef2]] = groupChannels;
+      const gOutField1 = gDef1.timeUnit ? outFieldName(gDef1.field, gDef1.timeUnit) : gDef1.field;
+      const gOutField2 = gDef2.timeUnit ? outFieldName(gDef2.field, gDef2.timeUnit) : gDef2.field;
+      statements.push(
+        `${dataVar} = ${binsVar}.flatMap(bin => Array.from(` +
+          `d3.rollup(bin, rows => (${valueObjectCode}), d => ${keyExprFor(gDef1)}, d => ${keyExprFor(gDef2)}), ` +
+          `([k1, inner]) => Array.from(inner, ([k2, vals]) => ` +
+          `({${JSON.stringify(outField0)}: bin.x0, ${JSON.stringify(outField1)}: bin.x1, ${JSON.stringify(gOutField1)}: k1, ${JSON.stringify(gOutField2)}: k2, ...vals}))).flat());`
+      );
+      rewritten[gChannel1] = {...gDef1, field: gOutField1};
+      if (gDef1.timeUnit) applyTimeUnitType(rewritten, gChannel1, gDef1);
+      rewritten[gChannel2] = {...gDef2, field: gOutField2};
+      if (gDef2.timeUnit) applyTimeUnitType(rewritten, gChannel2, gDef2);
+    }
+  }
 
   rewritten[channel] = {...def, field: outField0};
   delete rewritten[channel].bin;

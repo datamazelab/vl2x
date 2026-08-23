@@ -1,3 +1,5 @@
 export(vegalite_to_ggplot)
+export(vl_parse_date)
+export(vl_parse_datetime)
 export(vl_pivot)
 export(vl_truthy)

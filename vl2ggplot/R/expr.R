@@ -428,14 +428,204 @@ rewrite_is_valid_calls <- function(s) {
   rewrite_is_valid_calls(rewritten)
 }
 
+# Operators with LOWER precedence than JS/Vega's `%` (which binds exactly
+# like `*`/`/`) -- a depth-0 occurrence of any of these between the start
+# of `s`/the previous such boundary and a `%` means that boundary, not the
+# start of `s`, is where `%`'s own left operand actually begins (and
+# likewise the next one going right is where its right operand ends).
+# Spelled in their *already-rewritten* R form (`&`/`|`, plain `==`/`!=`),
+# not the original JS one (`&&`/`||`/`===`/`!==`) -- rewrite_modulo() runs
+# near the very end of translate_expr(), after those upstream rewrites
+# have already run, so the JS spellings never actually occur in `s` by
+# this point (kept in the list too, harmlessly, in case that ordering ever
+# changes). Checked longest-first so e.g. "<=" isn't shadowed by matching
+# just "<" first.
+.MODULO_BOUNDARY_TOKENS <- c("&&", "||", "===", "!==", "==", "!=", "<=", ">=", "<", ">", "&", "|", ",", "?", ":")
+
+# Every depth-0 occurrence of any token in `tokens`, as a list of
+# `list(start, end)` character positions (both inclusive) -- same
+# quote/paren-aware scan as .find_top_level_char, generalized to
+# multi-character tokens.
+.find_top_level_tokens <- function(s, tokens) {
+  n <- nchar(s)
+  depth <- 0
+  in_quote <- FALSE
+  quote_char <- ""
+  hits <- list()
+  i <- 1
+  while (i <= n) {
+    ch <- substr(s, i, i)
+    if (in_quote) {
+      if (ch == quote_char) in_quote <- FALSE
+      i <- i + 1
+      next
+    }
+    if (ch %in% c("'", '"')) {
+      in_quote <- TRUE
+      quote_char <- ch
+      i <- i + 1
+      next
+    }
+    if (ch %in% c("(", "[")) {
+      depth <- depth + 1
+      i <- i + 1
+      next
+    }
+    if (ch %in% c(")", "]")) {
+      depth <- depth - 1
+      i <- i + 1
+      next
+    }
+    if (depth == 0) {
+      hit_len <- NULL
+      for (tok in tokens) {
+        tl <- nchar(tok)
+        if (i + tl - 1 <= n && substr(s, i, i + tl - 1) == tok) {
+          hit_len <- tl
+          break
+        }
+      }
+      if (!is.null(hit_len)) {
+        hits[[length(hits) + 1]] <- list(start = i, end = i + hit_len - 1)
+        i <- i + hit_len
+        next
+      }
+    }
+    i <- i + 1
+  }
+  hits
+}
+
+# JS/Vega's unary `+` coerces its immediate operand to a number -- a common
+# "make sure this is numeric" idiom for a field that might arrive from raw
+# (often all-string) JSON/CSV data (e.g. wheat_wages.vl.json's own
+# `+datum.year + 5`, `+datum.start + (+datum.end - +datum.start)/2`). R's
+# own unary `+` has no such effect -- applying it to a character vector
+# errors outright ("invalid argument to unary operator") -- so every
+# UNARY (not binary) `+` is rewritten into an explicit `as.numeric(...)`
+# call around its own immediate operand instead. Run after the identifier
+# rewrite above, so `datum.field` has already become a plain (possibly
+# backtick-quoted) field reference -- a single simple token whose extent is
+# easy to detect. A `+` is unary whenever the nearest preceding
+# non-whitespace character is "start of string" or itself an operator/`(`/
+# `,`/etc -- anything that means "an operand is expected next" -- as
+# opposed to following an identifier/number/`)`/`]`/backtick (a real
+# value already sits there), which means it's binary addition instead.
+rewrite_unary_plus <- function(s) {
+  n <- nchar(s)
+  chars <- strsplit(s, "")[[1]]
+  out <- character(n)
+  i <- 1
+  out_i <- 0
+  in_quote <- FALSE
+  quote_char <- ""
+  last_significant <- ""
+  # `]` listed first in the class (POSIX bracket-expression convention for
+  # a literal `]` member -- `\]` is NOT an escape inside `[...]` here, it's
+  # a literal backslash immediately followed by a class-closing `]`). `'`/
+  # `"` count as a value char too: a closed string literal (e.g. `'...' +
+  # datum.x`, a common concatenation pattern) is also a real value, and
+  # `last_significant` is left holding the *opening* quote character for
+  # as long as a string is being copied through verbatim below (nothing
+  # updates it again until the string closes), which is otherwise
+  # indistinguishable from "no value seen yet".
+  is_value_char <- function(ch) ch %in% c("'", '"') || grepl("[]A-Za-z0-9_.$)`]", ch)
+  emit <- function(txt) {
+    out_i <<- out_i + 1
+    out[out_i] <<- txt
+  }
+  while (i <= n) {
+    ch <- chars[i]
+    if (in_quote) {
+      emit(ch)
+      if (ch == quote_char) in_quote <- FALSE
+      i <- i + 1
+      next
+    }
+    if (ch %in% c("'", '"')) {
+      in_quote <- TRUE
+      quote_char <- ch
+      emit(ch)
+      last_significant <- ch
+      i <- i + 1
+      next
+    }
+    if (ch == "+" && !(nzchar(last_significant) && is_value_char(last_significant))) {
+      j <- i + 1
+      while (j <= n && chars[j] %in% c(" ", "\t")) j <- j + 1
+      operand_start <- j
+      if (j <= n && chars[j] == "`") {
+        j <- j + 1
+        while (j <= n && chars[j] != "`") j <- j + 1
+        j <- min(j + 1, n + 1)
+      } else if (j <= n && chars[j] == "(") {
+        depth <- 1
+        j <- j + 1
+        while (j <= n && depth > 0) {
+          if (chars[j] == "(") depth <- depth + 1
+          if (chars[j] == ")") depth <- depth - 1
+          j <- j + 1
+        }
+      } else {
+        while (j <= n && grepl("[A-Za-z0-9_.$]", chars[j])) j <- j + 1
+      }
+      if (j > operand_start) {
+        operand <- paste(chars[operand_start:(j - 1)], collapse = "")
+        emit(sprintf("as.numeric(%s)", operand))
+        last_significant <- ")"
+        i <- j
+        next
+      }
+    }
+    emit(ch)
+    if (!ch %in% c(" ", "\t", "\n")) last_significant <- ch
+    i <- i + 1
+  }
+  paste(out[seq_len(out_i)], collapse = "")
+}
+
 # JS/Vega's `%` is modulo (like R's `%%`, which R itself spells with two
 # percent signs); a bare `%` is otherwise never valid R syntax.
 rewrite_modulo <- function(s) {
   pos <- .find_top_level_char(s, "%")
-  if (is.na(pos)) return(s)
-  lhs <- trimws(substr(s, 1, pos - 1))
-  rhs <- trimws(substr(s, pos + 1, nchar(s)))
-  sprintf("(%s) %%%% (%s)", lhs, rewrite_modulo(rhs))
+  if (!is.na(pos)) {
+    # `%`'s own operand span is only the text back to the nearest lower-
+    # precedence boundary (or the start/end of `s`), NOT the whole string
+    # either side -- e.g. `!commonwealth && index % 2`: the left operand is
+    # just `index`, not `!commonwealth && index` (`&&` binds looser than
+    # `%` in JS, so swallowing it too would silently change what the
+    # expression computes, not just how it's spelled).
+    boundaries <- .find_top_level_tokens(s, .MODULO_BOUNDARY_TOKENS)
+    lhs_from <- 1
+    for (b in boundaries) if (b$end < pos) lhs_from <- max(lhs_from, b$end + 1)
+    rhs_to <- nchar(s)
+    for (b in boundaries) if (b$start > pos) rhs_to <- min(rhs_to, b$start - 1)
+    lhs <- trimws(substr(s, lhs_from, pos - 1))
+    rhs <- trimws(substr(s, pos + 1, rhs_to))
+    before <- substr(s, 1, lhs_from - 1)
+    after <- substr(s, rhs_to + 1, nchar(s))
+    return(paste0(before, sprintf("(%s) %%%% (%s)", lhs, rewrite_modulo(rhs)), rewrite_modulo(after)))
+  }
+  # No BARE top-level `%` -- but it very commonly sits inside its own
+  # grouping parens for precedence, or nested inside some other construct's
+  # own parens entirely (e.g. wheat_wages.vl.json's own `((!datum.a &&
+  # datum.b % 2) ? -1 : 1) * 2 + 95`, where `%` is two parens deep, inside
+  # a ternary's own condition -- `%` sits at depth 2, not 0, so the check
+  # above never finds it). Recurse into each top-level paren group's own
+  # inner content instead, same strategy as translate_ternary() above; text
+  # outside every group is left untouched (if it held a bare `%`, the check
+  # above would already have found it).
+  groups <- .find_top_level_groups(s)
+  if (length(groups) == 0) return(s)
+  result <- ""
+  pos <- 1
+  for (g in groups) {
+    result <- paste0(result, substr(s, pos, g$open))
+    inner <- substr(s, g$open + 1, g$close - 1)
+    result <- paste0(result, rewrite_modulo(inner), ")")
+    pos <- g$close + 1
+  }
+  paste0(result, substr(s, pos, nchar(s)))
 }
 
 .find_matching_colon <- function(s) {
@@ -514,6 +704,8 @@ translate_expr <- function(expr) {
     if (m %in% names(.math_rename) && !is.na(.math_rename[[m]])) return(.math_rename[[m]])
     m
   }, perl = TRUE)
+
+  out <- rewrite_unary_plus(out)
 
   # random() takes no arguments in JS/Vega but runif() requires a count.
   out <- gsub("stats::runif\\(\\s*\\)", "stats::runif(1)", out)

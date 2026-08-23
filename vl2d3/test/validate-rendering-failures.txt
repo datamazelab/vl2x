@@ -1,5 +1,3 @@
-===== area_invalid_null.vl.json [NaN geometry: 1 shape(s), tags=path] =====
-
 ===== area_ranged_offset_quantitative.vl.json [NaN geometry: 2 shape(s), tags=path] =====
 
 ===== bar_grouped_thin.vl.json [NaN geometry: 880 shape(s), tags=rect] =====
@@ -10,17 +8,9 @@
 
 ===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
-===== line_color_binned.vl.json [NaN geometry: 17 shape(s), tags=path] =====
-
-===== line_color_halo.vl.json [NaN geometry: 2 shape(s), tags=path] =====
-
-===== line_invalid_null.vl.json [NaN geometry: 1 shape(s), tags=path] =====
-
 ===== point_ordinal_bin_offset_random.vl.json [NaN geometry: 1 shape(s), tags=circle] =====
 
 ===== rect_params.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
-
-===== repeat_layer.vl.json [NaN geometry: 1 shape(s), tags=path] =====
 
 ===== geo_graticule.vl.json [zero shapes] =====
 import * as d3 from "d3";

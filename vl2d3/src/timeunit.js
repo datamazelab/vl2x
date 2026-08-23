@@ -81,6 +81,52 @@ export function isSupportedTimeUnit(unit) {
   return normalize(unit) in local;
 }
 
+// A "cyclic" timeUnit (see the block comment above `local`) collapses every
+// year down to the same handful of buckets (e.g. "quarter" -> Q1-Q4) --
+// Vega-Lite defaults such a field's *scale* to ordinal/discrete rather than
+// a continuous time scale, even though its field `type` is still
+// "temporal" (e.g. line_quarter_legend.vl.json's `color: {field: "date",
+// type: "temporal", timeUnit: "quarter"}` still gets 4 discrete Q1-Q4
+// legend swatches, not a continuous blue gradient). A unit that includes
+// "year" (the bare `"year"` unit itself, or a multi-part `"year..."` combo
+// like `"yearmonth"`/`"yearquarter"`) is monotonic instead -- real elapsed
+// time, correctly a continuous time scale.
+export function isCyclicTimeUnit(unit) {
+  const key = normalize(unit);
+  return typeof key === 'string' && key in local && key !== 'year' && !key.startsWith('year');
+}
+
+// Vega-Lite's own default short label for one bucket of a cyclic timeUnit
+// (e.g. "Q1", "Jan", "Wed") -- used wherever a cyclic-timeUnit'd field's
+// (real Date, per `local` above) value is displayed as a discrete category
+// rather than plotted along a continuous time axis (currently just the
+// color-legend swatches built for an ordinal-downgraded color channel --
+// see prepare.js's `ordinalTimeUnit`). Only the Date-valued cyclic units
+// need an entry here -- `day`/`dayofyear` already produce a plain number
+// (see `local` above), which every such caller already falls back to
+// displaying as-is.
+const CYCLIC_LABEL_FORMAT = {
+  quarter: null, // handled specially below -- d3.timeFormat has no quarter directive
+  month: '%b',
+  date: '%-d',
+  hours: '%-I %p',
+  minutes: ':%M',
+  seconds: ':%S',
+  monthdate: '%b %-d',
+};
+
+// `dateExpr` is a JS expression (already known to evaluate to a real Date
+// at runtime) for one bucket of `unit`; returns a JS expression string
+// producing its display label, or null if this unit has no special label
+// (the generic `String(...)` fallback every caller already uses otherwise
+// suffices, e.g. for a unit not in `CYCLIC_LABEL_FORMAT` at all).
+export function cyclicLabelExpr(unit, dateExpr) {
+  const key = normalize(unit);
+  if (key === 'quarter') return `"Q" + (Math.floor((${dateExpr}).getMonth() / 3) + 1)`;
+  const pattern = CYCLIC_LABEL_FORMAT[key];
+  return pattern ? `d3.timeFormat(${JSON.stringify(pattern)})(${dateExpr})` : null;
+}
+
 export function timeUnitExpr(unit, dateExpr, ignoreUnsupported = false) {
   const key = normalize(unit);
   const fn = local[key];
