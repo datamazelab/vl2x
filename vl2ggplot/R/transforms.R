@@ -462,7 +462,7 @@ plan_2d_bin <- function(mark_type, encoding, agg_keys) {
 }
 
 # Returns list(statements, encoding, extra_fixed, extra_aes, use_histogram).
-plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0)) {
+plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), has_dodge = FALSE) {
   keys <- channel_entries(encoding)
   .arc_theta_radius <- c("theta", "theta2", "radius", "radius2")
   if (mark_type != "arc") {
@@ -693,6 +693,41 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
   # that also needs the explicit dplyr path instead.
   if (length(agg_keys) == 1 && length(group_keys) > 0 && mark_type != "rule" && agg_keys %in% c("x", "y")) {
     op <- encoding[[agg_keys]]$aggregate
+    # A stackable mark (bar/area) with a fill/colour-driven implicit stack
+    # (Vega-Lite's own default whenever a color/detail/opacity channel is
+    # present alongside an aggregated position) needs the DENSIFIED
+    # pre-aggregation path below instead of stat_summary()/stat_count()'s
+    # own on-the-fly grouping -- see plan_explicit_aggregate()'s
+    # `densify_channels` doc comment for why. Only the exact "one position
+    # category channel + one stack-group channel" shape (mirroring
+    # vl2d3's own planStacking(), stack.js) is recognized -- any other
+    # groupby combination (e.g. a genuine 2-field breakdown with no
+    # color/detail/opacity channel at all) has no implicit ggplot2
+    # stacking to go wrong in the first place, so it's left on the
+    # cheaper native-stat path.
+    position_channel <- setdiff(c("x", "y"), agg_keys)
+    stack_channel <- if (position_channel %in% group_keys) setdiff(group_keys, position_channel) else NULL
+    # A dodge channel (xOffset/yOffset, already stripped from `encoding`
+    # itself by the caller -- see `has_dodge`'s own doc there) needs the
+    # *raw*, un-collapsed data (its own field is mapped directly in aes(),
+    # same as any other passenger column stat_summary()'s on-the-fly
+    # grouping leaves alone) -- densify_channels' own
+    # dplyr::group_by()+summarise() would collapse it away entirely
+    # (bar_grouped_stacked.vl.json's own `xOffset: {field: "Origin"}`, e.g.,
+    # alongside its `x`/`color` stack), so a dodged+stacked chart stays on
+    # the native-stat path below instead.
+    is_implicit_stack <- mark_type %in% c("bar", "area") && length(stack_channel) == 1 &&
+      stack_channel %in% c("color", "detail", "opacity") && !has_dodge
+    if (is_implicit_stack) {
+      plan <- plan_explicit_aggregate(
+        encoding, agg_keys, group_keys, var_name, ignore_unsupported, facet_group_fields,
+        densify_channels = c(position_channel, stack_channel),
+        center_stack = identical(encoding[[agg_keys]]$stack, "center")
+      )
+      plan$statements <- c(plan_notes, plan$statements)
+      plan$aggregated <- TRUE
+      return(plan)
+    }
     if (op == "count" || is_stat_summary_op(op)) {
       plan <- plan_native_stat(encoding, agg_keys, op, group_keys, var_name, ignore_unsupported)
       plan$statements <- c(plan_notes, plan$statements)
@@ -917,7 +952,7 @@ apply_error_extent <- function(mark_props, encoding, var_name, ignore_unsupporte
   list(statements = c(note, stmts), encoding = rewritten)
 }
 
-plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0)) {
+plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), densify_channels = NULL, center_stack = FALSE) {
   notes <- character(0)
   if (length(group_keys) > 2) {
     if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
@@ -979,6 +1014,13 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     out <- if (def$aggregate == "count") "count" else out_field_name(def$field, def$aggregate)
     rewritten[[k]]$field <<- out
     rewritten[[k]]$aggregate <<- NULL
+    # An aggregated channel is quantitative by construction, whether or not
+    # the spec bothered giving it an explicit `type` -- filled in only when
+    # absent so build_scale_calls() (which bails out entirely with no
+    # explicit `type`) still applies any `scale.domain`/`.reverse`/`sort`/
+    # etc for it (see concat_population_pyramid.vl.json's own untyped,
+    # `sort: "descending"` aggregate x channel).
+    if (is.null(rewritten[[k]]$type)) rewritten[[k]]$type <<- "quantitative"
     expr <- if (def$aggregate == "count") "dplyr::n()" else aggregate_summarise_expr(def$aggregate, field_ref(def$field), ignore_unsupported)
     # `out` may still carry def$field's own escaping (see the
     # out_field_name()/render_name() comment above for the timeUnit case).
@@ -994,6 +1036,81 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     stmts <- c(stmts, sprintf("%s <- dplyr::summarise(%s, %s, .groups = \"drop\")", var_name, var_name, paste(value_assigns, collapse = ", ")))
   } else {
     stmts <- c(stmts, sprintf("%s <- dplyr::summarise(%s, %s)", var_name, var_name, paste(value_assigns, collapse = ", ")))
+  }
+
+  # Real-world grouped data is commonly *sparse*: not every (category,
+  # stack-group) combination actually has a row (e.g.
+  # stacked_area_ordinal.vl.json's own `Cylinders` count didn't exist in
+  # every single `Year`). ggplot2's default stacking (position_stack(),
+  # implicit whenever a bar/area mark has a fill/colour aesthetic) has no
+  # way to know a missing combination should count as zero -- it only ever
+  # stacks the groups that literally have a row for that x -- so a category
+  # with one more/fewer group present than its neighbor gets a
+  # differently-sized stack, and since each group's own area/bar is drawn
+  # as one continuous shape across every category it has a row for, that
+  # mismatch shows up as a visibly broken, gapped stack (patches of the
+  # panel background showing through) instead of a smooth one. Filled in
+  # with an explicit 0 for every category/group pair missing one, via a
+  # base-R `expand.grid()` + `merge()` (this project has no hard dependency
+  # on tidyr, so `tidyr::complete()` isn't an option) -- `merge()`'s own
+  # default `by` already joins on every column name the two sides share
+  # (exactly the two densify_channels' own fields here), leaving every
+  # value column NA wherever a combination was missing, coalesced to 0
+  # right after.
+  if (!is.null(densify_channels)) {
+    cat_field <- rewritten[[densify_channels[1]]]$field
+    grp_field <- rewritten[[densify_channels[2]]]$field
+    value_fields <- vapply(agg_keys, function(k) rewritten[[k]]$field, character(1))
+    stmts <- c(stmts, sprintf(
+      "%s <- merge(do.call(expand.grid, stats::setNames(list(unique(%s[[%s]]), unique(%s[[%s]])), c(%s, %s))), %s, all.x = TRUE)",
+      var_name,
+      var_name, format_value(cat_field), var_name, format_value(grp_field),
+      format_value(cat_field), format_value(grp_field),
+      var_name
+    ))
+    fill_assigns <- paste(
+      sprintf("%s = ifelse(is.na(%s), 0, %s)", render_name(value_fields), render_name(value_fields), render_name(value_fields)),
+      collapse = ", "
+    )
+    stmts <- c(stmts, sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, fill_assigns))
+
+    # `stack: "center"` (a streamgraph-style baseline, symmetric around 0 --
+    # e.g. stacked_area_stream.vl.json) has no off-the-shelf ggplot2
+    # position (unlike "normalize"'s own `position = "fill"`, or the plain
+    # default "zero" stack, which ggplot2's own position_stack() already
+    # gets right once every category has a real row for every group, via
+    # the densify step above) -- computed explicitly here instead, the same
+    # cumulative-sum-then-recenter vl2d3 already does (stack.js's own
+    # renderStackingStatements()): a running total within each category
+    # (sorted by the stack-group field, for a deterministic layer order),
+    # each row's own slice being the gap between its cumulative total
+    # before and after, both shifted left by half that category's grand
+    # total so the whole stack straddles 0 instead of starting there.
+    # render_geom_layer_code() (geoms.R) draws this via `ymin`/`ymax`
+    # (its own already-supported x2/y2 range case) once the value channel
+    # itself is repointed at `<field>_stack1` with a new `<field>2`
+    # companion at `<field>_stack0`, exactly like any other explicit range.
+    if (isTRUE(center_stack)) {
+      value_field <- value_fields[1]
+      stack0 <- out_field_name(value_field, "stack0")
+      stack1 <- out_field_name(value_field, "stack1")
+      stmts <- c(stmts, sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, render_name(cat_field)))
+      stmts <- c(stmts, sprintf("%s <- dplyr::arrange(%s, %s, .by_group = TRUE)", var_name, var_name, render_name(grp_field)))
+      stmts <- c(stmts, sprintf(
+        "%s <- dplyr::mutate(%s, .vl_cum = cumsum(%s), %s = .vl_cum - %s - sum(%s) / 2, %s = .vl_cum - sum(%s) / 2, .vl_cum = NULL)",
+        var_name, var_name, render_name(value_field),
+        render_name(stack0), render_name(value_field), render_name(value_field),
+        render_name(stack1), render_name(value_field)
+      ))
+      stmts <- c(stmts, sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name))
+      # error_bounds() (geoms.R) reads the base channel as the *min* and its
+      # `2`-companion as the *max* with no reordering of its own -- stack0
+      # (the running total *before* this row) is always <= stack1 (after),
+      # so it's the base/min side here, not stack1.
+      value_channel <- agg_keys[1]
+      rewritten[[value_channel]]$field <- stack0
+      rewritten[[paste0(value_channel, "2")]] <- list(field = stack1, type = "quantitative")
+    }
   }
 
   list(statements = stmts, encoding = rewritten, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE)

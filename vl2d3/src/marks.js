@@ -865,17 +865,35 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   } else if (yAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
     lines.push(ambiguousBarWidthDecl(yBarWidthVar, y, dataVar, encoding.y.field));
     needsWidthBlock = true;
-  } else if (encoding.x && !encoding.y && !encoding.x.aggregated && !encoding.x2) {
-    // A bare, un-aggregated quantitative x with no companion axis at all
-    // (e.g. one raw row per distinct value, no groupby/aggregate) -- unlike
-    // the aggregated case, there's no single dataset-wide value to draw a
-    // zero-baseline bar to, so this instead needs a per-distinct-value
-    // reference-band width (same derivation as the temporal bar width case
-    // above, which already works for a plain continuous scale, not just a
-    // temporal one).
+  } else if (encoding.x2 && yAmbiguous) {
+    // The companion (non-value) axis for an x2-ranged bar (most commonly a
+    // stacked bar, e.g. bar_diverging_stack_population_pyramid.vl.json's
+    // own un-typed `age` field) whose own band-vs-continuous shape isn't
+    // known until the data loads -- needed here (unlike the plain
+    // `yAmbiguous && !encoding.x2` case just above, whose OWN render
+    // branch handles the width itself) because x2's presence means y is
+    // *always* the position/category axis, never a value -- the render
+    // branch below needs this same reference-band width regardless of
+    // which way `isNominalVar` resolves.
+    lines.push(ambiguousBarWidthDecl(yBarWidthVar, y, dataVar, encoding.y.field));
+    needsWidthBlock = true;
+  } else if (encoding.y2 && xAmbiguous) {
+    lines.push(ambiguousBarWidthDecl(xBarWidthVar, x, dataVar, encoding.x.field));
+    needsWidthBlock = true;
+  } else if (encoding.x && !encoding.y && !encoding.x2 && markProps.orient === 'vertical') {
+    // An explicit `mark.orient` that *conflicts* with the one position
+    // channel actually given (e.g. bar_1d_dimension_only.vl.json's own
+    // `orient: "horizontal"` with only `y` set -- the y-only mirror of
+    // this branch, just below) means that channel is deliberately being
+    // used as the discrete/category axis, not a value -- Vega-Lite draws
+    // a thin reference-band tick at each row's own position instead of a
+    // zero-baseline bar (every OTHER lone-position-channel bar/rect this
+    // project's example corpus has, with no such override, gets the
+    // zero-baseline treatment in the final `else if (encoding.x &&
+    // !encoding.y)` branch further down instead).
     lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
     needsWidthBlock = true;
-  } else if (encoding.y && !encoding.x && !encoding.y.aggregated && !encoding.y2) {
+  } else if (encoding.y && !encoding.x && !encoding.y2 && markProps.orient === 'horizontal') {
     lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
   }
@@ -1026,15 +1044,21 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       lines.push(`    .attr("height", y.bandwidth())`);
     } else if (encoding.y && yAmbiguous) {
       // A companion axis whose band-vs-continuous shape isn't known until
-      // the data has loaded (e.g. a stacked bar chart whose category field
-      // has no explicit "type") -- checked at runtime via the same
-      // `isNominalVar` flag the scale declaration itself used.
+      // the data has loaded (e.g. bar_diverging_stack_population_pyramid
+      // .vl.json's own un-typed `age` field, a stacked bar's category
+      // axis) -- checked at runtime via the same `isNominalVar` flag the
+      // scale declaration itself used. `x2`'s presence means y is *never*
+      // a value axis here (x already carries the full stacked range), so
+      // even the "resolved continuous" case is a reference-band position
+      // (yBarWidthVar, from the matching width-decl branch above) centered
+      // on the row's own y value -- NOT `Math.min(y(0), ...)` (that
+      // zero-baseline math previously drew one giant bar per row, from
+      // pixel-y(0) all the way out to the row's own y position, instead of
+      // a normal-height row).
       lines.push(
-        `    .attr("y", d => ${y.isNominalVar} ? y(d[${JSON.stringify(encoding.y.field)}]) : Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`
+        `    .attr("y", d => ${y.isNominalVar} ? y(d[${JSON.stringify(encoding.y.field)}]) : y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`
       );
-      lines.push(
-        `    .attr("height", d => ${y.isNominalVar} ? y.bandwidth() : Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`
-      );
+      lines.push(`    .attr("height", d => ${y.isNominalVar} ? y.bandwidth() : ${yBarWidthVar})`);
     } else if (encoding.y) {
       lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
       lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
@@ -1056,13 +1080,29 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     }
     // Same fallback as above, for a shared reference band with no x of its own.
     if (encoding.x && xBand) {
-      lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
-      lines.push(`    .attr("width", x.bandwidth())`);
+      // `mark.size` (e.g. bar_layered_weather.vl.json's own several
+      // differently-sized floating-bar layers, 20px/12px/3px, all sharing
+      // one ordinal `id` band) narrows the bar to a fixed width centered
+      // within its band, same as any other explicit mark size -- the full
+      // `x.bandwidth()` is only the fallback for no explicit size at all.
+      const sizeValue = simpleMarkProp(markProps.size, undefined, 'size', ignoreUnsupported);
+      if (typeof sizeValue === 'number') {
+        lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) + (x.bandwidth() - ${formatValue(sizeValue)}) / 2)`);
+        lines.push(`    .attr("width", ${formatValue(sizeValue)})`);
+      } else {
+        lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+        lines.push(`    .attr("width", x.bandwidth())`);
+      }
     } else if (encoding.x && xAmbiguous) {
+      // Same reasoning as the `encoding.x2 && yAmbiguous` branch above,
+      // transposed -- `y2`'s presence means x is never a value axis here,
+      // so the "resolved continuous" case also gets the computed
+      // reference-band width (xBarWidthVar, from the matching width-decl
+      // branch above), not a fixed guess.
       lines.push(
-        `    .attr("x", d => ${x.isNominalVar} ? x(d[${JSON.stringify(encoding.x.field)}]) : x(d[${JSON.stringify(encoding.x.field)}]) - 2.5)`
+        `    .attr("x", d => ${x.isNominalVar} ? x(d[${JSON.stringify(encoding.x.field)}]) : x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`
       );
-      lines.push(`    .attr("width", d => ${x.isNominalVar} ? x.bandwidth() : 5)`);
+      lines.push(`    .attr("width", d => ${x.isNominalVar} ? x.bandwidth() : ${xBarWidthVar})`);
     } else if (encoding.x) {
       // `x` here is only ever the *other*, non-stacked/ranged axis (`y2`
       // already carries the real value range) -- a plain quantitative field
@@ -1093,38 +1133,47 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", 5)`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-  } else if (encoding.x && !encoding.y && encoding.x.aggregated) {
-    // A single quantitative position channel and nothing else at all (a
-    // "1D bar" -- e.g. a lone dataset-wide aggregate with no groupby) --
-    // Vega-Lite still draws a real bar: zero baseline to the value, along
-    // the one axis it has. The companion axis span is `mark.size` when
-    // given (see fixedOrFullSpan()), else the full plot height (no
-    // companion axis is drawn at all in that case, so there's nothing to
-    // center a smaller band against).
-    const ySpan = fixedOrFullSpan(markProps, dims, 'y');
-    lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
-    lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-    lines.push(`    .attr("y", ${ySpan.pos})`);
-    lines.push(`    .attr("height", ${ySpan.extent})`);
-  } else if (encoding.x && !encoding.y) {
-    // A bare, un-aggregated quantitative x (see the width-decl branch
-    // above): a thin reference band centered on each row's own value,
-    // rather than a zero-baseline bar.
+  } else if (encoding.x && !encoding.y && markProps.orient === 'vertical') {
+    // `mark.orient` explicitly conflicts with the one position channel
+    // given (see the identical-condition width-decl branch above) -- `x`
+    // is deliberately the discrete/category axis here, not a value, so a
+    // thin reference-band tick is drawn at each row's own x position
+    // instead of a zero-baseline bar (e.g. bar_1d_dimension_only.vl.json's
+    // own y-only mirror of this, `orient: "horizontal"`).
     const ySpan = fixedOrFullSpan(markProps, dims, 'y');
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
     lines.push(`    .attr("y", ${ySpan.pos})`);
     lines.push(`    .attr("height", ${ySpan.extent})`);
-  } else if (encoding.y && !encoding.x && encoding.y.aggregated) {
-    const xSpan = fixedOrFullSpan(markProps, dims, 'x');
-    lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
-    lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
-    lines.push(`    .attr("x", ${xSpan.pos})`);
-    lines.push(`    .attr("width", ${xSpan.extent})`);
-  } else if (encoding.y && !encoding.x) {
+  } else if (encoding.y && !encoding.x && markProps.orient === 'horizontal') {
     const xSpan = fixedOrFullSpan(markProps, dims, 'x');
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`);
     lines.push(`    .attr("height", ${yBarWidthVar})`);
+    lines.push(`    .attr("x", ${xSpan.pos})`);
+    lines.push(`    .attr("width", ${xSpan.extent})`);
+  } else if (encoding.x && !encoding.y) {
+    // A single quantitative position channel and nothing else at all (a
+    // "1D bar" -- e.g. a lone dataset-wide aggregate with no groupby, or
+    // facet_bullet.vl.json's own un-aggregated `ranges[N]`/`measures[N]`
+    // fields) -- Vega-Lite still draws a real bar: zero baseline to the
+    // value, along the one axis it has, whether or not that value came
+    // from an inline `aggregate` (every other spec shape reaching this
+    // branch already resolved to a real x2/temporal/band/ambiguous/
+    // orient-conflict case earlier, so a plain, un-aggregated quantitative
+    // x here is never a "reference band" instead -- it's just a
+    // magnitude, same as an aggregated one). The companion axis span is
+    // `mark.size` when given (see fixedOrFullSpan()), else the full plot
+    // height (no companion axis is drawn at all in that case, so there's
+    // nothing to center a smaller band against).
+    const ySpan = fixedOrFullSpan(markProps, dims, 'y');
+    lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("y", ${ySpan.pos})`);
+    lines.push(`    .attr("height", ${ySpan.extent})`);
+  } else if (encoding.y && !encoding.x) {
+    const xSpan = fixedOrFullSpan(markProps, dims, 'x');
+    lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
+    lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("x", ${xSpan.pos})`);
     lines.push(`    .attr("width", ${xSpan.extent})`);
   } else if (ignoreUnsupported) {
@@ -1189,11 +1238,22 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
   // render at all.
   const cx = x ? binCenterAccessor(encoding, scales, 'x') ?? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
   const cy = y ? binCenterAccessor(encoding, scales, 'y') ?? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
+  // `encoding.size` can be a real field (needs the shared `size` scale) or
+  // a literal `{"value": ...}` (e.g. layer_ranged_dot.vl.json's own point
+  // layer, `size: {"value": 100}`) -- the latter never gets a scale built
+  // for it at all (nothing to scale), so it's converted with the exact
+  // same area->radius formula the mark-level `markProps.size` fallback
+  // uses just below, rather than silently falling all the way through to
+  // that fallback (which only ever looks at *mark*-level `size`, with no
+  // way to see an *encoding* channel's own literal value) and defaulting
+  // to the generic radius-3 constant instead.
   const r =
-    size && encoding.size
-      ? `size(d[${JSON.stringify(encoding.size.field)}])`
-      : formatValue(markProps.size ? Math.sqrt(simpleMarkProp(markProps.size, 9, 'size', ignoreUnsupported) / Math.PI) : 3) +
-        markPropNote(markProps.size, 'size', ignoreUnsupported);
+    size && encoding.size && encoding.size.field
+      ? `Math.sqrt(size(d[${JSON.stringify(encoding.size.field)}]) / Math.PI)`
+      : encoding.size && 'value' in encoding.size
+        ? formatValue(Math.sqrt(encoding.size.value / Math.PI))
+        : formatValue(markProps.size ? Math.sqrt(simpleMarkProp(markProps.size, 9, 'size', ignoreUnsupported) / Math.PI) : 3) +
+          markPropNote(markProps.size, 'size', ignoreUnsupported);
   const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
   const opacity = opacityAttr(encoding, scales);
   const rowDependent = hasRowDependentColor(encoding);
@@ -1276,7 +1336,14 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
 }
 
 function seriesGroupField(encoding) {
-  const detail = encoding.color || encoding.detail;
+  // Whichever of color/detail actually has a real field, not just
+  // whichever is truthy -- a literal `color: {"value": ...}` (e.g.
+  // layer_ranged_dot.vl.json's own line layer, colored by a fixed literal
+  // but still split into one line per `detail: {"field": "country"}`) is
+  // just as truthy as a real field-bound channel, and `color || detail`
+  // would pick it first, finding no `.field` on it and treating the whole
+  // series as one single ungrouped line instead.
+  const detail = (encoding.color && encoding.color.field ? encoding.color : null) || encoding.detail;
   if (!detail || !detail.field) return null;
   // Vega-Lite defaults a field with no explicit `type` to nominal, so an
   // absent type is groupable too -- only an explicit quantitative/temporal
@@ -1304,7 +1371,20 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const lines = [];
 
   if (groupField) {
-    const stroke = encoding.color ? `color(key)` : JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
+    // A real `color` field (as opposed to a fixed `encoding.color.value`,
+    // e.g. layer_ranged_dot.vl.json's own line layer -- colored by a
+    // literal but still split into one line per `detail: {"field":
+    // "country"}`, see seriesGroupField()) uses the shared `color` scale,
+    // keyed by this group's own key; a literal color value is used
+    // directly instead of falling through to markColorFallback()'s
+    // mark-property-only check, which has no way to see an *encoding*
+    // channel's own literal value at all.
+    const stroke =
+      encoding.color && encoding.color.field
+        ? 'color(key)'
+        : encoding.color && 'value' in encoding.color
+          ? formatValue(encoding.color.value)
+          : JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
     lines.push(`svg.append("g")`);
     lines.push(`    .attr("fill", "none")`);
     lines.push(`    .attr("stroke-width", ${formatValue(simpleMarkProp(markProps.strokeWidth, 1.5, 'strokeWidth', ignoreUnsupported))}${markPropNote(markProps.strokeWidth, 'strokeWidth', ignoreUnsupported)})`);
@@ -1442,7 +1522,7 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     lines.push(`  .selectAll("path")`);
     lines.push(`  .data(d3.group(${dataVar}, d => d[${JSON.stringify(groupField)}]))`);
     lines.push(`  .join("path")`);
-    lines.push(`    .attr("fill", ([key]) => ${encoding.color ? 'color(key)' : fill})`);
+    lines.push(`    .attr("fill", ([key]) => ${encoding.color && encoding.color.field ? 'color(key)' : fill})`);
     lines.push(
       `    .attr("d", ([, rows]) => ${areaCall}` +
         `(rows.slice().sort((a, b) => d3.ascending(a[${sortFieldJson}], b[${sortFieldJson}]))));`
@@ -1517,8 +1597,24 @@ function resolveValueChannelExpr(def, dataVar, extentParams, ignoreUnsupported) 
   return `${axisChannel}(${rewrittenInner})`;
 }
 
+// A channel definition merged down from a layer/facet wrapper's own shared
+// encoding (mergeDown(), translator.js) can be a plain truthy object with
+// no actual content at all -- e.g. wheat_wages.vl.json's own wrapper-level
+// `y: {type: "quantitative", axis: {...}}`, inherited into a `rule` layer
+// that only ever declares its own `x` -- so a bare `encoding.y` truthiness
+// check alone can't tell "this channel is genuinely being used" apart from
+// "this channel merely inherited the wrapper's type/axis/scale metadata,
+// with nothing this mark could actually draw from". Only a real `field`/
+// `datum`/`value` makes a channel meaningful for rule's own x-vs-y-vs-both
+// shape dispatch below.
+function hasChannelContent(def) {
+  return Boolean(def) && (def.field !== undefined || def.datum !== undefined || 'value' in def);
+}
+
 function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false, extentParams = {}) {
   const {x, y} = scales;
+  const hasX = hasChannelContent(encoding.x);
+  const hasY = hasChannelContent(encoding.y);
   const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
@@ -1528,17 +1624,17 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   lines.push(`  .data(${dataVar})`);
   lines.push(`  .join("line")`);
   if (rowDependent) lines.push(`    .attr("stroke", d => ${stroke})`);
-  if (encoding.x && encoding.x2) {
+  if (hasX && encoding.x2) {
     lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
     lines.push(`    .attr("x2", d => x(d[${JSON.stringify(encoding.x2.field)}]))`);
-    lines.push(`    .attr("y1", d => ${y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.marginTopExpr})`);
-    lines.push(`    .attr("y2", d => ${y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.heightMinusBottomExpr})`);
-  } else if (encoding.y && encoding.y2) {
+    lines.push(`    .attr("y1", d => ${hasY ? dodgeAwareAccessor(encoding, scales, 'y') : dims.marginTopExpr})`);
+    lines.push(`    .attr("y2", d => ${hasY ? dodgeAwareAccessor(encoding, scales, 'y') : dims.heightMinusBottomExpr})`);
+  } else if (hasY && encoding.y2) {
     lines.push(`    .attr("y1", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
     lines.push(`    .attr("y2", d => y(d[${JSON.stringify(encoding.y2.field)}]))`);
-    lines.push(`    .attr("x1", d => ${x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.marginLeftExpr})`);
-    lines.push(`    .attr("x2", d => ${x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.widthMinusRightExpr})`);
-  } else if (encoding.x && !encoding.y) {
+    lines.push(`    .attr("x1", d => ${hasX ? dodgeAwareAccessor(encoding, scales, 'x') : dims.marginLeftExpr})`);
+    lines.push(`    .attr("x2", d => ${hasX ? dodgeAwareAccessor(encoding, scales, 'x') : dims.widthMinusRightExpr})`);
+  } else if (hasX && !hasY) {
     if (encoding.x.field) {
       lines.push(`    .attr("x1", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
       lines.push(`    .attr("x2", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
@@ -1553,7 +1649,7 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     }
     lines.push(`    .attr("y1", ${dims.marginTopExpr})`);
     lines.push(`    .attr("y2", ${dims.heightMinusBottomExpr})`);
-  } else if (encoding.y && !encoding.x) {
+  } else if (hasY && !hasX) {
     if (encoding.y.field) {
       lines.push(`    .attr("y1", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
       lines.push(`    .attr("y2", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
@@ -1651,8 +1747,26 @@ function renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   if (!encoding.text && !ignoreUnsupported) {
     throw new Error('Unsupported: a "text" mark with a literal mark-level "text" (not an encoding) is not yet supported by vl2d3');
   }
-  const cx = encoding.x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
-  const cy = encoding.y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
+  // hasChannelContent (not bare truthiness): a layer/facet wrapper's own
+  // shared `x`/`y` (type/scale/axis, no field) can merge down into a text
+  // layer that never declares that channel itself (e.g.
+  // bar_layered_weather.vl.json's own day-label layer, encoding = `{text:
+  // {field: "day"}}` only) -- a bare-truthy check would treat that
+  // leftover wrapper metadata as "this channel has real content",
+  // producing `d[undefined]` instead of falling through to the mark-level
+  // `y: -5`-style literal pixel constant below (Vega-Lite's own "no
+  // encoding, just a fixed mark position" shorthand) or the centered
+  // fallback.
+  const cx = hasChannelContent(encoding.x)
+    ? dodgeAwareAccessor(encoding, scales, 'x')
+    : typeof markProps.x === 'number'
+      ? formatValue(markProps.x)
+      : dims.centerXExpr;
+  const cy = hasChannelContent(encoding.y)
+    ? dodgeAwareAccessor(encoding, scales, 'y')
+    : typeof markProps.y === 'number'
+      ? formatValue(markProps.y)
+      : dims.centerYExpr;
   const textField = encoding.text
     ? rawField(encoding.text) || formatValue(encoding.text.value)
     : formatValue(Array.isArray(markProps.text) ? markProps.text.join('\n') : markProps.text);
@@ -1675,17 +1789,78 @@ function renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
 
 function renderArc(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
   if (!encoding.theta && !ignoreUnsupported) throw new Error('"arc" mark requires a theta encoding');
-  // With no theta value to size wedges by, equal-sized slices (one per row)
-  // is still a meaningful sacrifice -- a plain "count of rows" pie.
-  const pieValue = encoding.theta
-    ? `d => d[${JSON.stringify(encoding.theta.field)}]`
-    : '() => 1 /* vl2d3: no theta encoding, using equal-sized slices (--ignore-unsupported) */';
-  const fill = encoding.color ? `d => color(d.data[${JSON.stringify(encoding.color.field)}])` : `() => ${JSON.stringify(DEFAULT_FILL)}`;
+  // A *binned* theta (e.g. arc_radial_histogram.vl.json's own `theta:
+  // {"bin": true, "field": "IMDB Rating"}`, prepare.js already having
+  // rewritten this into a real `theta`/`theta2` bin-edge pair the same way
+  // it does for a bar's own x/x2) is a genuine angular *range* per row, not
+  // a value for d3.pie() to auto-partition into 360 degrees' worth of
+  // proportional slices -- that's a fundamentally different shape (equal
+  // angular slots sized by count/theta-*value*) from this one (each row's
+  // own angular position/width fixed by where its bin edges fall along the
+  // theta *domain*, count encoded via radius instead). Built directly via
+  // d3.arc()'s own startAngle/endAngle accessors instead of through
+  // d3.pie() at all -- an explicit linear angle scale maps the full
+  // bin-edge domain onto one full turn (0 to 2*PI).
+  if (encoding.theta2) {
+    const theta0Field = encoding.theta.field;
+    const theta1Field = encoding.theta2.field;
+    const fill = encoding.color && encoding.color.field ? `d => color(d[${JSON.stringify(encoding.color.field)}])` : `() => ${JSON.stringify(DEFAULT_FILL)}`;
+    const outerRadiusExpr =
+      scales.radius && encoding.radius && encoding.radius.field ? `d => radius(d[${JSON.stringify(encoding.radius.field)}])` : 'plotRadius';
+    const lines = [];
+    lines.push(`{`);
+    lines.push(`  const plotRadius = Math.min(${dims.innerWidthExpr}, ${dims.innerHeightExpr}) / 2;`);
+    lines.push(
+      `  const angle = d3.scaleLinear([d3.min(${dataVar}, d => d[${JSON.stringify(theta0Field)}]), d3.max(${dataVar}, d => d[${JSON.stringify(theta1Field)}])], [0, 2 * Math.PI]);`
+    );
+    lines.push(
+      `  const arcGen = d3.arc().innerRadius(0).outerRadius(${outerRadiusExpr}).startAngle(d => angle(d[${JSON.stringify(theta0Field)}])).endAngle(d => angle(d[${JSON.stringify(theta1Field)}]));`
+    );
+    lines.push(`  svg.append("g")`);
+    lines.push(`      .attr("transform", \`translate(\${${dims.centerXExpr}},\${${dims.centerYExpr}})\`)`);
+    lines.push(`    .selectAll("path")`);
+    lines.push(`    .data(${dataVar})`);
+    lines.push(`    .join("path")`);
+    lines.push(`      .attr("d", arcGen)`);
+    lines.push(`      .attr("fill", ${fill});`);
+    lines.push(`}`);
+    return lines.join('\n');
+  }
+  // An ordinal/nominal theta (e.g. arc_ordinal_theta.vl.json's own
+  // `theta: {"field": "dir", "type": "ordinal"}`, a wind-rose chart) means
+  // "one equal-angle slot per category", exactly like having no theta
+  // value to size wedges by at all -- its own raw field value (a
+  // direction NAME, not a number) is meaningless as d3.pie()'s own numeric
+  // `.value()`, and previously produced NaN angles (every wedge collapsing
+  // to zero size, drawing nothing). Only a genuinely quantitative theta
+  // sizes wedges by its own value.
+  const thetaIsQuantitative = encoding.theta && encoding.theta.type === 'quantitative';
+  const pieValue =
+    encoding.theta && thetaIsQuantitative
+      ? `d => d[${JSON.stringify(encoding.theta.field)}]`
+      : '() => 1' +
+        (encoding.theta
+          ? ' /* vl2d3: non-quantitative theta, using equal-sized slices */'
+          : ' /* vl2d3: no theta encoding, using equal-sized slices (--ignore-unsupported) */');
+  const fill = encoding.color && encoding.color.field ? `d => color(d.data[${JSON.stringify(encoding.color.field)}])` : `() => ${JSON.stringify(DEFAULT_FILL)}`;
   const lines = [];
   lines.push(`{`);
-  lines.push(`  const radius = Math.min(${dims.innerWidthExpr}, ${dims.innerHeightExpr}) / 2;`);
+  // `plotRadius`, not `radius` -- the shared `radius` *scale* (when a
+  // `radius` encoding channel resolved one, resolveRadiusScale() in
+  // scales.js) is already declared under that exact name one scope out;
+  // shadowing it with a same-named local here would make
+  // `outerRadiusExpr`'s own `radius(d.data[field])` call try to invoke
+  // this plain number as a function instead.
+  lines.push(`  const plotRadius = Math.min(${dims.innerWidthExpr}, ${dims.innerHeightExpr}) / 2;`);
   lines.push(`  const pie = d3.pie().value(${pieValue}).sort(null);`);
-  lines.push(`  const arcGen = d3.arc().innerRadius(0).outerRadius(radius);`);
+  // `radius` encoding (e.g. arc_ordinal_theta.vl.json's own
+  // `radius: {"field": "strength", "type": "quantitative"}`) varies each
+  // wedge's own outer radius by its value via the shared `radius` scale
+  // instead of every wedge sharing the mark's own full plot radius --
+  // unlike theta (which d3.pie() itself reads directly off each datum),
+  // d3.arc()'s outerRadius needs a plain per-datum accessor function.
+  const outerRadiusExpr = scales.radius && encoding.radius && encoding.radius.field ? `d => radius(d.data[${JSON.stringify(encoding.radius.field)}])` : 'plotRadius';
+  lines.push(`  const arcGen = d3.arc().innerRadius(0).outerRadius(${outerRadiusExpr});`);
   lines.push(`  svg.append("g")`);
   lines.push(`      .attr("transform", \`translate(\${${dims.centerXExpr}},\${${dims.centerYExpr}})\`)`);
   lines.push(`    .selectAll("path")`);

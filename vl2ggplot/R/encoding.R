@@ -129,7 +129,20 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
         discrete_field_ref(def)
       }
     } else if (!is.null(def$value)) {
-      fixed[[aes_name]] <- resolve_value_channel_expr(def$value, extent_data_var, extent_params, ignore_unsupported, .notes)
+      # A literal `size` *encoding* channel (`size: {"value": ...}`, e.g.
+      # layer_ranged_dot.vl.json's own point layer) needs the exact same
+      # Vega-Lite-area -> ggplot2-mm conversion as a mark-level `size`
+      # (mark_size_value(), geoms.R) -- a completely separate code path
+      # from this one, so passing the raw value straight through here (as
+      # every other literal-valued channel safely can) produced the same
+      # comically oversized marker that fix addressed, just via the
+      # encoding side instead of the mark side.
+      fixed[[aes_name]] <-
+        if (channel == "size" && mark_type %in% c("point", "circle", "square", "tick")) {
+          format_value(vl_point_size_to_ggplot(def$value))
+        } else {
+          resolve_value_channel_expr(def$value, extent_data_var, extent_params, ignore_unsupported, .notes)
+        }
     } else if (!is.null(def$datum)) {
       fixed[[aes_name]] <- literal_datum_value(def$datum, ignore_unsupported, .notes)
     }

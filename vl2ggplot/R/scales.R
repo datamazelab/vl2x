@@ -85,6 +85,16 @@ build_position_scale <- function(channel, def) {
     } else if (is.list(def$sort) && is.null(names(def$sort))) {
       args <- c(args, sprintf("limits = %s", format_value(def$sort)))
     }
+  } else if (!is.null(def$sort) && identical(def$sort, "descending")) {
+    # `sort: "descending"` on an *aggregated continuous* channel isn't
+    # about row order (nothing ordinal to reorder) -- it's Vega-Lite's own
+    # documented way to mirror a bar's growth direction, e.g.
+    # concat_population_pyramid.vl.json's "Female" panel (`x: {aggregate:
+    # "sum", field: "people", sort: "descending"}`) grows bars right-to-
+    # left instead of the default left-to-right, forming a pyramid shape
+    # when placed next to a normal "Male" panel. Same mechanism as an
+    # explicit `scale.reverse` just below.
+    args <- c(args, "trans = \"reverse\"")
   }
   if (isTRUE(def$scale$reverse)) args <- c(args, if (kind == "discrete") "limits = rev" else "trans = \"reverse\"")
 

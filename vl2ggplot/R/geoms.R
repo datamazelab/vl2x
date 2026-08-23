@@ -438,8 +438,31 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("x")))
     }
     if (mark_type %in% c("bar", "rect")) {
-      if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
-      return(build_call("ggplot2::geom_linerange", rename_fill_to_colour(aes_pairs), fixed, data_arg))
+      if (is.null(aes_pairs[["x"]])) {
+        aes_pairs[["x"]] <- '""'
+        return(build_call("ggplot2::geom_linerange", rename_fill_to_colour(aes_pairs), fixed, data_arg))
+      }
+      # A real discrete x position (not the "no x at all" fallback just
+      # above) can size a proper filled box after all -- e.g.
+      # bar_layered_weather.vl.json's own several `y`/`y2`-ranged
+      # "floating bar" layers, sharing one ordinal `id` x -- geom_rect
+      # just needs numeric xmin/xmax, which a discrete/factor aes doesn't
+      # give it directly. `as.numeric(<x>)` reads the factor's own 1-based
+      # position (ggplot2's discrete axes are always laid out on
+      # consecutive integers internally, whatever the labels), and
+      # `mark.size` (Vega-Lite's own `config.bar.discreteBandSize` default
+      # is exactly 20, matching geom_bar()'s own default `width = 0.9`
+      # filling a unit-wide band) scales the half-width proportionally so
+      # bar_layered_weather's several differently-sized layers (20px/12px/
+      # 3px, all sharing the same band) still end up visibly different
+      # widths, not identically thick.
+      size_value <- mark_scalar_value(mark_props[["size"]] %||% 20, "20", ignore_unsupported, .notes)
+      x_expr <- sprintf("as.numeric(%s)", aes_pairs[["x"]])
+      half_width_expr <- sprintf("0.45 * (%s) / 20", size_value)
+      aes_pairs[["xmin"]] <- sprintf("(%s) - (%s)", x_expr, half_width_expr)
+      aes_pairs[["xmax"]] <- sprintf("(%s) + (%s)", x_expr, half_width_expr)
+      aes_pairs[["x"]] <- NULL
+      return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
     }
     if (mark_type %in% c("area", "errorband")) {
       # geom_area only takes a single y (with an implicit ymin = 0); a real
@@ -516,7 +539,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   }
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
-      !isTRUE(plan$aggregated)) {
+      identical(mark_props[["orient"]], "vertical")) {
     # A bar/rect mark with only a position (x) channel and no value (y)
     # axis at all, and no x2/y2 range either (e.g. a vertical highlight
     # band marking specific x positions, like a null-data day) -- this is
@@ -527,11 +550,17 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     # band at that x position instead. Width is derived from the smallest
     # gap between this layer's own sorted x values (falling back to a
     # fixed guess when there's only one), since there's no bin/band width
-    # to read off the (continuous) x scale. Excludes a genuinely
-    # quantitative x that was actually *computed* (a real 1D aggregate
-    # value, e.g. `x: {"aggregate": "sum", "field": ...}` with no groupby
-    # at all, `plan$aggregated`) -- that's the zero-baseline "1D value bar"
-    # case just below instead, not a position to draw a reference band at.
+    # to read off the (continuous) x scale. Only triggers when `mark.orient`
+    # *explicitly* conflicts with the one channel given (e.g.
+    # bar_1d_dimension_only.vl.json's own y-only mirror of this, `orient:
+    # "horizontal"`, just below) -- that's Vega-Lite's own signal that this
+    # channel is deliberately playing the discrete/category role, not a
+    # value; every other spec shape (no orient override, or one that
+    # doesn't conflict) reaching this point is a real, un-aggregated
+    # magnitude instead (facet_bullet.vl.json's own `ranges[N]`/
+    # `measures[N]` fields, e.g.) and gets the zero-baseline treatment in
+    # the plain fallback further below regardless of whether that magnitude
+    # came from an inline VL `aggregate` or not.
     x_expr <- aes_pairs[["x"]]
     half_width_expr <- sprintf(
       "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 * 0.9 else 0.45 })(%s)",
@@ -545,11 +574,12 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("y")))
   }
   # Mirrors the x-present/y-absent branch just above, transposed: a bare
-  # (un-aggregated) y position with no x at all -- e.g. `bar_1d_dimension_only`,
-  # a `y`-only "horizontal" bar mark with a plain (non-aggregate) field.
+  # y position with no x at all and an explicit `orient: "horizontal"`
+  # conflict -- e.g. `bar_1d_dimension_only`, a `y`-only "horizontal" bar
+  # mark with a plain (non-aggregate) field.
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && is.null(aes_pairs[["x"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
-      !isTRUE(plan$aggregated)) {
+      identical(mark_props[["orient"]], "horizontal")) {
     y_expr <- aes_pairs[["y"]]
     half_width_expr <- sprintf(
       "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 * 0.9 else 0.45 })(%s)",
@@ -563,13 +593,13 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("x")))
   }
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
-      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
-      isTRUE(plan$aggregated)) {
-    # A genuine 1D aggregate value on x with no y at all (e.g. `x:
-    # {"aggregate": "sum", ...}`, no groupby) -- Vega-Lite draws a single
-    # zero-baseline bar here (0 to the value), the same convention vl2d3
-    # uses for this shape, filling the companion axis the same
-    # standalone-aware way as the reference-band case above.
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]])) {
+    # A quantitative x with no y at all and no conflicting `orient` (e.g.
+    # `x: {"aggregate": "sum", ...}` with no groupby, or
+    # facet_bullet.vl.json's own plain un-aggregated `ranges[N]`) --
+    # Vega-Lite draws a single zero-baseline bar here (0 to the value), the
+    # same convention vl2d3 uses for this shape, filling the companion axis
+    # the same standalone-aware way as the reference-band case above.
     x_expr <- aes_pairs[["x"]]
     aes_pairs[["xmin"]] <- sprintf("pmin(0, %s)", x_expr)
     aes_pairs[["xmax"]] <- sprintf("pmax(0, %s)", x_expr)
@@ -579,8 +609,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     return(paste0(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg), blank_axis_theme("y")))
   }
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && is.null(aes_pairs[["x"]]) &&
-      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
-      isTRUE(plan$aggregated)) {
+      is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]])) {
     y_expr <- aes_pairs[["y"]]
     aes_pairs[["ymin"]] <- sprintf("pmin(0, %s)", y_expr)
     aes_pairs[["ymax"]] <- sprintf("pmax(0, %s)", y_expr)
@@ -639,9 +668,15 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # date) never looks discrete to that inference, so it silently guesses
   # vertical bars instead. Detected directly from Vega-Lite's own encoding
   # types (temporal/ordinal/nominal is a position axis; quantitative is the
-  # value axis) rather than relying on ggplot2 to guess right.
+  # value axis) rather than relying on ggplot2 to guess right. Also fires
+  # when y has no declared/inferred type at all (e.g.
+  # concat_population_pyramid.vl.json's own `y: {field: "age"}`, no
+  # "type") -- Vega-Lite's own bar-orientation rule is really "whichever
+  # position channel is quantitative is the value axis, the other is the
+  # category axis regardless of its own type", so a confirmed-quantitative
+  # x already settles this even when y's type is unknown.
   if (mark_type == "bar" && is.null(fixed[["orientation"]]) &&
-      identical(encoding$x$type, "quantitative") && !is.null(encoding$y$type) && !identical(encoding$y$type, "quantitative")) {
+      identical(encoding$x$type, "quantitative") && !identical(encoding$y$type, "quantitative")) {
     fixed[["orientation"]] <- '"y"'
   }
   # `stack: "normalize"` on the aggregated value axis asks for each

@@ -271,9 +271,20 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
         : domainFromData(dataVar, field));
   const ctor = {log: 'scaleLog', pow: 'scalePow', sqrt: 'scaleSqrt', symlog: 'scaleSymlog'}[scaleType] || 'scaleLinear';
   const nice = explicitDomain ? '' : '.nice()';
+  // `sort: "descending"` on an aggregated *quantitative* channel isn't a
+  // request to reorder rows (there's nothing ordinal to reorder here) --
+  // it's Vega-Lite's own documented way to mirror a bar's growth direction,
+  // e.g. concat_population_pyramid.vl.json's "Female" panel (`x: {aggregate:
+  // "sum", field: "people", sort: "descending"}`) grows its bars right-to-
+  // left instead of the default left-to-right, which is what actually forms
+  // the pyramid shape when placed next to a normal (left-to-right) "Male"
+  // panel. Reversing the *range* (not the domain) achieves that mirroring
+  // without touching the zero-baseline math anywhere else that reads this
+  // scale.
+  const range = def.sort === 'descending' ? `(${rangeExpr}).slice().reverse()` : rangeExpr;
   return {
     varName,
-    decl: `const ${varName} = d3.${ctor}(${domain}, ${rangeExpr})${nice};${domainNote}`,
+    decl: `const ${varName} = d3.${ctor}(${domain}, ${range})${nice};${domainNote}`,
     kind: 'continuous',
   };
 }
@@ -323,6 +334,61 @@ function scaleDecl(varName, scaleExpr, domainNote, invalidOverride) {
   );
 }
 
+const DISCRETIZING_SCALE_CTORS = {quantize: 'scaleQuantize', quantile: 'scaleQuantile', threshold: 'scaleThreshold'};
+
+// Vega-Lite's "discretizing" scale types (quantize/quantile/threshold) --
+// each buckets a continuous domain into a *fixed, small* set of discrete
+// output values, unlike the smoothly-interpolating scaleSequential/
+// scaleSqrt/scaleLinear this project otherwise builds for a quantitative
+// channel. Not just a cosmetic difference: passing one of these scale
+// types' own `range` straight through to scaleSqrt/scaleLinear (as if it
+// were an ordinary 2-endpoint continuous range) is actively wrong whenever
+// `range` has more than 2 stops (e.g. concat_bar_scales_discretize.vl
+// .json's own `size: {scale: {type: "quantile", range: [80, 160, 240,
+// 320, 400]}}` -- scaleSqrt/scaleLinear DO accept a multi-stop range, but
+// interpret it as smooth piecewise interpolation across the *whole* domain
+// rather than quantile bucketing, so a `b` value anywhere in the upper
+// part of its own range gets sqrt-mapped near that trailing 400 -- a
+// circle 400px in radius, not a modest discrete size step). Returns null
+// for any other (or absent) scale type, so callers fall through to their
+// own existing continuous-scale branch unchanged.
+function discretizingScaleExpr(def, dataVar, {defaultRange, interpolator} = {}) {
+  const scaleType = def.scale && def.scale.type;
+  const ctor = DISCRETIZING_SCALE_CTORS[scaleType];
+  if (!ctor) return null;
+  const field = def.field;
+  const explicitDomain = explicitDomainCode(def, true);
+  let domain;
+  if (scaleType === 'quantile') {
+    // scaleQuantile's own "domain" is the full sample of raw values (used
+    // to compute equal-COUNT quantile break points from their actual
+    // distribution), not a plain [min, max] pair the way every other
+    // scale here takes it.
+    domain = explicitDomain ?? `${dataVar}.map(d => d[${JSON.stringify(field)}])`;
+  } else if (scaleType === 'threshold') {
+    // No sensible auto-computed default exists for a threshold scale's
+    // own break points (that's the whole point of giving them explicitly);
+    // an empty array degrades to "every value maps to the first range
+    // entry" rather than crashing outright.
+    domain = explicitDomain ?? '[]';
+  } else {
+    domain = explicitDomain ?? domainFromData(dataVar, field);
+  }
+  let range;
+  if (def.scale.range) {
+    range = formatValue(def.scale.range);
+  } else if (interpolator) {
+    // No explicit range -- sample 4 discrete stops from the named
+    // interpolator instead (Vega-Lite's own default class count for a
+    // scheme-only discretizing scale).
+    const scheme = def.scale.scheme && SCHEME_SEQUENTIAL[def.scale.scheme];
+    range = `d3.quantize(d3.${scheme || interpolator}, 4)`;
+  } else {
+    range = defaultRange;
+  }
+  return `d3.${ctor}(${domain}, ${range})`;
+}
+
 export function resolveColorScale(def, {dataVar, ignoreUnsupported = false, invalidOverride} = {}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
@@ -330,6 +396,10 @@ export function resolveColorScale(def, {dataVar, ignoreUnsupported = false, inva
   const scheme = def.scale && def.scale.scheme;
 
   if (def.type === 'quantitative' || def.type === 'temporal') {
+    const discretized = discretizingScaleExpr(def, dataVar, {interpolator: 'interpolateBlues'});
+    if (discretized) {
+      return {varName: 'color', decl: scaleDecl('color', discretized, domainNote, invalidOverride), kind: 'discretizing'};
+    }
     const domain = explicitDomain ?? domainFromData(dataVar, field);
     const interp = SCHEME_SEQUENTIAL[scheme] || 'interpolateBlues';
     return {
@@ -393,6 +463,10 @@ export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false, inval
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
+  const discretized = discretizingScaleExpr(def, dataVar, {defaultRange: '[2, 20]'});
+  if (discretized) {
+    return {varName: 'size', decl: scaleDecl('size', discretized, domainNote, invalidOverride), kind: 'discretizing'};
+  }
   const domain = explicitDomain ?? domainFromData(dataVar, field);
   const range = def.scale && def.scale.range ? formatValue(def.scale.range) : '[2, 20]';
   return {
@@ -402,10 +476,38 @@ export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false, inval
   };
 }
 
+// An "arc" mark's own `radius` encoding (e.g. arc_ordinal_theta.vl.json's
+// own `radius: {field: "strength", type: "quantitative"}`, a wind-rose
+// chart) -- Vega-Lite's own default scale type for radius is "sqrt" (area,
+// not length, is what a reader perceives from a wedge's radius, same
+// reasoning as the "size" channel's own sqrt default just above), and its
+// default range is `[0, <the mark's own full plot radius>]` -- `rangeExpr`
+// is that fallback, threaded in by the caller (translator.js, which has
+// the `dims` geometry this module otherwise never needs) since it can't be
+// a fixed literal the way size's `[2, 20]` is.
+export function resolveRadiusScale(def, {dataVar, rangeExpr, ignoreUnsupported = false, invalidOverride} = {}) {
+  const field = def.field;
+  const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
+  const domainNote = domainFallbackNote(def, ignoreUnsupported);
+  const domain = explicitDomain ?? zeroDomainFromData(dataVar, field);
+  const scaleType = def.scale && def.scale.type;
+  const ctor = {linear: 'scaleLinear', pow: 'scalePow', symlog: 'scaleSymlog'}[scaleType] || 'scaleSqrt';
+  const range = def.scale && def.scale.range ? formatValue(def.scale.range) : `[0, ${rangeExpr}]`;
+  return {
+    varName: 'radius',
+    decl: scaleDecl('radius', `d3.${ctor}(${domain}, ${range})`, domainNote, invalidOverride),
+    kind: 'continuous',
+  };
+}
+
 export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false, invalidOverride} = {}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
+  const discretized = discretizingScaleExpr(def, dataVar, {defaultRange: '[0.1, 1]'});
+  if (discretized) {
+    return {varName: 'opacity', decl: scaleDecl('opacity', discretized, domainNote, invalidOverride), kind: 'discretizing'};
+  }
   const domain = explicitDomain ?? domainFromData(dataVar, field);
   const range = def.scale && def.scale.range ? formatValue(def.scale.range) : '[0.1, 1]';
   return {

@@ -33,10 +33,6 @@ chart <- chart + ggplot2::geom_point(
 
 chart
 
-===== bar_layered_weather.vl.json [TRANSLATE] =====
-Unsupported: nested field reference "record.low" (dot-path into a sub-object) is not supported
-
-
 ===== boxplot_1D_invalid.vl.json [EXEC] =====
 Problem while computing stat.
 ℹ Error occurred in the 1st layer.
@@ -111,7 +107,7 @@ layer1_data <- dplyr::mutate(layer1_data, longitude = if (is.character(longitude
 chart <- chart + ggplot2::geom_point(
   data = layer1_data,
   mapping = ggplot2::aes(x = longitude, y = latitude),
-  size = 1,
+  size = 0.3965799,
   colour = "gray"
 )
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
@@ -120,7 +116,7 @@ layer2_data <- dplyr::mutate(layer2_data, latitude = if (is.character(latitude))
 chart <- chart + ggplot2::geom_point(
   data = layer2_data,
   mapping = ggplot2::aes(y = latitude, x = ""),
-  size = 1,
+  size = 0.3965799,
   colour = "steelblue"
 )
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
@@ -129,7 +125,7 @@ layer3_data <- dplyr::mutate(layer3_data, longitude = if (is.character(longitude
 chart <- chart + ggplot2::geom_point(
   data = layer3_data,
   mapping = ggplot2::aes(x = longitude, y = ""),
-  size = 1,
+  size = 0.3965799,
   colour = "firebrick"
 )
 # NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 500, height = 300)
@@ -219,7 +215,7 @@ layer2_data <- dplyr::mutate(layer2_data, longitude = if (is.character(longitude
 chart <- chart + ggplot2::geom_point(
   data = layer2_data,
   mapping = ggplot2::aes(x = longitude, y = latitude),
-  size = 5,
+  size = 0.8867797,
   colour = "gray"
 )
 # vl2ggplot: unsupported geographic encoding ("longitude"), plotting longitude/latitude as an unprojected quantitative x/y scatter instead (ignore_unsupported)
@@ -896,17 +892,51 @@ chart <- patchwork::wrap_plots(list(hconcat1, hconcat2), ncol = 2)
 
 chart
 
-===== test_aggregate_nested.vl.json [TRANSLATE] =====
-Unsupported: nested field reference "properties.yield" (dot-path into a sub-object) is not supported
+===== test_aggregate_nested.vl.json [EXEC] =====
+ℹ In argument: `properties__variety = (function(.v) if
+  (is.data.frame(.v)) .v[["variety"]] else sapply(.v, ...`.
+Caused by error:
+! object 'properties' not found
+library(ggplot2)
+
+# vl2ggplot: unsupported data "format.property" (extracting a nested array from a larger JSON object), using an empty data.frame instead (ignore_unsupported)
+chart_data <- data.frame()
+chart_data <- dplyr::mutate(chart_data, properties__variety = (function(.v) if (is.data.frame(.v)) .v[["variety"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["variety"]]))(properties))
+chart_data <- dplyr::mutate(chart_data, properties__yield = (function(.v) if (is.data.frame(.v)) .v[["yield"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["yield"]]))(properties))
+chart_data <- dplyr::mutate(chart_data, properties__site = (function(.v) if (is.data.frame(.v)) .v[["site"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["site"]]))(properties))
+chart_data <- dplyr::group_by(chart_data, properties__variety, properties__site)
+chart_data <- dplyr::summarise(chart_data, sum_properties__yield = sum(properties__yield, na.rm = TRUE), .groups = "drop")
+chart_data <- merge(do.call(expand.grid, stats::setNames(list(unique(chart_data[["properties__variety"]]), unique(chart_data[["properties__site"]])), c("properties__variety", "properties__site"))), chart_data, all.x = TRUE)
+chart_data <- dplyr::mutate(chart_data, sum_properties__yield = ifelse(is.na(sum_properties__yield), 0, sum_properties__yield))
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_col(
+  mapping = ggplot2::aes(
+  y = factor(properties__variety),
+  x = sum_properties__yield,
+  fill = factor(properties__site)
+),
+  orientation = "y"
+)
 
 
-===== test_subobject_missing.vl.json [TRANSLATE] =====
-Unsupported: nested field reference "options.price" (dot-path into a sub-object) is not supported
+chart
+
+===== test_subobject_nested.vl.json [EXEC] =====
+ℹ In argument: `source__reco = (function(.v) if (is.data.frame(.v))
+  .v[["reco"]] else sapply(.v, ...`.
+Caused by error in `.x[["reco"]]`:
+! object of type 'symbol' is not subsettable
+library(ggplot2)
+
+# vl2ggplot: unsupported data "format.property" (extracting a nested array from a larger JSON object), using an empty data.frame instead (ignore_unsupported)
+chart_data <- data.frame()
+chart_data <- dplyr::mutate(chart_data, source__reco = (function(.v) if (is.data.frame(.v)) .v[["reco"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["reco"]]))(source))
+chart_data <- dplyr::mutate(chart_data, source__yes = (function(.v) if (is.data.frame(.v)) .v[["yes"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["yes"]]))(source))
+chart <- ggplot2::ggplot(chart_data)
+chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(x = source__reco, y = source__yes))
 
 
-===== test_subobject_nested.vl.json [TRANSLATE] =====
-Unsupported: nested field reference "source.reco" (dot-path into a sub-object) is not supported
-
+chart
 
 ===== test_subobject.vl.json [EXEC] =====
 ℹ In argument: `source.reco = if (is.character(source.reco))
@@ -924,7 +954,51 @@ chart <- chart + ggplot2::geom_point(mapping = ggplot2::aes(x = source.reco, y =
 
 chart
 
-===== vconcat_flatten.vl.json [TRANSLATE] =====
-Unsupported: nested field reference "lc.time" (dot-path into a sub-object) is not supported
+===== vconcat_flatten.vl.json [EXEC] =====
+default method not implemented for type 'list'
+library(ggplot2)
 
+vconcat1_data <- data.frame(
+  id = c("001", "002", "003"),
+  ra = c(243.35, 210.35, 143.35),
+  dec = c("+54.6", "+14.6", "+33.6"),
+  lc = I(list(list(list(time = 1, mag = 18.5), list(time = 2, mag = 19)), list(list(time = 1, mag = 19.5), list(time = 2, mag = 20)), list(list(time = 1, mag = 19), list(time = 2, mag = 18)))),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
+vconcat1_data <- dplyr::group_by(vconcat1_data, ra, dec, id)
+vconcat1_data <- dplyr::summarise(vconcat1_data, , .groups = "drop")
+vconcat1 <- ggplot2::ggplot(vconcat1_data)
+vconcat1 <- vconcat1 + ggplot2::geom_point(
+  mapping = ggplot2::aes(x = ra, y = dec),
+  colour = "grey",
+  size = 3.965799
+)
+vconcat1 <- vconcat1 + ggplot2::labs(title = "Sky position")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 200)
+vconcat2_data <- data.frame(
+  id = c("001", "002", "003"),
+  ra = c(243.35, 210.35, 143.35),
+  dec = c("+54.6", "+14.6", "+33.6"),
+  lc = I(list(list(list(time = 1, mag = 18.5), list(time = 2, mag = 19)), list(list(time = 1, mag = 19.5), list(time = 2, mag = 20)), list(list(time = 1, mag = 19), list(time = 2, mag = 18)))),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+# vl2ggplot: skipped unsupported transform type "flatten" (ignore_unsupported)
+# vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
+vconcat2_data <- dplyr::filter(vconcat2_data, TRUE)
+vconcat2_data <- dplyr::mutate(vconcat2_data, lc__time = (function(.v) if (is.data.frame(.v)) .v[["time"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["time"]]))(lc))
+vconcat2_data <- dplyr::mutate(vconcat2_data, lc__mag = (function(.v) if (is.data.frame(.v)) .v[["mag"]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[["mag"]]))(lc))
+vconcat2 <- ggplot2::ggplot(vconcat2_data)
+vconcat2 <- vconcat2 + ggplot2::geom_line(
+  mapping = ggplot2::aes(x = lc__time, y = lc__mag, group = factor(id)),
+  colour = "steelblue"
+)
+vconcat2 <- vconcat2 + ggplot2::labs(title = "Light curve")
+# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = 300, height = 200)
+chart <- patchwork::wrap_plots(list(vconcat1, vconcat2), ncol = 1)
+
+
+chart
 

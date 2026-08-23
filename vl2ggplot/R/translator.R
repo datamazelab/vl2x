@@ -252,19 +252,41 @@ extract_subday_date_function_fields <- function(expr) {
 # their call sites a general field-path parser, detect this one shape up
 # front and flatten it into an ordinary new top-level column before any of
 # them ever see it.
+# Base identifier for a bracket/nested field path -- deliberately excludes
+# `.` (unlike expr.R's own more permissive .identifier_re), since a dot
+# here needs to be split *out* as its own nested-access segment below, not
+# swallowed into the base.
+.bracket_base_re <- "[A-Za-z_$][A-Za-z0-9_$]*"
+
 parse_bracket_field_path <- function(field) {
   if (!is.character(field) || length(field) != 1) return(NULL)
   # A bracket-indexed field path is either a string key (a compound
   # aggregate result, e.g. `argmax_US_Gross['Production Budget']`) or a
   # bare numeric index (a genuine array-valued column, e.g. a bullet
-  # chart's `ranges[2]`) -- both are parsed here, not just the string-key
-  # shape (see vl2d3's identical parseBracketFieldPath() for the same fix).
-  m <- regmatches(field, regexec(paste0("^(", .identifier_re, ")((?:\\[(?:'[^']*'|\"[^\"]*\"|-?[0-9]+)\\])+)$"), field, perl = TRUE))[[1]]
+  # chart's `ranges[2]`) -- both parsed here, not just the string-key
+  # shape. An *unescaped* `.` is Vega-Lite's other nested-access
+  # convention -- reading a sub-property of an object-valued column (e.g.
+  # bar_layered_weather.vl.json's own "record.low", reading a `low` field
+  # out of each row's `{"record": {"low": ..., "high": ...}}`-shaped
+  # value) -- as opposed to a literal dot *within* one flat column name,
+  # which must be backslash-escaped ("record\\.low", handled separately by
+  # field_ref()'s own unescape step -- this regex's charset has no
+  # backslash in it at all, so an escaped field never matches here and
+  # reaches that unescaping untouched). Both `.identifier` and `[key]`
+  # segments can freely mix (`"a.b[0].c"`), sharing one `keys` list either
+  # way (see vl2d3's identical parseBracketFieldPath() for the same fix).
+  m <- regmatches(field, regexec(paste0("^(", .bracket_base_re, ")((?:\\.", .bracket_base_re, "|\\[(?:'[^']*'|\"[^\"]*\"|-?[0-9]+)\\])+)$"), field, perl = TRUE))[[1]]
   if (length(m) == 0) return(NULL)
   base <- m[2]
-  raw_keys <- regmatches(m[3], gregexpr("\\[[^]]*\\]", m[3]))[[1]]
-  keys <- gsub("^\\['|^\\[\"|'\\]$|\"\\]$|^\\[|\\]$", "", raw_keys)
-  list(base = base, keys = keys)
+  raw_keys <- regmatches(m[3], gregexpr(paste0("\\.", .bracket_base_re, "|\\[[^]]*\\]"), m[3], perl = TRUE))[[1]]
+  keys <- vapply(raw_keys, function(k) {
+    if (startsWith(k, ".")) substring(k, 2) else gsub("^\\['|^\\[\"|'\\]$|\"\\]$|^\\[|\\]$", "", k)
+  }, character(1), USE.NAMES = FALSE)
+  # "dot" (nested-object access) vs "bracket" (array/compound-aggregate
+  # index) -- flatten_bracket_fields() needs to know which, since the two
+  # need different R access code (see its own doc comment).
+  kinds <- vapply(raw_keys, function(k) if (startsWith(k, ".")) "dot" else "bracket", character(1), USE.NAMES = FALSE)
+  list(base = base, keys = keys, kinds = kinds)
 }
 
 flatten_bracket_fields <- function(encoding, work_var) {
@@ -276,19 +298,46 @@ flatten_bracket_fields <- function(encoding, work_var) {
     parsed <- parse_bracket_field_path(def$field)
     if (is.null(parsed)) next
     flat_field <- paste0(parsed$base, "__", paste(gsub("[^A-Za-z0-9_]", "_", parsed$keys), collapse = "__"))
-    access_expr <- ".x"
-    for (k in parsed$keys) {
-      # A bare numeric key is Vega-Lite/JS's own 0-based array index (e.g.
-      # `ranges[2]` means the *third* element) -- R indexing is 1-based, so
-      # this needs the `+ 1` to land on the same element; a quoted string
-      # key (a compound-aggregate field name) needs no such shift.
-      is_numeric_key <- grepl("^-?[0-9]+$", k)
-      index_expr <- if (is_numeric_key) as.character(as.integer(k) + 1L) else render_string(k)
-      access_expr <- sprintf("%s[[%s]]", access_expr, index_expr)
+    # Built as a chain of whole-column steps (not one sapply(base, function(.x)
+    # .x[[k1]][[k2]]...) wrapping every key at once), since a "dot" step
+    # (nested-object access) and a "bracket" step (array/compound-aggregate
+    # index) need genuinely different R code:
+    #  - bracket: the column is always a genuine list column (jsonlite never
+    #    auto-simplifies a JSON *array* field into a data.frame the way it
+    #    does an object field), so sapply(..., function(.x) .x[[i]]) is
+    #    always right (unchanged from before this dot-path support existed).
+    #  - dot: jsonlite's own default loading (simplifyDataFrame = TRUE, the
+    #    only mode this project's data-loading code uses) auto-simplifies a
+    #    *structurally uniform* nested JSON object field (e.g.
+    #    bar_layered_weather.vl.json's own "record": {"low": ..., "high":
+    #    ...} on every row) into a nested data.frame *column* already --
+    #    `record[["low"]]` directly, no per-row iteration at all -- but
+    #    falls back to a genuine list column when rows aren't uniform (a
+    #    missing key on some row, etc.), needing the sapply form instead.
+    #    Checked at *runtime* (`is.data.frame(.v)`), since which shape
+    #    jsonlite picked isn't knowable until the real data has loaded.
+    access_expr <- field_ref(parsed$base)
+    for (i in seq_along(parsed$keys)) {
+      k <- parsed$keys[i]
+      if (identical(parsed$kinds[i], "dot")) {
+        key_expr <- render_string(k)
+        access_expr <- sprintf(
+          "(function(.v) if (is.data.frame(.v)) .v[[%s]] else sapply(.v, function(.x) if (is.null(.x)) NA else .x[[%s]]))(%s)",
+          key_expr, key_expr, access_expr
+        )
+      } else {
+        # A bare numeric key is Vega-Lite/JS's own 0-based array index (e.g.
+        # `ranges[2]` means the *third* element) -- R indexing is 1-based,
+        # so this needs the `+ 1` to land on the same element; a quoted
+        # string key (a compound-aggregate field name) needs no such shift.
+        is_numeric_key <- grepl("^-?[0-9]+$", k)
+        index_expr <- if (is_numeric_key) as.character(as.integer(k) + 1L) else render_string(k)
+        access_expr <- sprintf("sapply(%s, function(.x) .x[[%s]])", access_expr, index_expr)
+      }
     }
     statements <- c(statements, sprintf(
-      "%s <- dplyr::mutate(%s, %s = sapply(%s, function(.x) %s))",
-      work_var, work_var, render_name(flat_field), field_ref(parsed$base), access_expr
+      "%s <- dplyr::mutate(%s, %s = %s)",
+      work_var, work_var, render_name(flat_field), access_expr
     ))
     rewritten[[ch]] <- def
     rewritten[[ch]]$field <- flat_field
@@ -463,7 +512,7 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   # the resulting summarise() drops that column while the plot's aes()
   # (inherited separately, by ggplot2 itself) still expects it.
   plan <- if (length(channel_entries(encoding_effective)) > 0) {
-    plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported, facet_group_fields)
+    plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported, facet_group_fields, has_dodge = !is.null(offset_field))
   } else {
     list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE)
   }
@@ -633,7 +682,7 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 
   facet_def <- extract_facet_channels(prepared$original_encoding)
   if (!is.null(facet_def)) {
-    facet_scales <- if (identical(mark_type0, "arc")) "free_y" else NULL
+    facet_scales <- resolve_facet_scales(spec, has_arc = identical(mark_type0, "arc"))
     emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = facet_scales)))
   }
 
@@ -666,6 +715,23 @@ spec_has_arc_mark <- function(spec) {
     return(any(vapply(spec$layer, spec_has_arc_mark, logical(1))))
   }
   FALSE
+}
+
+# The ggplot2 `scales` argument for render_facet_call() -- "free_x"/
+# "free_y"/"free" when a channel's own axis needs an independent per-panel
+# domain, "fixed" (`NULL` here, ggplot2's own default) otherwise. Combines
+# two independent reasons a channel might need freeing: an explicit
+# `resolve: {scale: {x/y: "independent"}}` (e.g. facet_bullet.vl.json's own
+# `resolve.scale.x`, needed since each row's own metric -- revenue,
+# profit%, ... -- has a wildly different natural magnitude) and an "arc"
+# mark's own theta/radius (ggplot2's y) requirement (`has_arc`, already
+# computed by every call site the same way it was before this helper
+# existed).
+resolve_facet_scales <- function(spec, has_arc = FALSE) {
+  resolve_scale <- spec$resolve$scale %||% list()
+  free_x <- identical(resolve_scale$x, "independent")
+  free_y <- identical(resolve_scale$y, "independent") || has_arc
+  if (free_x && free_y) "free" else if (free_x) "free_x" else if (free_y) "free_y" else NULL
 }
 
 extract_facet_channels <- function(encoding) {
@@ -845,7 +911,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   apply_common(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported)
 
   if (!is.null(facet_def)) {
-    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = if (has_arc) "free_y" else NULL)))
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = resolve_facet_scales(spec, has_arc))))
   }
 
   plot_var
@@ -858,7 +924,7 @@ translate_facet <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   child_var <- translate_spec(child_spec, emitter, child_hint, ignore_unsupported)
 
   plot_var <- new_var(emitter, hint)
-  facet_scales <- if (spec_has_arc_mark(child_spec)) "free_y" else NULL
+  facet_scales <- resolve_facet_scales(spec, has_arc = spec_has_arc_mark(child_spec))
   emit(emitter, sprintf("%s <- %s + %s", plot_var, child_var, render_facet_call(spec$facet, spec$columns, scales = facet_scales)))
   plot_var
 }
@@ -970,7 +1036,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
 
   apply_common(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported)
   if (!is.null(facet_def)) {
-    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = if (has_arc) "free_y" else NULL)))
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, render_facet_call(facet_def, scales = resolve_facet_scales(spec, has_arc))))
   }
   plot_var
 }

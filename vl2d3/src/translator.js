@@ -26,6 +26,7 @@ import {
   resolveSizeScale,
   resolveOpacityScale,
   resolveShapeScale,
+  resolveRadiusScale,
   resolveOffsetScale,
   sharedChannelDomainExpr,
 } from './scales.js';
@@ -66,7 +67,36 @@ function mergeDown(child, wrapper) {
   const merged = {...child};
   if (!merged.data && wrapper.data) merged.data = wrapper.data;
   if (wrapper.transform) merged.transform = [...wrapper.transform, ...(merged.transform || [])];
-  if (wrapper.encoding) merged.encoding = {...wrapper.encoding, ...(merged.encoding || {})};
+  if (wrapper.encoding) {
+    // A per-CHANNEL merge, not a per-channel-KEY replace: a layer/facet
+    // wrapper's own shared channel definition (e.g. wheat_wages.vl.json's
+    // shared `x: {type: "quantitative", axis: {...}}`) commonly leaves a
+    // child layer to declare only the *field* for that same channel (e.g.
+    // just `x: {field: "year"}`) -- a flat `{...wrapper.encoding,
+    // ...child.encoding}` would let the child's own `x` object wholesale
+    // *replace* the wrapper's, discarding its "type" (and anything else)
+    // entirely, silently leaving that channel with no explicit type at
+    // all (falling into scales.js's own "ambiguous, check at runtime"
+    // fallback -- and, worse, that fallback's own domain computation
+    // doesn't union multiple layers' differently-named fields the way the
+    // non-ambiguous branches do, e.g. facet_bullet.vl.json's own six
+    // `ranges[N]`/`measures[N]`/`markers[0]`-keyed layers sharing one `x`).
+    // Each overlapping channel is deep-merged instead, one level down
+    // (child's own properties still win over the wrapper's on conflict).
+    const channels = new Set([...Object.keys(wrapper.encoding), ...Object.keys(merged.encoding || {})]);
+    const mergedEncoding = {};
+    for (const ch of channels) {
+      const wrapperDef = wrapper.encoding[ch];
+      const childDef = merged.encoding && merged.encoding[ch];
+      mergedEncoding[ch] =
+        wrapperDef && typeof wrapperDef === 'object' && childDef && typeof childDef === 'object'
+          ? {...wrapperDef, ...childDef}
+          : childDef !== undefined
+            ? childDef
+            : wrapperDef;
+    }
+    merged.encoding = mergedEncoding;
+  }
   return merged;
 }
 
@@ -320,7 +350,7 @@ function collectInvalidFilterFields(encoding, transformList, excludeChannels = [
     // produces `null` (not a crash) for a genuinely missing/short array,
     // so the one gap this leaves is a real `NaN`/non-array value at that
     // exact index slipping through unfiltered, not a broken chart.
-    const bracketBase = parseBracketFieldPath(def.field)?.base;
+    const bracketBase = !def.__wasEscaped && parseBracketFieldPath(def.field)?.base;
     if (bracketBase || produced.has(def.field)) continue;
     fields.add(def.field);
   }
@@ -342,7 +372,17 @@ function unescapeEncodingFields(encoding) {
   for (const ch of Object.keys(encoding)) {
     const def = encoding[ch];
     if (def && typeof def === 'object' && typeof def.field === 'string' && def.field.includes('\\')) {
-      rewritten[ch] = {...def, field: unescapeFieldPath(def.field)};
+      // `__wasEscaped` (an internal marker, never read anywhere except
+      // parseBracketFieldPath()'s own caller below) records that this
+      // field's dot(s) were deliberately backslash-escaped in the source
+      // spec -- meaning "a literal flat column name", NOT nested-object
+      // access -- a distinction this unescape step's own output (a plain
+      // string with the backslash already stripped) can no longer convey
+      // on its own: "a.b" alone is ambiguous between an escaped
+      // "a\\.b" (this case) and a genuinely-nested, never-escaped "a.b"
+      // (bar_layered_weather.vl.json's own "record.low", e.g.) by the time
+      // flattenBracketFields() gets to it.
+      rewritten[ch] = {...def, field: unescapeFieldPath(def.field), __wasEscaped: true};
     }
   }
   return rewritten;
@@ -364,10 +404,24 @@ function parseBracketFieldPath(field) {
   // bare numeric index (a genuine array-valued column, e.g. a bullet
   // chart's `ranges[2]`) -- both resolve the same way at access time
   // (`arr[2]` and `arr["2"]` are equivalent in JS), so both are parsed
-  // here rather than only the string-key shape.
-  const m = /^([A-Za-z_$][\w$]*)((?:\[(?:'[^']*'|"[^"]*"|-?\d+)\])+)$/.exec(String(field));
+  // here rather than only the string-key shape. An *unescaped* `.` is
+  // Vega-Lite's other nested-access convention -- reading a sub-property
+  // of an object-valued column (e.g. bar_layered_weather.vl.json's own
+  // "record.low", reading `datum.record.low` out of a `{"record": {"low":
+  // ..., "high": ...}}`-shaped row) -- as opposed to a literal dot *within*
+  // one flat column name, which must be backslash-escaped
+  // ("record\\.low", handled separately by unescapeFieldPath() /
+  // unescapeEncodingFields()); this regex's charset has no backslash in it
+  // at all, so an escaped field never matches here and falls through to
+  // that other handling untouched. Both `.identifier` and `[key]` segments
+  // can freely mix (`"a.b[0].c"`), sharing one `keys` list either way --
+  // flattenBracketFields() (below) doesn't care which syntax produced a
+  // given key, just how to look it up.
+  const m = /^([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*|\[(?:'[^']*'|"[^"]*"|-?\d+)\])+)$/.exec(String(field));
   if (!m) return null;
-  const keys = [...m[2].matchAll(/\[(?:'([^']*)'|"([^"]*)"|(-?\d+))\]/g)].map(km => (km[3] !== undefined ? Number(km[3]) : km[1] ?? km[2]));
+  const keys = [...m[2].matchAll(/\.([A-Za-z_$][\w$]*)|\[(?:'([^']*)'|"([^"]*)"|(-?\d+))\]/g)].map(km =>
+    km[1] !== undefined ? km[1] : km[4] !== undefined ? Number(km[4]) : km[2] ?? km[3]
+  );
   return {base: m[1], keys};
 }
 
@@ -376,7 +430,7 @@ function flattenBracketFields(encoding, dataVar) {
   const rewritten = {...encoding};
   for (const ch of Object.keys(encoding)) {
     const def = encoding[ch];
-    if (!def || typeof def !== 'object' || !def.field) continue;
+    if (!def || typeof def !== 'object' || !def.field || def.__wasEscaped) continue;
     const parsed = parseBracketFieldPath(def.field);
     if (!parsed) continue;
     const flatField = `${parsed.base}__${parsed.keys.map(k => String(k).replace(/[^A-Za-z0-9_]/g, '_')).join('__')}`;
@@ -471,13 +525,20 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     }
 
     const dataVar = `data${i + 1}`;
-    if (i === 0 && dataParam && !child.data) {
+    if (dataParam && !child.data) {
       // Rows for this panel are already loaded, wrapper-transformed, and
       // split down to this one facet value's own subset by the runtime
       // facet orchestrator (see buildRuntimeFacetPanels()) -- no separate
       // load of this panel's own copy needed (or, for a URL source,
       // possible at all: the distinct facet values themselves are only
-      // knowable once that shared load has actually happened).
+      // knowable once that shared load has actually happened). Applies to
+      // every layer child lacking its own `data` (not just the first,
+      // `i === 0`) -- a multi-layer facet template (e.g.
+      // facet_bullet.vl.json's own 6-layer bullet-chart spec, none of
+      // whose layers declare their own `data`) previously left every
+      // layer *after* the first with an empty dataset instead (the
+      // `renderDataLoad(undefined, ...)` fallback in the `else` branch
+      // below), rendering only that one layer.
       b(`let ${dataVar} = ${dataParam};`);
     } else {
       const {statements: loadStmts} = renderDataLoad(child.data, dataVar, ignoreUnsupported);
@@ -495,6 +556,26 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
     const {statements: bracketStmts, encoding: encodingAfterBracket} = flattenBracketFields(encodingIn, dataVar);
     bracketStmts.forEach(b);
+    // A bracket/nested-path field (`ranges[2]`, `record.low`, ...) couldn't
+    // be invalid-filtered above -- the raw field lookup collectInvalidFilterFields()
+    // would have built is meaningless before flattenBracketFields() has
+    // even run -- so it's filtered now instead, against the real flat
+    // field flattening just produced, using the exact same channel-type/
+    // path-continuity rules (a null/NaN nested value doesn't crash on its
+    // own -- flattenBracketFields()'s own `== null ? null : ...` chain
+    // already produces a plain `null` -- but left through unfiltered, it
+    // still reaches a scale as `NaN`, e.g. bar_layered_weather.vl.json's
+    // own sparse `forecast.*` fields on days with no forecast yet).
+    if (invalidHandlingMode(root, child.mark) === 'filter') {
+      const flattenedChannels = Object.keys(encodingIn).filter(
+        ch => encodingIn[ch] !== encodingAfterBracket[ch] && encodingAfterBracket[ch] && encodingAfterBracket[ch].field
+      );
+      const flattenedEncoding = Object.fromEntries(flattenedChannels.map(ch => [ch, encodingAfterBracket[ch]]));
+      renderInvalidFilter(
+        dataVar,
+        collectInvalidFilterFields(flattenedEncoding, child.transform, pathContinuityChannels(child.mark))
+      ).forEach(b);
+    }
     encodingIn = encodingAfterBracket;
 
     const {statements: prepStmts, encoding: encodingAfterPrep} = prepareEncoding(encodingIn, dataVar, ignoreUnsupported);
@@ -517,7 +598,18 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   const scales = {};
 
   for (const channel of ['x', 'y']) {
-    const def = prepared.map(p => p.encoding[channel]).find(Boolean);
+    // `.find(d => d && (d.field || d.datum !== undefined))`, not `.find(Boolean)`: the first layer
+    // declaring this channel at all commonly binds it to a literal
+    // `{"value": ...}` instead of a real field (e.g.
+    // layer_ranged_dot.vl.json's own line layer, `color: {"value":
+    // "#db646f"}`) while a *later* layer needs a real scale for the same
+    // channel (that same spec's point layer, `color: {"field": "year",
+    // ...}`) -- `.find(Boolean)` would grab the first (valueless) def,
+    // hit the `'value' in def` check below, and skip building a scale for
+    // the whole chart, silently leaving the later layer's own real field
+    // unscaled (its raw field value spliced in as a color/size/etc
+    // literal instead).
+    const def = prepared.map(p => p.encoding[channel]).find(d => d && (d.field || d.datum !== undefined));
     if (!def || 'value' in def) continue;
     // Layers sharing this scale can each declare the channel against a
     // *different* source field (e.g. a reference-band layer's own `x:
@@ -603,8 +695,20 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     ['size', resolveSizeScale],
     ['opacity', resolveOpacityScale],
     ['shape', resolveShapeScale],
+    ['radius', resolveRadiusScale],
   ]) {
-    const def = prepared.map(p => p.encoding[channel]).find(Boolean);
+    // `.find(d => d && (d.field || d.datum !== undefined))`, not `.find(Boolean)`: the first layer
+    // declaring this channel at all commonly binds it to a literal
+    // `{"value": ...}` instead of a real field (e.g.
+    // layer_ranged_dot.vl.json's own line layer, `color: {"value":
+    // "#db646f"}`) while a *later* layer needs a real scale for the same
+    // channel (that same spec's point layer, `color: {"field": "year",
+    // ...}`) -- `.find(Boolean)` would grab the first (valueless) def,
+    // hit the `'value' in def` check below, and skip building a scale for
+    // the whole chart, silently leaving the later layer's own real field
+    // unscaled (its raw field value spliced in as a color/size/etc
+    // literal instead).
+    const def = prepared.map(p => p.encoding[channel]).find(d => d && (d.field || d.datum !== undefined));
     // `"scale": null` is Vega-Lite's own "use the raw field value directly
     // as the visual channel value, no mapping at all" escape hatch (e.g. a
     // `color` field that already holds real CSS color strings). Building no
@@ -621,7 +725,12 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     const invalidOverride = root.config && root.config.scale && root.config.scale.invalid && root.config.scale.invalid[channel]
       ? root.config.scale.invalid[channel].value
       : undefined;
-    const scale = resolver(def, {dataVar: allDataExpr, ignoreUnsupported, invalidOverride});
+    const scale = resolver(def, {
+      dataVar: allDataExpr,
+      ignoreUnsupported,
+      invalidOverride,
+      rangeExpr: `Math.min(${dims.innerWidthExpr}, ${dims.innerHeightExpr}) / 2`,
+    });
     b(scale.decl);
     scales[channel] = scale;
   }
@@ -712,13 +821,17 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   }
 
   // -- basic categorical color legend --
-  if (scales.color && scales.color.kind === 'ordinal') {
+  // `legend: null` (e.g. concat_population_pyramid.vl.json's own Female/Male
+  // bar layers, which already show gender via the panel titles) is Vega-
+  // Lite's explicit opt-out for a channel that would otherwise get one.
+  const colorLegendDef = prepared.map(p => p.encoding.color).find(Boolean);
+  if (scales.color && scales.color.kind === 'ordinal' && !(colorLegendDef && colorLegendDef.legend === null)) {
     // A cyclic-timeUnit color channel (prepare.js's `ordinalTimeUnit`, e.g.
     // line_quarter_legend.vl.json's `color: {timeUnit: "quarter", ...}`)
     // still holds real Date values, not display-ready strings -- shown as
     // "Q1"/"Jan"/etc (cyclicLabelExpr(), timeunit.js) instead of a raw
     // `Date.toString()`, matching Vega-Lite's own legend labels.
-    const colorDef = prepared.map(p => p.encoding.color).find(Boolean);
+    const colorDef = colorLegendDef;
     const labelExpr = colorDef && colorDef.ordinalTimeUnit ? cyclicLabelExpr(colorDef.ordinalTimeUnit, 'd') : null;
     b('{');
     b('  const legend = svg.append("g").attr("transform", `translate(${width - marginRight - 100},${marginTop})`);');
@@ -850,6 +963,40 @@ function normalizeFacetDef(facetDef) {
 // simplification: every panel shares one generic text header (the raw or
 // timeUnit'd facet value) rather than Vega-Lite's own fully templated
 // header (labelExpr, format, title, ...).
+// A `{"step": N}` per-category width/height (e.g. facet_grid_bar.vl.json's
+// own `"height": {"step": 8}`, one thin 8px-per-category row strip per
+// panel) -- unlike a plain pixel number, this has no fixed value at all
+// until the *panel's own* band-scale channel's distinct-value count is
+// known, which (for a runtime-split facet panel) only happens once that
+// panel's own rows have actually been filtered out -- so this returns
+// `const` statements to emit *inside* the per-panel loop (right before
+// invoking the template, referencing that iteration's own rows variable)
+// alongside the object-literal fragment (e.g. `"height: __panelHeight,
+// ...(__panelHeight < 50 ? {...} : {})"`) to splice into panelOptionsExpr,
+// rather than a static value computable once up front the way a plain
+// number already is.
+function stepPanelDimsCode(templateEncoding, sizeSpecSource, rowsVar) {
+  const statements = [];
+  const fragments = [];
+  const axes = [
+    {prop: 'width', channel: 'x', varName: '__panelWidth', marginA: 'marginLeft', marginB: 'marginRight', factorA: 0.3, factorB: 0.1},
+    {prop: 'height', channel: 'y', varName: '__panelHeight', marginA: 'marginTop', marginB: 'marginBottom', factorA: 0.3, factorB: 0.4},
+  ];
+  for (const {prop, channel, varName, marginA, marginB, factorA, factorB} of axes) {
+    const sizeSpec = sizeSpecSource[prop];
+    if (!sizeSpec || typeof sizeSpec !== 'object' || typeof sizeSpec.step !== 'number') continue;
+    const channelDef = templateEncoding && templateEncoding[channel];
+    if (!channelDef || !channelDef.field) continue;
+    statements.push(
+      `const ${varName} = ${formatValue(sizeSpec.step)} * new d3.InternSet(${rowsVar}.map(d => d[${JSON.stringify(channelDef.field)}])).size;`
+    );
+    fragments.push(
+      `${prop}: ${varName}, ...(${varName} < 50 ? {${marginA}: Math.max(1, Math.round(${varName} * ${formatValue(factorA)})), ${marginB}: Math.max(1, Math.round(${varName} * ${formatValue(factorB)}))} : {})`
+    );
+  }
+  return {statements, fragments};
+}
+
 function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, prefix = '') {
   const {def: facetDef, direction} = facetInfo;
   if (direction === 'grid') return buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix);
@@ -949,12 +1096,11 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   // trellis_area_seattle's `spec: {width: 800, height: 25}`, one thin
   // strip per facet value) when given, rather than every panel silently
   // falling back to the same default 640x400 the outer chart itself would.
-  // A `{"step": n}` per-category size (rather than a fixed pixel size) has
-  // no direct pixel equivalent without knowing the category count -- an
-  // out-of-scope simplification already documented elsewhere in this
-  // project (e.g. apply_common()'s identical note, translator.R) -- so
-  // only a plain number is passed through here; anything else is left for
-  // the panel's own default, same as if no width/height were given at all.
+  // A `{"step": n}` per-category size (rather than a fixed pixel size,
+  // e.g. facet_grid_bar.vl.json's own `"height": {"step": 8}`) is handled
+  // by stepPanelDimsCode() below instead -- its own value isn't knowable
+  // until each panel's own rows (and so its own band-scale category count)
+  // exist, unlike a plain pixel number.
   const panelDims = [];
   if (typeof root.spec.width === 'number') panelDims.push(`width: ${formatValue(root.spec.width)}`);
   if (typeof root.spec.height === 'number') panelDims.push(`height: ${formatValue(root.spec.height)}`);
@@ -977,7 +1123,8 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
     panelDims.push(`marginLeft: ${Math.max(1, Math.round(root.spec.width * 0.3))}`);
     panelDims.push(`marginRight: ${Math.max(1, Math.round(root.spec.width * 0.1))}`);
   }
-  const panelOptionsExpr = panelDims.length > 0 ? `{...options, ${panelDims.join(', ')}}` : 'options';
+  const {statements: stepDimStmts, fragments: stepDimFragments} = stepPanelDimsCode(templateSpec.encoding, root.spec, 'rows');
+  const panelOptionsExpr = panelDims.length > 0 || stepDimFragments.length > 0 ? `{...options, ${[...panelDims, ...stepDimFragments].join(', ')}}` : 'options';
   b(`const doc = container.ownerDocument;`);
   b(`const wrap = doc.createElement("div");`);
   b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 4px;";`);
@@ -998,6 +1145,7 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   b(`  panelWrap.appendChild(label);`);
   b(`  const panel = doc.createElement("div");`);
   b(`  panelWrap.appendChild(panel);`);
+  stepDimStmts.forEach(s => b(`  ${s}`));
   const domainArgs = sharedDomainChannels.map(ch => sharedDomainVars[ch]);
   b(`  await ${templateName}(panel, ${panelOptionsExpr}, rows${domainArgs.length ? ', ' + domainArgs.join(', ') : ''});`);
   b(`}`);
@@ -1103,7 +1251,11 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
     panelDims.push(`marginLeft: ${Math.max(1, Math.round(root.spec.width * 0.3))}`);
     panelDims.push(`marginRight: ${Math.max(1, Math.round(root.spec.width * 0.1))}`);
   }
-  const panelOptionsExpr = panelDims.length > 0 ? `{...options, ${panelDims.join(', ')}}` : 'options';
+  // `{"step": n}` case (e.g. facet_grid_bar.vl.json's own `"width": 60,
+  // "height": {"step": 8}`) -- see stepPanelDimsCode()'s own doc comment.
+  const {statements: stepDimStmts, fragments: stepDimFragments} = stepPanelDimsCode(templateSpec.encoding, root.spec, '__cellRows');
+  const panelOptionsExpr =
+    panelDims.length > 0 || stepDimFragments.length > 0 ? `{...options, ${[...panelDims, ...stepDimFragments].join(', ')}}` : 'options';
 
   const rowLabelExpr = rowIsTemporal
     ? `rowKey instanceof Date ? d3.timeFormat(${rowDef.timeUnit && String(rowDef.timeUnit).match(/hours|minutes|seconds/) ? '"%-I:%M %p"' : '"%b %-d, %Y"'})(rowKey) : String(rowKey)`
@@ -1135,6 +1287,7 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
   b(`    const panel = doc.createElement("div");`);
   b(`    grid.appendChild(panel);`);
   b(`    const __cellRows = facetData.filter(d => d["__facetRowKey"] === rowKey && d["__facetColKey"] === colKey);`);
+  stepDimStmts.forEach(s => b(`    ${s}`));
   b(
     `    if (__cellRows.length > 0) await ${templateName}(panel, ${panelOptionsExpr}, __cellRows${domainArgs.length ? ', ' + domainArgs.join(', ') : ''});`
   );
@@ -1196,7 +1349,16 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
     lines.push(...buildPanelFunction(child, childNames[i], ignoreUnsupported));
   });
 
-  const flexStyle = direction === 'column' ? 'flex-direction: column;' : 'flex-wrap: wrap;';
+  const flexStyle = direction === 'column' ? 'flex-direction: column;' : 'flex-direction: row;';
+  // `columns` (only meaningful for a plain "concat", not hconcat/vconcat
+  // which are already fixed to one row/column) forces a hard wrap every N
+  // children regardless of the container's own width -- a flexbox's own
+  // width-triggered `flex-wrap` can't express that (e.g. it would happily
+  // fit 3 narrow panels on one row where the spec calls for 2 + 1), so a
+  // CSS grid with an explicit column count is used instead whenever it's
+  // given.
+  const columns = compositionKey === 'concat' && typeof spec.columns === 'number' ? spec.columns : null;
+  const gap = typeof spec.spacing === 'number' ? spec.spacing : 12;
   const wrapperBody = [];
   const b = s => wrapperBody.push('  ' + s);
   b(
@@ -1210,15 +1372,46 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
   // run against jsdom doesn't unless it's explicitly exposed globally).
   b(`const doc = container.ownerDocument;`);
   b(`const wrap = doc.createElement("div");`);
-  b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 12px;";`);
+  if (columns) {
+    b(`wrap.style.cssText = "display: grid; grid-template-columns: repeat(${columns}, auto); gap: ${gap}px;";`);
+  } else {
+    b(`wrap.style.cssText = "display: flex; ${flexStyle} flex-wrap: wrap; gap: ${gap}px;";`);
+  }
   b(`container.appendChild(wrap);`);
-  for (const childName of childNames) {
+  children.forEach((child, i) => {
+    // Each panel's own `width`/`height` (a plain number, e.g. a
+    // concat_bar_scales_discretize.vl.json-style child with none at all)
+    // is threaded into its own invocation the same way a facet panel's
+    // is (buildRuntimeFacetPanels()'s own identical panelDims) -- the
+    // generated child function itself only ever falls back to a bare
+    // `options.width ?? 640`, with no way to see its own originating
+    // spec's width/height unless the caller passes it in explicitly.
+    // Absent an explicit size, concat/hconcat/vconcat children default to
+    // a much smaller size than a standalone chart's own 640x400 (closer
+    // to Vega-Lite's own default view size) -- previously every panel
+    // silently inherited the *outer* chart's own `options` unchanged,
+    // rendering each one at the full default size regardless of how many
+    // panels needed to fit side by side.
+    const panelDims = [];
+    panelDims.push(`width: ${typeof child.width === 'number' ? formatValue(child.width) : 200}`);
+    panelDims.push(`height: ${typeof child.height === 'number' ? formatValue(child.height) : 200}`);
+    const childWidth = typeof child.width === 'number' ? child.width : 200;
+    const childHeight = typeof child.height === 'number' ? child.height : 200;
+    if (childHeight < 50) {
+      panelDims.push(`marginTop: ${Math.max(1, Math.round(childHeight * 0.3))}`);
+      panelDims.push(`marginBottom: ${Math.max(1, Math.round(childHeight * 0.4))}`);
+    }
+    if (childWidth < 80) {
+      panelDims.push(`marginLeft: ${Math.max(1, Math.round(childWidth * 0.3))}`);
+      panelDims.push(`marginRight: ${Math.max(1, Math.round(childWidth * 0.1))}`);
+    }
+    const childOptionsExpr = `{...options, ${panelDims.join(', ')}}`;
     b(`{`);
     b(`  const panel = doc.createElement("div");`);
     b(`  wrap.appendChild(panel);`);
-    b(`  await ${childName}(panel, options);`);
+    b(`  await ${childNames[i]}(panel, ${childOptionsExpr});`);
     b(`}`);
-  }
+  });
   b('return wrap;');
 
   lines.push(...buildFunction(fnName, wrapperBody, prefix));
