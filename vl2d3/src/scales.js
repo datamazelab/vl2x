@@ -394,6 +394,18 @@ export function resolveColorScale(def, {dataVar, ignoreUnsupported = false, inva
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
   const scheme = def.scale && def.scale.scheme;
+  // Absent an explicit `config.scale.invalid.color.value` override, a null
+  // raw value fed straight into the scale (an ordinal scale's own
+  // `.unknown()` default of `undefined`, or a NaN quantitative/discretizing
+  // output) resolves to an *invalid* SVG paint string -- which a browser's
+  // default fallback then renders as solid black, not invisible, easy to
+  // mistake for "the mark is drawn opaque and wrong" rather than "this
+  // specific row's color couldn't be resolved" (verified via
+  // bar_invalid_color_show.vl.json's own null-`color` row: real Vega-Lite
+  // simply doesn't paint that segment at all). Defaulting the override to
+  // "none" (rather than leaving the raw scale output for null to reach the
+  // DOM untouched) matches that -- an explicit override still always wins.
+  invalidOverride = invalidOverride === undefined ? 'none' : invalidOverride;
 
   if (def.type === 'quantitative' || def.type === 'temporal') {
     const discretized = discretizingScaleExpr(def, dataVar, {interpolator: 'interpolateBlues'});

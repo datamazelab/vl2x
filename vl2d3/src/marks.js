@@ -32,14 +32,57 @@ function markPropNote(value, propName, ignoreUnsupported) {
 }
 
 // A channel definition resolves to one of: a literal `value`, a scaled
-// field access (`scaleVar(d["field"])`), or a raw field access (no scale
-// resolved for this channel, e.g. `text`).
-function accessor(def, scales, channel) {
+// field access (`scaleVar(d["field"])`), a raw field access (no scale
+// resolved for this channel, e.g. `text`), or -- see
+// conditionalAccessorExpr() -- a `condition` (evaluated per-row, falling
+// back to this same def's own base field/value, or `noBaseFallback`, when
+// the condition doesn't match).
+function accessor(def, scales, channel, noBaseFallback = 'undefined', ignoreUnsupported = false) {
   if (!def) return null;
+  if (def.condition) return conditionalAccessorExpr(def, scales, channel, noBaseFallback, ignoreUnsupported);
   if ('value' in def) return formatValue(def.value);
   const scale = scales[channel];
   const field = `d[${JSON.stringify(def.field)}]`;
   return scale ? `${scale.varName}(${field})` : field;
+}
+
+// `encoding.<channel>.condition` (e.g. bar_grouped_thin.vl.json's own
+// `color: {condition: {test: "datum['IMDB Rating'] === null || ...",
+// value: "#aaa"}}`, with no base field/value at all outside the
+// condition) -- a per-row ternary, evaluating each condition's own `test`
+// (the same JS-like expression language filter transforms already use) in
+// priority order, falling through to this def's own base field/value (a
+// condition can also just override a plain encoded channel for special-
+// cased rows) or, if there isn't one, `noBaseFallback` (a caller-supplied
+// JS expression string -- typically the mark's own default color, since a
+// bare "condition-only, no base" channel def otherwise has nothing else to
+// fall back on). A `test` bound to a param/selection (an object, e.g.
+// `{"param": "brush"}`) rather than a plain string expression has no
+// static value to resolve -- same "Unsupported: ..." (or, under
+// ignoreUnsupported, "treat as never met") handling filterToExpr() already
+// gives an equivalent filter predicate (expr.js), just inverted (a filter
+// defaults an unresolvable predicate to "keep the row"; a condition
+// defaults it to "doesn't apply", falling through to the next condition or
+// base value instead).
+function conditionalAccessorExpr(def, scales, channel, noBaseFallback, ignoreUnsupported = false) {
+  const conditions = Array.isArray(def.condition) ? def.condition : [def.condition];
+  const hasBase = def.field !== undefined || 'value' in def;
+  let expr = hasBase ? accessor({field: def.field, value: def.value}, scales, channel) : noBaseFallback;
+  for (let i = conditions.length - 1; i >= 0; i--) {
+    const c = conditions[i];
+    if (c.test === undefined) continue;
+    let testExpr;
+    if (typeof c.test === 'string') {
+      testExpr = translateExpr(c.test, 'd');
+    } else if (ignoreUnsupported) {
+      testExpr = `false /* vl2d3: unsupported condition "test" bound to a param/selection, treating as not met (--ignore-unsupported) */`;
+    } else {
+      throw new Error('Unsupported: a condition\'s "test" is bound to a param/selection, not a static expression');
+    }
+    const valueExpr = c.field !== undefined ? accessor({field: c.field, type: c.type, scale: c.scale}, scales, channel) : formatValue(c.value);
+    expr = `(${testExpr}) ? (${valueExpr}) : (${expr})`;
+  }
+  return expr;
 }
 
 // d3.scaleBand()(value) returns the band's own *start* edge, not its
@@ -64,9 +107,9 @@ function bandCenterOffset(scale) {
 // position every group would otherwise sit on top of. Falls back to the
 // plain accessor() whenever there's no such offset (the common case), so
 // callers can use this in place of accessor() uniformly for x/y.
-function dodgeAwareAccessor(encoding, scales, channel) {
+function dodgeAwareAccessor(encoding, scales, channel, ignoreUnsupported = false) {
   const def = encoding[channel];
-  const base = accessor(def, scales, channel);
+  const base = accessor(def, scales, channel, 'undefined', ignoreUnsupported);
   if (base === null || !def || !('field' in def)) return base;
   const offsetChannel = channel === 'x' ? 'xOffset' : 'yOffset';
   const offsetDef = encoding[offsetChannel];
@@ -82,8 +125,8 @@ function rawField(def) {
   return def && def.field ? `d[${JSON.stringify(def.field)}]` : null;
 }
 
-function fillExpr(encoding, scales, fallback = DEFAULT_FILL) {
-  if (encoding.color) return accessor(encoding.color, scales, 'color');
+function fillExpr(encoding, scales, fallback = DEFAULT_FILL, ignoreUnsupported = false) {
+  if (encoding.color) return accessor(encoding.color, scales, 'color', JSON.stringify(fallback), ignoreUnsupported);
   return JSON.stringify(fallback);
 }
 
@@ -111,7 +154,7 @@ function hasRowDependentColor(encoding) {
 
 function opacityAttr(encoding, scales) {
   if (!encoding.opacity) return null;
-  return accessor(encoding.opacity, scales, 'opacity');
+  return accessor(encoding.opacity, scales, 'opacity', '1');
 }
 
 function tooltipTitle(encoding) {
@@ -1356,8 +1399,16 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   if ((!x || !y) && !ignoreUnsupported) throw new Error('"line" mark requires both x and y encodings');
   if (!x && !y) return SKIP_COMMENT('"line" mark has neither x nor y encoding');
   const singleAxisNote = !x || !y ? `// vl2d3: "line" mark missing ${!x ? 'x' : 'y'} encoding, centering on that axis instead (--ignore-unsupported)\n` : '';
-  const cx = x ? accessor(encoding.x, scales, 'x') : dims.centerXExpr;
-  const cy = y ? accessor(encoding.y, scales, 'y') : dims.centerYExpr;
+  // dodgeAwareAccessor(), not the bare accessor() -- a line/detail-grouped
+  // series against a nominal/ordinal companion axis (e.g.
+  // layer_ranged_dot.vl.json's own `y: {field: "country"}` band scale,
+  // shared with a sibling point layer that already centers itself via this
+  // same helper) needs to land on the *center* of its band, not the raw
+  // band-start edge d3.scaleBand() itself returns -- otherwise the line
+  // and the marks it's meant to connect end up visibly offset from each
+  // other vertically.
+  const cx = x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
+  const cy = y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
   const sortField = x ? encoding.x.field : encoding.y.field;
   const groupField = seriesGroupField(encoding);
   // The row-drop filter for x/y is deliberately skipped upstream for a

@@ -674,11 +674,22 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // domain's own edge and clipped (see paddedTemporalDomain in scales.js).
     // Not needed when this channel already has its own x2/y2 companion (a
     // real bin/box range already positions the bar without any center-based
-    // estimate to straddle past the edge).
+    // estimate to straddle past the edge). Checked independently of
+    // `zeroBaseline` above (that flag is only ever true for the OTHER,
+    // quantitative channel in this exact shape -- a temporal channel can
+    // never itself be zero-baselined, so `zeroBaseline && def.type ===
+    // "temporal"` can never be true and this padding could never actually
+    // fire -- confirmed via bar_binned_yearmonth_grouped.vl.json's own
+    // dodged bars getting clipped at both domain edges with no padding at
+    // all).
     const categoryPadding =
-      zeroBaseline &&
       def.type === 'temporal' &&
-      !prepared.some(p => p.encoding[`${channel}2`]);
+      !prepared.some(p => p.encoding[`${channel}2`]) &&
+      prepared.some(p => {
+        if (!isBarOrArea(p.mark) || !p.encoding[channel]) return false;
+        const otherChannel = channel === 'x' ? 'y' : 'x';
+        return p.encoding[otherChannel] && p.encoding[otherChannel].type === 'quantitative';
+      });
     const scale = resolvePositionScale(channel, def, {
       dataVar: allDataExpr,
       rangeExpr: dims[`${channel}RangeExpr`],

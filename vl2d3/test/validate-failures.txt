@@ -1,0 +1,426 @@
+===== interactive_histogram_full_height_hover.vl.json [EXEC] =====
+Unexpected identifier 'Object'
+import * as d3 from "d3";
+
+export default async function chart(container, options = {}) {
+  const width = options.width ?? 640;
+  const height = options.height ?? 400;
+  const marginTop = options.marginTop ?? 20;
+  const marginRight = options.marginRight ?? 20;
+  const marginBottom = options.marginBottom ?? 30;
+  const marginLeft = options.marginLeft ?? 50;
+
+  let data1 = await d3.json(new URL("data/movies.json", options.baseURL ?? import.meta.url));
+  data1 = data1.filter(d => d["IMDB Rating"] != null && !Number.isNaN(d["IMDB Rating"]));
+  data1 = d3.bin().value(d => d["IMDB Rating"]).thresholds(20)(data1).flatMap(bin => bin.map(d => ({...d, "bin_IMDB Rating": bin.x0, "bin_IMDB Rating_end": bin.x1})));
+  let data2 = await d3.json(new URL("data/movies.json", options.baseURL ?? import.meta.url));
+  data2 = data2.filter(d => d["IMDB Rating"] != null && !Number.isNaN(d["IMDB Rating"]));
+  const data2_IMDB_Rating_bins = d3.bin().value(d => d["IMDB Rating"]).thresholds(20)(data2);
+  data2 = data2_IMDB_Rating_bins.map(bin => ({"bin0_IMDB Rating": bin.x0, "bin1_IMDB Rating": bin.x1, "count": bin.length}));
+
+  const x = d3.scaleLinear(d3.extent([].concat(data1.map(d => d["bin_IMDB Rating"]), data2.map(d => d["bin0_IMDB Rating"]))), [marginLeft, Math.max(marginLeft, width - marginRight)]).nice();
+  const y = d3.scaleLinear([Math.min(0, d3.min([...data1, ...data2], d => d["count"])), Math.max(0, d3.max([...data1, ...data2], d => d["count"]))], [Math.max(marginTop, height - marginBottom), marginTop]).nice();
+
+  const svg = d3.select(container).append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("style", "max-width: 100%; height: auto;");
+
+  svg.append("g")
+      .attr("transform", `translate(0,${height - marginBottom})`)
+      .call(d3.axisBottom(x));
+  svg.append("text")
+      .attr("x", width - marginRight)
+      .attr("y", height - marginBottom - 6)
+      .attr("text-anchor", "end")
+      .attr("font-size", "11px")
+      .text("IMDB Rating");
+
+  svg.append("g")
+      .attr("transform", `translate(${marginLeft},0)`)
+      .call(d3.axisLeft(y));
+
+  svg.append("g")
+    .attr("fill", "#eee")
+    .selectAll("rect")
+    .data(data1)
+    .join("rect")
+      .attr("x", d => Math.min(x(d["bin_IMDB Rating"]), x(d["bin_IMDB Rating_end"])) + 0.5)
+      .attr("width", d => Math.max(0, Math.abs(x(d["bin_IMDB Rating_end"]) - x(d["bin_IMDB Rating"])) - 1))
+      .attr("y", marginTop)
+      .attr("height", Math.max(marginTop, height - marginBottom) - marginTop)
+      .attr("opacity", d => ([object Object]) ? (0.5) : (0));
+
+  svg.append("g")
+    .attr("fill", "steelblue")
+    .selectAll("rect")
+    .data(data2)
+    .join("rect")
+      .attr("x", d => Math.min(x(d["bin0_IMDB Rating"]), x(d["bin1_IMDB Rating"])) + 0.5)
+      .attr("width", d => Math.max(0, Math.abs(x(d["bin1_IMDB Rating"]) - x(d["bin0_IMDB Rating"])) - 1))
+      .attr("y", d => Math.min(y(0), y(d["count"])))
+      .attr("height", d => Math.abs(y(0) - y(d["count"])));
+
+  return svg.node();
+}
+
+
+===== interactive_line_point_hover.vl.json [EXEC] =====
+Unexpected identifier 'Object'
+import * as d3 from "d3";
+
+export default async function chart(container, options = {}) {
+  const width = options.width ?? 640;
+  const height = options.height ?? 400;
+  const marginTop = options.marginTop ?? 20;
+  const marginRight = options.marginRight ?? 20;
+  const marginBottom = options.marginBottom ?? 30;
+  const marginLeft = options.marginLeft ?? 50;
+
+  let data1 = await d3.csv(new URL("data/stocks.csv", options.baseURL ?? import.meta.url), d3.autoType);
+  data1 = data1.map(d => ({...d, "date": new Date(d["date"])}));
+  let data2 = await d3.csv(new URL("data/stocks.csv", options.baseURL ?? import.meta.url), d3.autoType);
+  data2 = data2.filter(d => d["date"] != null && !Number.isNaN(d["date"]) && d["price"] != null && !Number.isNaN(d["price"]));
+  data2 = data2.map(d => ({...d, "date": new Date(d["date"])}));
+
+  const x = d3.scaleTime(d3.extent([].concat(data1.map(d => d["date"]), data2.map(d => d["date"]))), [marginLeft, Math.max(marginLeft, width - marginRight)]);
+  const y = d3.scaleLinear(d3.extent([].concat(data1.map(d => d["price"]), data2.map(d => d["price"]))), [Math.max(marginTop, height - marginBottom), marginTop]).nice();
+  const color = (() => { const __scale = d3.scaleOrdinal(Array.from(new d3.InternSet([...data1, ...data2].map(d => d["symbol"]))).sort((a, b) => d3.ascending(a, b)), d3.schemeTableau10); return Object.assign(v => (v == null ? "none" : __scale(v)), __scale); })();
+
+  const svg = d3.select(container).append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("style", "max-width: 100%; height: auto;");
+
+  svg.append("g")
+      .attr("transform", `translate(0,${height - marginBottom})`)
+      .call(d3.axisBottom(x));
+  svg.append("text")
+      .attr("x", width - marginRight)
+      .attr("y", height - marginBottom - 6)
+      .attr("text-anchor", "end")
+      .attr("font-size", "11px")
+      .text("date");
+
+  svg.append("g")
+      .attr("transform", `translate(${marginLeft},0)`)
+      .call(d3.axisLeft(y));
+  svg.append("text")
+      .attr("x", 6)
+      .attr("y", marginTop - 6)
+      .attr("font-size", "11px")
+      .text("price");
+
+  svg.append("g")
+      .attr("fill", "none")
+      .attr("stroke-width", 1.5)
+    .selectAll("path")
+    .data(d3.group(data1, d => d["symbol"]))
+    .join("path")
+      .attr("stroke", ([key]) => color(key))
+      .attr("d", ([, rows]) => d3.line().defined(d => d["date"] != null && !Number.isNaN(d["date"]) && d["price"] != null && !Number.isNaN(d["price"])).x(d => x(d["date"])).y(d => y(d["price"]))(rows.slice().sort((a, b) => d3.ascending(a["date"], b["date"]))));
+
+  svg.append("g")
+    .attr("fill-opacity", 0.8)
+    .selectAll("circle")
+    .data(data2)
+    .join("circle")
+      .attr("fill", d => color(d["symbol"]))
+      .attr("cx", d => x(d["date"]))
+      .attr("cy", d => y(d["price"]))
+      .attr("r", d => 5.641895835477563)
+      .attr("opacity", d => ([object Object]) ? (1) : (0));
+
+  {
+    const legend = svg.append("g").attr("transform", `translate(${width - marginRight - 100},${marginTop})`);
+    const entries = color.domain();
+    const rows = legend.selectAll("g").data(entries).join("g")
+        .attr("transform", (d, i) => `translate(0,${i * 16})`);
+    rows.append("rect").attr("width", 10).attr("height", 10).attr("fill", d => color(d));
+    rows.append("text").attr("x", 14).attr("y", 9).attr("font-size", "10px").text(d => d);
+  }
+
+  return svg.node();
+}
+
+
+===== layer_bar_fruit.vl.json [EXEC] =====
+Unexpected identifier 'Object'
+import * as d3 from "d3";
+
+export default async function chart(container, options = {}) {
+  const width = options.width ?? 640;
+  const height = options.height ?? 400;
+  const marginTop = options.marginTop ?? 20;
+  const marginRight = options.marginRight ?? 20;
+  const marginBottom = options.marginBottom ?? 30;
+  const marginLeft = options.marginLeft ?? 50;
+
+  let data1 = [
+  {name: "🍊", count: 21},
+  {name: "🍇", count: 13},
+  {name: "🍏", count: 8},
+  {name: "🍌", count: 5},
+  {name: "🍐", count: 3},
+  {name: "🍋", count: 2},
+  {name: "🍎", count: 1},
+  {name: "🍉", count: 1},
+];
+  data1 = data1.filter(d => d["count"] != null && !Number.isNaN(d["count"]));
+  data1 = (() => {
+    const __cats = Array.from(new d3.InternSet(data1.map(d => d["name"])));
+    const __groups = Array.from(new d3.InternSet(data1.map(d => d["count"])));
+    const __present = new Set(data1.map(d => JSON.stringify([d["name"], d["count"]])));
+    const __filled = [];
+    for (const __c of __cats) for (const __g of __groups) if (!__present.has(JSON.stringify([__c, __g]))) __filled.push({"name": __c, "count": __g, "count": 0});
+    return [...data1, ...__filled];
+  })();
+  data1 = Array.from(d3.group(data1, d => d["name"]), ([, rows]) => {
+      rows = rows.slice().sort((a, b) => d3.ascending(a["count"], b["count"]));
+      const total = d3.sum(rows, d => d["count"]);
+      let acc = 0;
+      return rows.map(d => {
+        const y0 = acc;
+        acc += +d["count"];
+        const y1 = acc;
+        return {...d, "count_stack0": y0, "count_stack1": y1};
+      });
+    }).flat();
+  let data2 = [
+  {name: "🍊", count: 21},
+  {name: "🍇", count: 13},
+  {name: "🍏", count: 8},
+  {name: "🍌", count: 5},
+  {name: "🍐", count: 3},
+  {name: "🍋", count: 2},
+  {name: "🍎", count: 1},
+  {name: "🍉", count: 1},
+];
+  data2 = data2.filter(d => d["count"] != null && !Number.isNaN(d["count"]));
+
+  const x = d3.scaleLinear(d3.extent([].concat(data1.map(d => d["count_stack0"]), data1.map(d => d["count_stack1"]), data2.map(d => d["count"]))), [marginLeft, Math.max(marginLeft, width - marginRight)]).nice();
+  const y = d3.scaleBand(Array.from(new d3.InternSet([].concat(data1.map(d => d["name"]), data2.map(d => d["name"])))).sort((a, b) => d3.ascending(a, b)), [Math.max(marginTop, height - marginBottom), marginTop]).padding(0.1);
+  const color = (() => { const __scale = d3.scaleSequential(d3.extent([...data1, ...data2], d => d["count"]), d3.interpolateBlues); return Object.assign(v => (v == null ? "none" : __scale(v)), __scale); })();
+
+  const svg = d3.select(container).append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("style", "max-width: 100%; height: auto;");
+
+  svg.append("g")
+      .attr("transform", `translate(0,${height - marginBottom})`)
+      .call(d3.axisBottom(x));
+  svg.append("text")
+      .attr("x", width - marginRight)
+      .attr("y", height - marginBottom - 6)
+      .attr("text-anchor", "end")
+      .attr("font-size", "11px")
+      .text("count");
+
+  svg.append("g")
+      .attr("transform", `translate(${marginLeft},0)`)
+      .call(d3.axisLeft(y));
+  svg.append("text")
+      .attr("x", 6)
+      .attr("y", marginTop - 6)
+      .attr("font-size", "11px")
+      .text("name");
+
+  svg.append("g")
+    .selectAll("rect")
+    .data(data1)
+    .join("rect")
+      .attr("fill", d => color(d["count"]))
+      .attr("x", d => Math.min(x(d["count_stack1"]), x(d["count_stack0"])))
+      .attr("width", d => Math.abs(x(d["count_stack0"]) - x(d["count_stack1"])))
+      .attr("y", d => y(d["name"]))
+      .attr("height", y.bandwidth());
+
+  svg.append("g")
+      .attr("text-anchor", "middle")
+    .selectAll("text")
+    .data(data2)
+    .join("text")
+      .attr("fill", d => ([object Object]) ? ("white") : ("black"))
+      .attr("x", d => x(d["count"]))
+      .attr("y", d => y(d["name"]) + y.bandwidth() / 2)
+      .attr("dy", "0.32em")
+      .text(d => d["count"]);
+
+  return svg.node();
+}
+
+
+===== param_search_input.vl.json [EXEC] =====
+test is not defined
+import * as d3 from "d3";
+
+export default async function chart(container, options = {}) {
+  const width = options.width ?? 640;
+  const height = options.height ?? 400;
+  const marginTop = options.marginTop ?? 20;
+  const marginRight = options.marginRight ?? 20;
+  const marginBottom = options.marginBottom ?? 30;
+  const marginLeft = options.marginLeft ?? 50;
+
+  let data1 = await d3.json(new URL("data/cars.json", options.baseURL ?? import.meta.url));
+  data1 = data1.filter(d => d["Horsepower"] != null && !Number.isNaN(d["Horsepower"]) && d["Miles_per_Gallon"] != null && !Number.isNaN(d["Miles_per_Gallon"]));
+
+  const x = d3.scaleLinear(d3.extent(data1, d => d["Horsepower"]), [marginLeft, Math.max(marginLeft, width - marginRight)]).nice();
+  const y = d3.scaleLinear(d3.extent(data1, d => d["Miles_per_Gallon"]), [Math.max(marginTop, height - marginBottom), marginTop]).nice();
+
+  const svg = d3.select(container).append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("style", "max-width: 100%; height: auto;");
+
+  svg.append("g")
+      .attr("transform", `translate(0,${height - marginBottom})`)
+      .call(d3.axisBottom(x));
+  svg.append("text")
+      .attr("x", width - marginRight)
+      .attr("y", height - marginBottom - 6)
+      .attr("text-anchor", "end")
+      .attr("font-size", "11px")
+      .text("Horsepower");
+
+  svg.append("g")
+      .attr("transform", `translate(${marginLeft},0)`)
+      .call(d3.axisLeft(y));
+  svg.append("text")
+      .attr("x", 6)
+      .attr("y", marginTop - 6)
+      .attr("font-size", "11px")
+      .text("Miles_per_Gallon");
+
+  svg.append("g")
+    .attr("fill", "steelblue")
+    .attr("fill-opacity", 0.8)
+    .selectAll("circle")
+    .data(data1)
+    .join("circle")
+      .attr("cx", d => x(d["Horsepower"]))
+      .attr("cy", d => y(d["Miles_per_Gallon"]))
+      .attr("r", d => 3)
+      .attr("opacity", d => (test(regexp(search_input,'i'),d.Name)) ? (0.8) : (0.1))
+      .each(function(d) { d3.select(this).append("title").text(`Name: ${d["Name"]}`); });
+
+  return svg.node();
+}
+
+
+===== selection_composition_and.vl.json [EXEC] =====
+Unexpected identifier 'Object'
+import * as d3 from "d3";
+
+export default async function chart(container, options = {}) {
+  const width = options.width ?? 640;
+  const height = options.height ?? 400;
+  const marginTop = options.marginTop ?? 20;
+  const marginRight = options.marginRight ?? 20;
+  const marginBottom = options.marginBottom ?? 30;
+  const marginLeft = options.marginLeft ?? 50;
+
+  let data1 = await d3.json(new URL("data/cars.json", options.baseURL ?? import.meta.url));
+
+  const x = d3.scaleBand(Array.from(new d3.InternSet(data1.map(d => d["Cylinders"]))).sort((a, b) => d3.ascending(a, b)), [marginLeft, Math.max(marginLeft, width - marginRight)]).padding(0.1);
+  const y = d3.scaleBand(Array.from(new d3.InternSet(data1.map(d => d["Origin"]))).sort((a, b) => d3.ascending(a, b)), [Math.max(marginTop, height - marginBottom), marginTop]).padding(0.1);
+
+  const svg = d3.select(container).append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("style", "max-width: 100%; height: auto;");
+
+  svg.append("g")
+      .attr("transform", `translate(0,${height - marginBottom})`)
+      .call(d3.axisBottom(x));
+  svg.append("text")
+      .attr("x", width - marginRight)
+      .attr("y", height - marginBottom - 6)
+      .attr("text-anchor", "end")
+      .attr("font-size", "11px")
+      .text("Cylinders");
+
+  svg.append("g")
+      .attr("transform", `translate(${marginLeft},0)`)
+      .call(d3.axisLeft(y));
+  svg.append("text")
+      .attr("x", 6)
+      .attr("y", marginTop - 6)
+      .attr("font-size", "11px")
+      .text("Origin");
+
+  svg.append("g")
+    .selectAll("rect")
+    .data(data1)
+    .join("rect")
+      .attr("fill", d => ([object Object]) ? (null) : ("grey"))
+      .attr("x", d => x(d["Cylinders"]))
+      .attr("width", x.bandwidth())
+      .attr("y", d => y(d["Origin"]))
+      .attr("height", y.bandwidth());
+
+  return svg.node();
+}
+
+
+===== selection_composition_or.vl.json [EXEC] =====
+Unexpected identifier 'Object'
+import * as d3 from "d3";
+
+export default async function chart(container, options = {}) {
+  const width = options.width ?? 640;
+  const height = options.height ?? 400;
+  const marginTop = options.marginTop ?? 20;
+  const marginRight = options.marginRight ?? 20;
+  const marginBottom = options.marginBottom ?? 30;
+  const marginLeft = options.marginLeft ?? 50;
+
+  let data1 = await d3.json(new URL("data/cars.json", options.baseURL ?? import.meta.url));
+
+  const x = d3.scaleBand(Array.from(new d3.InternSet(data1.map(d => d["Cylinders"]))).sort((a, b) => d3.ascending(a, b)), [marginLeft, Math.max(marginLeft, width - marginRight)]).padding(0.1);
+  const y = d3.scaleBand(Array.from(new d3.InternSet(data1.map(d => d["Origin"]))).sort((a, b) => d3.ascending(a, b)), [Math.max(marginTop, height - marginBottom), marginTop]).padding(0.1);
+
+  const svg = d3.select(container).append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .attr("viewBox", [0, 0, width, height])
+      .attr("style", "max-width: 100%; height: auto;");
+
+  svg.append("g")
+      .attr("transform", `translate(0,${height - marginBottom})`)
+      .call(d3.axisBottom(x));
+  svg.append("text")
+      .attr("x", width - marginRight)
+      .attr("y", height - marginBottom - 6)
+      .attr("text-anchor", "end")
+      .attr("font-size", "11px")
+      .text("Cylinders");
+
+  svg.append("g")
+      .attr("transform", `translate(${marginLeft},0)`)
+      .call(d3.axisLeft(y));
+  svg.append("text")
+      .attr("x", 6)
+      .attr("y", marginTop - 6)
+      .attr("font-size", "11px")
+      .text("Origin");
+
+  svg.append("g")
+    .selectAll("rect")
+    .data(data1)
+    .join("rect")
+      .attr("fill", d => ([object Object]) ? (null) : ("grey"))
+      .attr("x", d => x(d["Cylinders"]))
+      .attr("width", x.bandwidth())
+      .attr("y", d => y(d["Origin"]))
+      .attr("height", y.bandwidth());
+
+  return svg.node();
+}
+
