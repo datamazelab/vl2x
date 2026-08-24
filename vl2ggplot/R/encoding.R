@@ -172,7 +172,24 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
           resolve_value_channel_expr(def$value, extent_data_var, extent_params, ignore_unsupported, .notes)
         }
     } else if (!is.null(def$datum)) {
-      fixed[[aes_name]] <- literal_datum_value(def$datum, ignore_unsupported, .notes)
+      # Unlike `value` (a literal *visual* constant, e.g. a raw color name,
+      # that bypasses any scale), `datum` is a literal *data-space* value
+      # that still goes through this channel's own scale -- e.g.
+      # bar_grouped_repeated.vl.json's own per-repeated-layer `color:
+      # {datum: {"repeat": "layer"}}`, substituted to a literal constant
+      # per layer like `{"datum": "Worldwide Gross"}`, which should map
+      # through the fill scale to a real color the same way a genuine field
+      # value would, not be read as a (invalid) literal color name itself.
+      # Routed through `aes()` (not `fixed`) for exactly that reason, for
+      # every channel except x/y -- a position channel's own `datum` (e.g.
+      # a rule mark's fixed reference line) has no scale-vs-literal
+      # ambiguity to speak of and geoms.R's own rule-specific handling
+      # already expects it in `fixed`.
+      if (channel %in% c("x", "y")) {
+        fixed[[aes_name]] <- literal_datum_value(def$datum, ignore_unsupported, .notes)
+      } else {
+        aes_pairs[[aes_name]] <- literal_datum_value(def$datum, ignore_unsupported, .notes)
+      }
     }
   }
 

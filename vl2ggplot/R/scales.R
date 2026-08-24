@@ -83,7 +83,20 @@ build_position_scale <- function(channel, def) {
     if (!is.null(def$sort) && identical(def$sort, "descending")) {
       args <- c(args, "limits = rev")
     } else if (is.list(def$sort) && is.null(names(def$sort))) {
-      args <- c(args, sprintf("limits = %s", format_value(def$sort)))
+      # An explicit sort array may be *partial* (e.g.
+      # bar_custom_sort_partial.vl.json's own `sort: ["B", "A", "C"]` over
+      # 6 distinct values) -- Vega-Lite still shows every distinct value,
+      # appending whichever ones aren't named (in their own default order)
+      # after the named ones, same as discrete_field_ref()'s own identical
+      # `union(...)` handling for the *aes* mapping's factor levels. Passed
+      # here as a *function* (ggplot2's `limits` accepts one, taking the
+      # scale's own auto-detected levels and returning the desired order)
+      # rather than the literal sort list directly -- scale_*_discrete()
+      # treats a literal `limits` vector as an exact allow-list, silently
+      # dropping any data point outside it, which for a genuinely partial
+      # list means every "extra" category vanishes instead of merely being
+      # reordered to the end.
+      args <- c(args, sprintf("limits = function(.l) union(%s, sort(.l))", format_value(def$sort)))
     }
   } else if (!is.null(def$sort) && identical(def$sort, "descending")) {
     # `sort: "descending"` on an *aggregated continuous* channel isn't

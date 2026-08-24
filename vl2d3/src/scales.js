@@ -303,9 +303,20 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
 // then has only ONE distinct Origin value, which an unshared domain would
 // map to the same first symbol type in every column regardless of which
 // Origin it actually is.
-export function sharedChannelDomainExpr(channel, def, dataVar) {
+// `zeroBaseline` (only meaningful for x/y): a bar/area's own zero-anchored
+// value axis needs its shared domain to still include 0 even when every
+// row's own value happens to sit well above it (e.g. this file's own 0.1-
+// 0.9 range) -- otherwise bars/areas built against the shared domain would
+// float above the panel's own baseline instead of starting there, the same
+// zero-baseline reasoning buildUnitOrLayerBody's own (non-faceted) domain
+// resolution already applies, just re-derived here since this domain is
+// computed once, up front, outside that per-panel resolution entirely.
+export function sharedChannelDomainExpr(channel, def, dataVar, zeroBaseline = false) {
   if ((channel === 'color' || channel === 'shape') && def.type !== 'quantitative' && def.type !== 'temporal') {
     return ordinalDomainFromData(dataVar, def.field, def.sort);
+  }
+  if ((channel === 'x' || channel === 'y') && zeroBaseline) {
+    return zeroDomainFromData(dataVar, def.field);
   }
   return domainFromData(dataVar, def.field);
 }
@@ -541,9 +552,13 @@ export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false, in
 // known until the data has loaded either, so this scale itself becomes
 // conditional on that same runtime flag (`null` when the outer scale
 // turned out continuous -- callers must handle that, see marks.js).
-export function resolveOffsetScale(channel, def, {dataVar, outerScale, minBandSize}) {
+export function resolveOffsetScale(channel, def, {dataVar, outerScale, minBandSize, explicitDomain}) {
   const varName = channel; // "xOffset" or "yOffset"
-  const domain = ordinalDomainFromData(dataVar, def.field, def.sort);
+  // `explicitDomain` (e.g. bar_grouped_repeated.vl.json's own `datum`-only
+  // xOffset, see translator.js's caller) is a plain array of already-known
+  // literal values -- there's no data column to derive an ordinal domain
+  // from in that case.
+  const domain = explicitDomain ? formatValue(explicitDomain) : ordinalDomainFromData(dataVar, def.field, def.sort);
   // `config.bar.minBandSize` (e.g. bar_grouped_thin_minBandSize.vl.json's
   // own `4`) is a floor on each dodged sub-band's own bandwidth -- with
   // enough distinct offset values sharing one outer band, the *natural*

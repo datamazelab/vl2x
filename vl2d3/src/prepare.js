@@ -227,12 +227,12 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
     seenGroupKeys.add(key);
     return true;
   });
-  if (groupChannels.length > 2) {
+  if (groupChannels.length > 3) {
     if (!ignoreUnsupported) {
-      throw new Error('Unsupported: aggregating grouped by more than 2 fields is not yet supported');
+      throw new Error('Unsupported: aggregating grouped by more than 3 fields is not yet supported');
     }
-    // Drop every groupby channel past the first two rather than refusing.
-    groupChannels = groupChannels.slice(0, 2);
+    // Drop every groupby channel past the first three rather than refusing.
+    groupChannels = groupChannels.slice(0, 3);
   }
 
   if (!ignoreUnsupported) {
@@ -255,30 +255,34 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
 
   if (groupChannels.length === 0) {
     statements.push(`${dataVar} = [(rows => ({${valueObjectCode}}))(${dataVar})];`);
-  } else if (groupChannels.length === 1) {
-    const [channel, def] = groupChannels[0];
-    const outField = def.timeUnit ? outFieldName(def.field, def.timeUnit) : def.field;
-    statements.push(
-      `${dataVar} = Array.from(` +
-        `d3.rollup(${dataVar}, rows => ({${valueObjectCode}}), d => ${keyExprFor(def)}), ` +
-        `([key, vals]) => ({${JSON.stringify(outField)}: key, ...vals}));`
-    );
-    rewritten[channel] = {...def, field: outField};
-    if (def.timeUnit) applyTimeUnitType(rewritten, channel, def);
   } else {
-    const [[channel1, def1], [channel2, def2]] = groupChannels;
-    const outField1 = def1.timeUnit ? outFieldName(def1.field, def1.timeUnit) : def1.field;
-    const outField2 = def2.timeUnit ? outFieldName(def2.field, def2.timeUnit) : def2.field;
+    // A generic N-key nested rollup (d3.rollup natively accepts any number
+    // of key functions, nesting one Map level per key, in order) --
+    // unwrapped back out via one Array.from(..., ([k, inner]) => ...) per
+    // level, same shape the old hardcoded 1-key/2-key cases always built by
+    // hand, just generalized so a 3rd groupby channel (e.g.
+    // bar_grouped_stacked.vl.json's own `x: {field: "Cylinders"}` +
+    // `xOffset: {field: "Origin"}` + `color: {timeUnit: "year", field:
+    // "Year"}`, all three genuinely needed to group the aggregate
+    // correctly) works the same way instead of being silently dropped.
+    const n = groupChannels.length;
+    const outFields = groupChannels.map(([, def]) => (def.timeUnit ? outFieldName(def.field, def.timeUnit) : def.field));
+    const keyExprs = groupChannels.map(([, def]) => keyExprFor(def));
+    const kVars = outFields.map((_, i) => `k${i + 1}`);
+    const outputObjectExpr = `({${outFields.map((f, i) => `${JSON.stringify(f)}: ${kVars[i]}`).join(', ')}, ...vals})`;
+    let unwrapExpr = `([${kVars[n - 1]}, vals]) => ${outputObjectExpr}`;
+    for (let i = n - 2; i >= 0; i--) {
+      unwrapExpr = `([${kVars[i]}, __inner${i}]) => Array.from(__inner${i}, ${unwrapExpr})`;
+    }
     statements.push(
       `${dataVar} = Array.from(` +
-        `d3.rollup(${dataVar}, rows => ({${valueObjectCode}}), d => ${keyExprFor(def1)}, d => ${keyExprFor(def2)}), ` +
-        `([k1, inner]) => Array.from(inner, ([k2, vals]) => ` +
-        `({${JSON.stringify(outField1)}: k1, ${JSON.stringify(outField2)}: k2, ...vals}))).flat();`
+        `d3.rollup(${dataVar}, rows => ({${valueObjectCode}}), ${keyExprs.map(k => `d => ${k}`).join(', ')}), ` +
+        `${unwrapExpr})${n > 1 ? `.flat(${n - 1})` : ''};`
     );
-    rewritten[channel1] = {...def1, field: outField1};
-    if (def1.timeUnit) applyTimeUnitType(rewritten, channel1, def1);
-    rewritten[channel2] = {...def2, field: outField2};
-    if (def2.timeUnit) applyTimeUnitType(rewritten, channel2, def2);
+    groupChannels.forEach(([channel, def], i) => {
+      rewritten[channel] = {...def, field: outFields[i]};
+      if (def.timeUnit) applyTimeUnitType(rewritten, channel, def);
+    });
   }
 
   for (const {channel, def, outField} of valueAssigns) {

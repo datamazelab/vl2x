@@ -42,6 +42,13 @@ function accessor(def, scales, channel, noBaseFallback = 'undefined', ignoreUnsu
   if (def.condition) return conditionalAccessorExpr(def, scales, channel, noBaseFallback, ignoreUnsupported);
   if ('value' in def) return formatValue(def.value);
   const scale = scales[channel];
+  // `datum` (e.g. bar_grouped_repeated.vl.json's own per-repeated-layer
+  // `color: {datum: {"repeat": "layer"}}`, substituted to a literal
+  // per-layer constant like `{"datum": "Worldwide Gross"}`) is a data-
+  // space literal, unlike `value`'s pixel-space one -- run through this
+  // channel's own scale the same way a real field's value would be,
+  // instead of a nonexistent `d[undefined]` field lookup.
+  if (def.datum !== undefined) return scale ? `${scale.varName}(${datumToJsExpr(def.datum)})` : datumToJsExpr(def.datum);
   const field = `d[${JSON.stringify(def.field)}]`;
   return scale ? `${scale.varName}(${field})` : field;
 }
@@ -117,6 +124,15 @@ function bandCenterOffset(scale) {
 // position every group would otherwise sit on top of. Falls back to the
 // plain accessor() whenever there's no such offset (the common case), so
 // callers can use this in place of accessor() uniformly for x/y.
+// The per-row expression an xOffset/yOffset dodge scale is looked up
+// against -- a real field's own value the common way, or (e.g.
+// bar_grouped_repeated.vl.json's own `repeat: {layer: [...]}`-substituted
+// `xOffset: {datum: "Worldwide Gross"}`, one literal constant per repeated
+// layer, no field at all) datumToJsExpr()'s literal-constant form instead.
+function offsetKeyExpr(offsetDef) {
+  return offsetDef.field !== undefined ? `d[${JSON.stringify(offsetDef.field)}]` : datumToJsExpr(offsetDef.datum);
+}
+
 function dodgeAwareAccessor(encoding, scales, channel, ignoreUnsupported = false) {
   const def = encoding[channel];
   const base = accessor(def, scales, channel, 'undefined', ignoreUnsupported);
@@ -126,8 +142,10 @@ function dodgeAwareAccessor(encoding, scales, channel, ignoreUnsupported = false
   const offsetScale = scales[offsetChannel];
   // No dodge -- still needs to land on the CENTER of a band position, not
   // its left/top edge (see bandCenterOffset()).
-  if (!offsetDef || !offsetDef.field || !offsetScale) return `${base}${bandCenterOffset(scales[channel])}`;
-  const withOffset = `${base} + ${offsetScale.varName}(d[${JSON.stringify(offsetDef.field)}]) + ${offsetScale.varName}.bandwidth() / 2`;
+  if (!offsetDef || (offsetDef.field === undefined && offsetDef.datum === undefined) || !offsetScale) {
+    return `${base}${bandCenterOffset(scales[channel])}`;
+  }
+  const withOffset = `${base} + ${offsetScale.varName}(${offsetKeyExpr(offsetDef)}) + ${offsetScale.varName}.bandwidth() / 2`;
   return offsetScale.conditional ? `(${offsetScale.varName} ? (${withOffset}) : (${base}))` : withOffset;
 }
 
@@ -136,7 +154,14 @@ function rawField(def) {
 }
 
 function fillExpr(encoding, scales, fallback = DEFAULT_FILL, ignoreUnsupported = false) {
-  if (encoding.color) return accessor(encoding.color, scales, 'color', JSON.stringify(fallback), ignoreUnsupported);
+  // `fill` (e.g. bar_grouped_custom_color_domain.vl.json's own `fill:
+  // {field: "group", scale: {domain: [...]}}`) is Vega-Lite's own more
+  // specific alternative to the generic `color` channel for a fill-target
+  // attribute -- translator.js's shared scale-resolution loop already
+  // builds the "color" scale from whichever of the two a layer declares,
+  // so this only needs to pick the same one back up here.
+  const colorDef = encoding.color || encoding.fill;
+  if (colorDef) return accessor(colorDef, scales, 'color', JSON.stringify(fallback), ignoreUnsupported);
   return JSON.stringify(fallback);
 }
 
@@ -159,7 +184,7 @@ function markColorFallback(markProps, kind, defaultColor) {
 // inherited by SVG's cascade) or on each joined element (an accessor
 // function, since there's no per-row `d` in scope at the <g> level).
 function hasRowDependentColor(encoding) {
-  return Boolean(encoding.color);
+  return Boolean(encoding.color || encoding.fill);
 }
 
 function opacityAttr(encoding, scales, ignoreUnsupported = false) {
@@ -954,12 +979,28 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
   }
+  // `encoding.stroke` (e.g. bar_multi_values_per_categories.vl.json's own
+  // `stroke: {"value": "white"}`, a border between adjacent stacked
+  // segments) is a distinct channel from `color`/`fill` -- separately
+  // encoded, not merely a mark-level default -- with no scale of its own
+  // built for it (only the literal-value case, the common one in practice
+  // for a bar/rect border, is handled; a real data-driven stroke field
+  // falls back to its own raw value, ungrouped through any palette).
+  const strokeDef = encoding.stroke;
+  const strokeRowDependent = Boolean(strokeDef && strokeDef.field);
+  const strokeExpr = strokeDef
+    ? accessor(strokeDef, scales, 'stroke', 'none', ignoreUnsupported)
+    : markProps.stroke !== undefined
+      ? formatValue(simpleMarkProp(markProps.stroke, null, 'stroke', ignoreUnsupported))
+      : null;
   lines.push(`svg.append("g")`);
   if (!rowDependent) lines.push(`  .attr("fill", ${fill})`);
+  if (strokeExpr && !strokeRowDependent) lines.push(`  .attr("stroke", ${strokeExpr})`);
   lines.push(`  .selectAll("rect")`);
   lines.push(`  .data(${dataVar})`);
   lines.push(`  .join("rect")`);
   if (rowDependent) lines.push(`    .attr("fill", d => ${fill})`);
+  if (strokeExpr && strokeRowDependent) lines.push(`    .attr("stroke", d => ${strokeExpr})`);
 
   if (xyBothTemporalBand) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - xBarWidth2 / 2)`);
@@ -1005,12 +1046,12 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // band-ness (and so whether `xOffset` ended up a real scale or `null`)
     // isn't known until runtime -- fall back to the same centered-bar
     // positioning the no-offset ambiguous case uses whenever it didn't.
-    lines.push(`    .attr("x", d => xOffset ? x(d[${JSON.stringify(encoding.x.field)}]) + xOffset(d[${JSON.stringify(encoding.xOffset.field)}]) : x(d[${JSON.stringify(encoding.x.field)}]) - (${x.isNominalVar} ? 0 : ${xBarWidthVar} / 2))`);
+    lines.push(`    .attr("x", d => xOffset ? x(d[${JSON.stringify(encoding.x.field)}]) + xOffset(${offsetKeyExpr(encoding.xOffset)}) : x(d[${JSON.stringify(encoding.x.field)}]) - (${x.isNominalVar} ? 0 : ${xBarWidthVar} / 2))`);
     lines.push(`    .attr("width", xOffset ? xOffset.bandwidth() : ${xBarWidthVar})`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
   } else if (yOffsetAmbiguous && !xBand && encoding.x && encoding.x.type !== 'temporal' && !encoding.x2) {
-    lines.push(`    .attr("y", d => yOffset ? y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(d[${JSON.stringify(encoding.yOffset.field)}]) : y(d[${JSON.stringify(encoding.y.field)}]) - (${y.isNominalVar} ? 0 : ${yBarWidthVar} / 2))`);
+    lines.push(`    .attr("y", d => yOffset ? y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(${offsetKeyExpr(encoding.yOffset)}) : y(d[${JSON.stringify(encoding.y.field)}]) - (${y.isNominalVar} ? 0 : ${yBarWidthVar} / 2))`);
     lines.push(`    .attr("height", yOffset ? yOffset.bandwidth() : ${yBarWidthVar})`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
@@ -1038,12 +1079,12 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // resolveOffsetScale) slices the outer category band into one
     // sub-position per distinct offset-group value, so each group's bar
     // sits side-by-side within its category instead of all overlapping.
-    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) + xOffset(d[${JSON.stringify(encoding.xOffset.field)}]))`);
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) + xOffset(${offsetKeyExpr(encoding.xOffset)}))`);
     lines.push(`    .attr("width", xOffset.bandwidth())`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
     lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);
   } else if (yBand && !xBand && encoding.x && !encoding.x2 && encoding.yOffset && scales.yOffset) {
-    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(d[${JSON.stringify(encoding.yOffset.field)}]))`);
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(${offsetKeyExpr(encoding.yOffset)}))`);
     lines.push(`    .attr("height", yOffset.bandwidth())`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
@@ -1152,7 +1193,18 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
     }
     // Same fallback as above, for a shared reference band with no x of its own.
-    if (encoding.x && xBand) {
+    if (encoding.x && xBand && encoding.xOffset && scales.xOffset) {
+      // A dodge *and* a stack composed together (e.g.
+      // bar_grouped_stacked.vl.json's own `xOffset: {field: "Origin"}` +
+      // `color: {timeUnit: "year", ...}`, planStacking()'s own comment) --
+      // each dodge slot still needs its own sub-band position, exactly
+      // like the plain (unstacked) dodge case below; only the value range
+      // itself comes from y2 here instead of a zero baseline.
+      const xOffsetVar = scales.xOffset.varName;
+      const xExpr = `x(d[${JSON.stringify(encoding.x.field)}]) + ${xOffsetVar}(${offsetKeyExpr(encoding.xOffset)})`;
+      lines.push(`    .attr("x", d => ${xExpr})`);
+      lines.push(`    .attr("width", ${xOffsetVar}.bandwidth())`);
+    } else if (encoding.x && xBand) {
       // `mark.size` (e.g. bar_layered_weather.vl.json's own several
       // differently-sized floating-bar layers, 20px/12px/3px, all sharing
       // one ordinal `id` band) narrows the bar to a fixed width centered
@@ -1596,10 +1648,46 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const areaCall = horizontal
     ? `d3.area()${definedClause}${curve}.y(d => ${alongPos}).x0(d => ${valueBase}).x1(d => ${valueTop})`
     : `d3.area()${definedClause}${curve}.x(d => ${alongPos}).y0(d => ${valueBase}).y1(d => ${valueTop})`;
+  // `opacity` (a mark-level number, e.g. area_horizon.vl.json's own
+  // `mark: {..., "opacity": 0.6}`, or an encoding channel's literal
+  // `{"value": ...}`, that same spec's 2nd layer) -- an area with no real
+  // opacity/color-driven groupField at all (the common case) previously
+  // never got any fill-opacity attribute, and area_horizon.vl.json's own
+  // "horizon graph" technique specifically depends on two differently-
+  // transparent overlapping bands to work at all.
+  // A real opacity *field* (row-dependent, e.g.
+  // test_invalid_opacity_show.vl.json's own `opacity: {field: "c", ...}`,
+  // no color/detail groupField alongside it) has no per-row place to land
+  // on a single continuous area path -- only a literal `value` (a genuine
+  // per-path constant) is handled here.
+  const opacityExpr =
+    encoding.opacity && !encoding.opacity.field
+      ? accessor(encoding.opacity, scales, 'opacity', '1', ignoreUnsupported)
+      : typeof markProps.opacity === 'number'
+        ? formatValue(markProps.opacity)
+        : null;
 
+  // `mark.clip` (e.g. area_horizon.vl.json's own `"clip": true`, needed
+  // there since its y-domain is deliberately fixed to a compact [0, 50]
+  // band -- any raw value outside it, the whole point of the horizon-graph
+  // technique, would otherwise extrapolate way past the plot's own small
+  // (50px-tall) bounds instead of being cut off at them) -- a plain
+  // rectangular clip-path scoped to this one mark's own <path>/<g>, keyed
+  // by `dataVar` (already unique per layer) rather than a shared/global
+  // one, so sibling layers with different clip needs don't collide.
+  const clipId = `clip-${dataVar}`;
+  if (markProps.clip) {
+    lines.push(`svg.append("clipPath").attr("id", ${JSON.stringify(clipId)})`);
+    lines.push(`  .append("rect")`);
+    lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("y", ${dims.marginTopExpr})`);
+    lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
+    lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr});`);
+  }
   if (groupField) {
     lines.push(`svg.append("g")`);
-    lines.push(`    .attr("fill-opacity", 0.7)`);
+    lines.push(`    .attr("fill-opacity", ${opacityExpr ?? '0.7'})`);
+    if (markProps.clip) lines.push(`    .attr("clip-path", ${JSON.stringify(`url(#${clipId})`)})`);
     lines.push(`  .selectAll("path")`);
     lines.push(`  .data(d3.group(${dataVar}, d => d[${JSON.stringify(groupField)}]))`);
     lines.push(`  .join("path")`);
@@ -1611,10 +1699,77 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   } else {
     lines.push(`svg.append("path")`);
     lines.push(`    .attr("fill", ${fill})`);
+    if (opacityExpr) lines.push(`    .attr("fill-opacity", ${opacityExpr})`);
+    if (markProps.clip) lines.push(`    .attr("clip-path", ${JSON.stringify(`url(#${clipId})`)})`);
     lines.push(
       `    .attr("d", ${areaCall}` +
         `(${dataVar}.slice().sort((a, b) => d3.ascending(a[${sortFieldJson}], b[${sortFieldJson}]))));`
     );
+  }
+  // `mark.line`/`mark.point` (e.g. area_overlay.vl.json's own `{"type":
+  // "area", "line": true, "point": true}`) overlay the area's own top edge
+  // with a stroked line and/or a marker per data point -- on top of the
+  // filled area, not instead of it, matching Vega-Lite's own combined-mark
+  // convention. Only the plain `true` form is handled (not the object form,
+  // e.g. `"line": {"color": "red"}`, a further per-mark style override);
+  // under `--ignore-unsupported` that object form still gets a line/point
+  // overlay, just with the area's own default stroke/fill color rather
+  // than its own distinct one.
+  const overlayX = horizontal ? valueTop : alongPos;
+  const overlayY = horizontal ? alongPos : valueTop;
+  const rowColorField = encoding.color && encoding.color.field ? encoding.color.field : null;
+  if (groupField) {
+    // A real color/detail grouping (e.g. a multi-series stacked area) draws
+    // one line/point-set *per series* -- same grouping the area fill itself
+    // already uses just above -- rather than one line naively connecting
+    // every row across every series (both visually wrong, sorted by the
+    // along-axis alone with no regard for which series a row belongs to)
+    // and a syntax error (the ungrouped branch's own bare `${fill}` can
+    // reference a per-row `color(d[...])` accessor with no `d` in scope at
+    // the group-selection level this branch would otherwise place it at).
+    if (markProps.line) {
+      const lineCall = `d3.line()${definedClause}${curve}.x(d => ${overlayX}).y(d => ${overlayY})`;
+      lines.push(`svg.append("g")`);
+      lines.push(`    .attr("fill", "none")`);
+      lines.push(`  .selectAll("path")`);
+      lines.push(`  .data(d3.group(${dataVar}, d => d[${JSON.stringify(groupField)}]))`);
+      lines.push(`  .join("path")`);
+      lines.push(`    .attr("stroke", ([key]) => ${rowColorField ? 'color(key)' : fill})`);
+      lines.push(
+        `    .attr("stroke-width", 1.5)` +
+          `.attr("d", ([, rows]) => ${lineCall}(rows.slice().sort((a, b) => d3.ascending(a[${sortFieldJson}], b[${sortFieldJson}]))));`
+      );
+    }
+    if (markProps.point) {
+      lines.push(`svg.append("g")`);
+      lines.push(`  .selectAll("circle")`);
+      lines.push(`  .data(${dataVar})`);
+      lines.push(`  .join("circle")`);
+      lines.push(`    .attr("fill", d => ${rowColorField ? `color(d[${JSON.stringify(rowColorField)}])` : fill})`);
+      lines.push(`    .attr("cx", d => ${overlayX})`);
+      lines.push(`    .attr("cy", d => ${overlayY})`);
+      lines.push(`    .attr("r", 3);`);
+    }
+  } else {
+    const sortedDataExpr = `${dataVar}.slice().sort((a, b) => d3.ascending(a[${sortFieldJson}], b[${sortFieldJson}]))`;
+    if (markProps.line) {
+      const lineCall = `d3.line()${definedClause}${curve}.x(d => ${overlayX}).y(d => ${overlayY})`;
+      lines.push(`svg.append("path")`);
+      lines.push(`    .attr("fill", "none")`);
+      lines.push(`    .attr("stroke", ${fill})`);
+      lines.push(`    .attr("stroke-width", 1.5)`);
+      lines.push(`    .attr("d", ${lineCall}(${sortedDataExpr}));`);
+    }
+    if (markProps.point) {
+      lines.push(`svg.append("g")`);
+      lines.push(`    .attr("fill", ${fill})`);
+      lines.push(`  .selectAll("circle")`);
+      lines.push(`  .data(${sortedDataExpr})`);
+      lines.push(`  .join("circle")`);
+      lines.push(`    .attr("cx", d => ${overlayX})`);
+      lines.push(`    .attr("cy", d => ${overlayY})`);
+      lines.push(`    .attr("r", 3);`);
+    }
   }
   return singleAxisNote + lines.join('\n');
 }

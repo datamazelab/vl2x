@@ -27,7 +27,18 @@ export function planStacking(mark, encoding) {
   const markType = markTypeOf(mark);
   if (!STACKABLE_MARKS.includes(markType)) return null;
   const groupChannel = GROUP_CHANNELS.find(ch => encoding[ch] && encoding[ch].field);
-  if (!groupChannel) return null;
+  // `stack: true`/`"zero"`/`"normalize"`/`"center"` explicitly requested on
+  // the position channel itself still stacks even with no color/detail/
+  // opacity groupby at all (e.g. bar_multi_values_per_categories.vl.json's
+  // own several same-`a`-category rows, distinguished only by a literal
+  // `fill`/`stroke` -- each row is its own implicit stack member, kept in
+  // the data's own given order below since there's no group *field* to
+  // align/densify sparse categories by).
+  const explicitStack = ['x', 'y'].some(ch => {
+    const def = encoding[ch];
+    return def && (def.stack === true || def.stack === 'zero' || def.stack === 'normalize' || def.stack === 'center');
+  });
+  if (!groupChannel && !explicitStack) return null;
 
   for (const [posChannel, categoryChannel] of [
     ['y', 'x'],
@@ -44,11 +55,17 @@ export function planStacking(mark, encoding) {
     // a genuine, already-correct range with a wrong one.
     if (encoding[`${posChannel}2`]) continue;
     if (!categoryDef || !categoryDef.field) continue;
-    // Dodging happens along the *category* axis (e.g. `xOffset` spreads
-    // bars apart within their shared x position) -- not the value axis
-    // being (potentially) stacked, which has no offset channel of its own.
-    const offsetChannel = categoryChannel === 'x' ? 'xOffset' : 'yOffset';
-    if (encoding[offsetChannel] && encoding[offsetChannel].field) continue;
+    // Dodging (e.g. `xOffset`) and stacking compose, not conflict -- dodge
+    // picks which category *slot* a group's bar sits in, stacking says how
+    // that one slot's own bar draws its value range; a color/detail
+    // groupby present alongside a dodge (e.g. bar_grouped_stacked.vl.json's
+    // own `xOffset: {field: "Origin"}` + `color: {timeUnit: "year", ...}`)
+    // means "dodge by Origin, then stack by year within each Origin's own
+    // slot" -- both real, common, and independently controlled by
+    // Vega-Lite. Previously excluded outright here, which -- since a later
+    // row's own un-stacked bar is drawn zero-baselined directly on top of
+    // an earlier row sharing the exact same dodge slot -- left only
+    // whichever row happened to be drawn last actually visible per slot.
     const mode = posDef.stack === 'normalize' ? 'normalize' : posDef.stack === 'center' ? 'center' : 'zero';
     // The category axis's own companion range (e.g. a binned x's `x2`,
     // repeat_histogram.vl.json's own `bin1_Horsepower`) -- distinct from
@@ -61,11 +78,20 @@ export function planStacking(mark, encoding) {
     // the same bin1, since bin edges are a property of the category value
     // itself, not of which group happens to have data there.
     const categoryDef2 = encoding[`${categoryChannel}2`];
+    // A dodge sharing the category axis (e.g. `xOffset: {field: "Origin"}`
+    // alongside `x: {field: "Cylinders"}`) means each *(category, offset)*
+    // pair is really its own independent stack, not one shared across every
+    // dodge slot at a given category value -- folded into the stack's own
+    // grouping key below (renderStackingStatements()) the same way a
+    // category's own x2 companion already is.
+    const offsetChannel = categoryChannel === 'x' ? 'xOffset' : 'yOffset';
+    const offsetDef = encoding[offsetChannel];
     return {
       posChannel,
       categoryField: categoryDef.field,
       categoryField2: categoryDef2 && categoryDef2.field,
-      groupField: encoding[groupChannel].field,
+      offsetField: offsetDef && offsetDef.field,
+      groupField: groupChannel ? encoding[groupChannel].field : null,
       valueField: posDef.field,
       mode,
     };
@@ -80,7 +106,18 @@ export function planStacking(mark, encoding) {
 // stack totals/heights are correct regardless of layer order), and attach
 // a baseline+top pair of new fields per row.
 export function renderStackingStatements(dataVar, plan) {
-  const {categoryField, categoryField2, groupField, valueField, mode} = plan;
+  const {categoryField, categoryField2, offsetField, groupField, valueField, mode} = plan;
+  // A dodge sharing the category axis splits each category into several
+  // independent dodge slots, each with its own independent stack -- the
+  // group-by key below folds the offset field in alongside the category
+  // whenever one is present, so bar_grouped_stacked.vl.json's own
+  // `xOffset: {field: "Origin"}` stacks each Origin's own bar by year
+  // separately, rather than summing every Origin present at a given
+  // Cylinders value into one shared stack.
+  const categoryKeyExpr = d =>
+    offsetField
+      ? `JSON.stringify([${d}[${JSON.stringify(categoryField)}], ${d}[${JSON.stringify(offsetField)}]])`
+      : `${d}[${JSON.stringify(categoryField)}]`;
   const stack0 = `${valueField}_stack0`;
   const stack1 = `${valueField}_stack1`;
   const scaleLine =
@@ -89,6 +126,24 @@ export function renderStackingStatements(dataVar, plan) {
       : mode === 'center'
         ? `      return {...d, ${JSON.stringify(stack0)}: y0 - total / 2, ${JSON.stringify(stack1)}: y1 - total / 2};`
         : `      return {...d, ${JSON.stringify(stack0)}: y0, ${JSON.stringify(stack1)}: y1};`;
+  if (!groupField) {
+    // No real group field (an explicit `stack: true` with no color/detail/
+    // opacity channel, see planStacking()'s own comment) -- nothing to
+    // densify or sort by, every row sharing a category is simply stacked
+    // in the data's own given order.
+    return [
+      `${dataVar} = Array.from(d3.group(${dataVar}, d => ${categoryKeyExpr('d')}), ([, rows]) => {`,
+      `    const total = d3.sum(rows, d => d[${JSON.stringify(valueField)}]);`,
+      `    let acc = 0;`,
+      `    return rows.map(d => {`,
+      `      const y0 = acc;`,
+      `      acc += +d[${JSON.stringify(valueField)}];`,
+      `      const y1 = acc;`,
+      scaleLine,
+      `    });`,
+      `  }).flat();`,
+    ];
+  }
   return [
     // Real-world grouped data is commonly *sparse*: not every (category,
     // group) combination actually has a row (e.g.
@@ -120,7 +175,7 @@ export function renderStackingStatements(dataVar, plan) {
     `  for (const __c of __cats) for (const __g of __groups) if (!__present.has(JSON.stringify([__c, __g]))) __filled.push({${JSON.stringify(categoryField)}: __c, ${JSON.stringify(groupField)}: __g, ${JSON.stringify(valueField)}: 0${categoryField2 ? `, ${JSON.stringify(categoryField2)}: __cat2.get(__c)` : ''}});`,
     `  return [...${dataVar}, ...__filled];`,
     `})();`,
-    `${dataVar} = Array.from(d3.group(${dataVar}, d => d[${JSON.stringify(categoryField)}]), ([, rows]) => {`,
+    `${dataVar} = Array.from(d3.group(${dataVar}, d => ${categoryKeyExpr('d')}), ([, rows]) => {`,
     `    rows = rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(groupField)}], b[${JSON.stringify(groupField)}]));`,
     `    const total = d3.sum(rows, d => d[${JSON.stringify(valueField)}]);`,
     `    let acc = 0;`,

@@ -612,12 +612,49 @@ apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_u
   # layers' (rewritten) encodings.
   for (channel in c("x", "y", "color", "size", "opacity")) {
     notes_env <- new.env()
+    # `mark.clip` (e.g. area_horizon.vl.json's own `"clip": true`, needed
+    # there since its y-domain is deliberately fixed to a compact [0, 50]
+    # band -- most raw values fall outside it, the whole point of the
+    # horizon-graph technique) explicitly asks for out-of-range data to be
+    # visually clipped at the domain edge, not dropped --
+    # `scale_*_continuous(limits = ...)` (build_position_scale()'s own
+    # default handling of an explicit `scale.domain`) does the latter
+    # (NA-s anything outside, leaving gaps in a geom_area()/geom_line()'s
+    # otherwise-continuous path), while `coord_cartesian(xlim/ylim = ...)`
+    # only zooms the *view* -- every point is still computed from the full
+    # data, so a shape exceeding the bound is genuinely clipped flat there
+    # instead of torn open. Checked across every layer up front (not just
+    # whichever `enc` happens to carry this channel's own explicit domain,
+    # commonly the shared wrapper-level encoding itself -- see
+    # translate_layer()'s own `enc0`, built with no mark_props of its own
+    # at all -- rather than any individual mark's), since `clip` and the
+    # domain don't have to live on the very same layer's own encoding.
+    clip_requested <- channel %in% c("x", "y") &&
+      any(vapply(encodings_for_scales, function(e) isTRUE((attr(e, "mark_props") %||% list())[["clip"]]), logical(1)))
+    if (clip_requested) {
+      domain <- NULL
+      for (enc in encodings_for_scales) {
+        d <- enc[[channel]]$scale[["domain"]]
+        if (!is.null(d) && is.null(names(d))) {
+          domain <- d
+          break
+        }
+      }
+      if (!is.null(domain)) {
+        coord_fn <- if (channel == "x") "xlim" else "ylim"
+        emit(emitter, sprintf(
+          "%s <- %s + ggplot2::coord_cartesian(%s = %s)", plot_var, plot_var, coord_fn, format_value(domain)
+        ))
+        next
+      }
+    }
     for (enc in encodings_for_scales) {
       def <- enc[[channel]]
       if (!is.null(def)) {
         mark_type <- attr(enc, "mark_type") %||% "point"
+        mark_props <- attr(enc, "mark_props") %||% list()
         invalid_override <- spec$config$scale$invalid[[channel]]$value
-        color_aes <- if (channel == "color") effective_color_aes(mark_type, attr(enc, "mark_props") %||% list())
+        color_aes <- if (channel == "color") effective_color_aes(mark_type, mark_props)
         calls <- build_scale_calls(channel, def, mark_type, ignore_unsupported, notes_env, invalid_override, color_aes)
         if (length(calls)) {
           emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, calls))

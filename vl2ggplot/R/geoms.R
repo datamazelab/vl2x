@@ -692,7 +692,30 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     fixed[["position"]] <- fixed[["position"]] %||% '"fill"'
   }
   fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]), ignore_unsupported, .notes)
-  build_call(fn, aes_pairs, fixed, data_arg)
+  main_call <- build_call(fn, aes_pairs, fixed, data_arg)
+  # `mark.line`/`mark.point` (e.g. area_overlay.vl.json's own `{"type":
+  # "area", "line": true, "point": true}`) overlay the area's own top edge
+  # with a stroked line and/or a marker per data point -- ggplot2 has no
+  # single-geom equivalent (unlike vl2d3, which draws these by hand off the
+  # same coordinates), but layering separate geom_line()/geom_point() calls
+  # on top of the same geom_area(), reusing its own x/y aes, achieves the
+  # identical visual. Only the plain (non-ranged) area shape is handled --
+  # a ranged area's own `ymin`/`ymax` aes has no single obvious "top edge"
+  # `y` to reuse, so that case is left as area-only (an accepted, narrower
+  # gap rather than guessing which bound the overlay means).
+  extra_layers <- character(0)
+  if (mark_type == "area" && !is.null(aes_pairs[["y"]])) {
+    overlay_aes <- aes_pairs[intersect(c("x", "y"), names(aes_pairs))]
+    if (!is.null(aes_pairs[["fill"]])) overlay_aes[["colour"]] <- aes_pairs[["fill"]]
+    if (isTRUE(mark_props[["line"]])) {
+      extra_layers <- c(extra_layers, build_call("ggplot2::geom_line", overlay_aes, list(), data_arg))
+    }
+    if (isTRUE(mark_props[["point"]])) {
+      extra_layers <- c(extra_layers, build_call("ggplot2::geom_point", overlay_aes, list(), data_arg))
+    }
+  }
+  if (length(extra_layers) == 0) return(main_call)
+  paste(c(main_call, extra_layers), collapse = " +\n  ")
 }
 
 render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg, ignore_unsupported = FALSE, .notes = NULL) {

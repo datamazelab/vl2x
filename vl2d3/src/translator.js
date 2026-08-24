@@ -719,7 +719,16 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // the whole chart, silently leaving the later layer's own real field
     // unscaled (its raw field value spliced in as a color/size/etc
     // literal instead).
-    const def = prepared.map(p => p.encoding[channel]).find(d => d && (d.field || d.datum !== undefined));
+    // `fill`/`stroke` (e.g. bar_grouped_custom_color_domain.vl.json's own
+    // `fill: {field: "group", scale: {domain: [...]}}`) are Vega-Lite's
+    // own more specific alternatives to the generic `color` channel --
+    // same shared "color" scale either way (marks.js's fillExpr() already
+    // falls back to `encoding.fill` the same way), just building it from
+    // whichever of the three a layer actually declares.
+    const def =
+      channel === 'color'
+        ? prepared.map(p => p.encoding.color || p.encoding.fill || p.encoding.stroke).find(d => d && (d.field || d.datum !== undefined))
+        : prepared.map(p => p.encoding[channel]).find(d => d && (d.field || d.datum !== undefined));
     // `"scale": null` is Vega-Lite's own "use the raw field value directly
     // as the visual channel value, no mapping at all" escape hatch (e.g. a
     // `color` field that already holds real CSS color strings). Building no
@@ -728,6 +737,29 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // "no scale resolved for this channel" case -- a bare field reference --
     // which is exactly this behavior, with no separate code path needed.
     if (!def || 'value' in def || def.scale === null) continue;
+    // A `datum`-only def (no `field` at all, e.g. bar_grouped_repeated.vl
+    // .json's own per-repeated-layer `color: {datum: {"repeat": "layer"}}`,
+    // substituted to a literal constant per layer) has no column for the
+    // resolver's own domain-from-data logic to read -- each layer's own
+    // literal value is already known at this point, so the domain is built
+    // directly from every layer sharing this channel's own `datum` instead.
+    const effectiveDef =
+      def.field === undefined && def.datum !== undefined
+        ? {
+            ...def,
+            scale: {
+              ...def.scale,
+              domain: [
+                ...new Set(
+                  prepared
+                    .map(p => (channel === 'color' ? p.encoding.color || p.encoding.fill || p.encoding.stroke : p.encoding[channel]))
+                    .filter(d => d && d.datum !== undefined)
+                    .map(d => d.datum)
+                ),
+              ],
+            },
+          }
+        : def;
     // `config.scale.invalid.<channel>.value` (e.g.
     // bar_invalid_color_show_override.vl.json) overrides what a null raw
     // value maps to for this channel -- only reachable when
@@ -736,7 +768,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     const invalidOverride = root.config && root.config.scale && root.config.scale.invalid && root.config.scale.invalid[channel]
       ? root.config.scale.invalid[channel].value
       : undefined;
-    const scale = resolver(def, {
+    const scale = resolver(effectiveDef, {
       dataVar: allDataExpr,
       ignoreUnsupported,
       invalidOverride,
@@ -761,7 +793,16 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // building a degenerate one-slot-per-row scale.
     if (!def || 'value' in def || def.type === 'quantitative' || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
     const minBandSize = root.config && root.config.bar && typeof root.config.bar.minBandSize === 'number' ? root.config.bar.minBandSize : undefined;
-    const scale = resolveOffsetScale(offsetChannel, def, {dataVar: allDataExpr, outerScale, minBandSize});
+    // A `datum`-only offset def (no `field`, e.g. bar_grouped_repeated.vl
+    // .json's own per-repeated-layer `xOffset: {datum: {"repeat":
+    // "layer"}}`) has no column to derive a domain from -- built directly
+    // from every layer's own literal `datum` instead, same as the shared
+    // color/size/opacity/shape/radius loop just above.
+    const explicitDatumDomain =
+      def.field === undefined && def.datum !== undefined
+        ? [...new Set(prepared.map(p => p.encoding[offsetChannel]).filter(d => d && d.datum !== undefined).map(d => d.datum))]
+        : undefined;
+    const scale = resolveOffsetScale(offsetChannel, def, {dataVar: allDataExpr, outerScale, minBandSize, explicitDomain: explicitDatumDomain});
     b(scale.decl);
     scales[offsetChannel] = scale;
   }
@@ -824,8 +865,21 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
   // -- marks --
   for (const p of prepared) {
+    const markType = typeof p.mark === 'string' ? p.mark : p.mark.type;
+    // `config.<markType>` (e.g. area_horizon.vl.json's own `config: {area:
+    // {interpolate: "monotone"}}`) supplies a *default* for any mark
+    // property this specific mark doesn't itself override -- merged in
+    // underneath the mark's own explicit properties (which always win),
+    // and applied even when the mark was given as a bare type string (no
+    // object at all) -- always normalized to an object below so a
+    // config-only property (no per-mark override anywhere) still reaches
+    // markProps rather than being silently dropped by renderMark()'s own
+    // "a string mark has no properties at all" shortcut.
+    const configDefaults = (root.config && root.config[markType]) || {};
     const mark =
-      typeof p.mark === 'string' ? p.mark : {...p.mark, ...resolveMarkPropExprs(p.mark, paramValues)};
+      typeof p.mark === 'string'
+        ? {type: p.mark, ...configDefaults}
+        : {...configDefaults, ...p.mark, ...resolveMarkPropExprs(p.mark, paramValues)};
     let markCode = renderMark(mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
     if (!/[;}]\s*$/.test(markCode)) markCode += ';';
     lines.push(markCode.replace(/^/gm, '  '));
@@ -836,7 +890,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   // `legend: null` (e.g. concat_population_pyramid.vl.json's own Female/Male
   // bar layers, which already show gender via the panel titles) is Vega-
   // Lite's explicit opt-out for a channel that would otherwise get one.
-  const colorLegendDef = prepared.map(p => p.encoding.color).find(Boolean);
+  const colorLegendDef = prepared.map(p => p.encoding.color || p.encoding.fill || p.encoding.stroke).find(Boolean);
   if (scales.color && scales.color.kind === 'ordinal' && !(colorLegendDef && colorLegendDef.legend === null)) {
     // A cyclic-timeUnit color channel (prepare.js's `ordinalTimeUnit`, e.g.
     // line_quarter_legend.vl.json's `color: {timeUnit: "quarter", ...}`)
@@ -1036,17 +1090,47 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   // facet data as an extra parameter, so every panel's scale agrees on the
   // same value -> output mapping (see sharedChannelDomainExpr in scales.js
   // and its `__vl2dRawExpr` marker, read by explicitDomainCode()).
-  const sharedDomainChannels = ['color', 'shape', 'size', 'opacity'].filter(ch => {
+  //
+  // x/y are included too -- Vega-Lite's own *default* facet behavior is a
+  // SHARED position scale across every panel (matching axes so panels stay
+  // visually comparable), only becoming independent per panel when
+  // `resolve: {scale: {x/y: "independent"}}` explicitly says so (e.g.
+  // bar_grouped_facet_independent_scale_fixed_width.vl.json's own `x:
+  // "independent"` -- deliberately leaving `y` OFF that list, so y stays
+  // shared). Restricted to quantitative/temporal defs: an ordinal/nominal
+  // or type-ambiguous position channel's own scale KIND (band vs point, or
+  // -- for the ambiguous case -- band vs continuous at all) is decided at
+  // a different point in resolvePositionScale() that doesn't consult this
+  // injected domain, so sharing wouldn't actually take effect for those
+  // (a separate gap, not attempted here).
+  const resolveScale = (root.resolve && root.resolve.scale) || {};
+  const templateMark = typeof templateSpec.mark === 'string' ? templateSpec.mark : templateSpec.mark && templateSpec.mark.type;
+  const positionValueChannel = (() => {
+    const enc = templateSpec.encoding || {};
+    const xIsValue = enc.x && enc.x.type === 'quantitative';
+    const yIsValue = enc.y && enc.y.type === 'quantitative';
+    return xIsValue && !yIsValue ? 'x' : 'y';
+  })();
+  const sharedDomainChannels = ['color', 'shape', 'size', 'opacity', 'x', 'y'].filter(ch => {
     const def = templateSpec.encoding && templateSpec.encoding[ch];
-    return def && def.field && !(def.scale && def.scale.domain !== undefined);
+    if (!def || !def.field || (def.scale && def.scale.domain !== undefined)) return false;
+    if (ch === 'x' || ch === 'y') {
+      if (def.type !== 'quantitative' && def.type !== 'temporal') return false;
+      if (resolveScale[ch] === 'independent') return false;
+    }
+    return true;
   });
   const sharedDomainVars = {};
   const sharedDomainDefs = {};
+  const sharedDomainZeroBaseline = {};
   for (const ch of sharedDomainChannels) {
     const varName = `__facet${ch[0].toUpperCase()}${ch.slice(1)}Domain`;
     sharedDomainVars[ch] = varName;
     const def = templateSpec.encoding[ch];
     sharedDomainDefs[ch] = def;
+    if ((ch === 'x' || ch === 'y') && isBarOrArea(templateMark) && !templateSpec.encoding[`${ch}2`] && ch === positionValueChannel) {
+      sharedDomainZeroBaseline[ch] = true;
+    }
     templateSpec.encoding = {
       ...templateSpec.encoding,
       [ch]: {...def, scale: {...(def.scale || {}), domain: {__vl2dRawExpr: varName}}},
@@ -1074,12 +1158,27 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   const wrapperTransform = root.transform || [];
   const transformTemporalFields = collectTemporalFields({}, wrapperTransform);
   const facetIsTemporal = Boolean(facetDef.timeUnit) || facetDef.type === 'temporal';
-  const temporalFields = [...new Set([...transformTemporalFields, ...(facetIsTemporal ? [facetDef.field] : [])])];
+  // A shared x/y domain computed from `facetData` (sharedDomainChannels
+  // above) needs that channel's own field already coerced to a real Date
+  // -- unlike a channel referenced by the wrapper's own transform (already
+  // covered by transformTemporalFields) or the facet field itself, a plain
+  // `x: {field: "date", type: "temporal"}` with no wrapper-transform
+  // reference wouldn't otherwise be coerced until *inside* the per-panel
+  // template function, well after this shared domain is computed --
+  // `d3.extent()` over still-raw date strings/numbers gives a lexicographic
+  // (wrong) extent instead of a real chronological one, which then feeds
+  // an Invalid-Date/NaN position into every panel's own scale.
+  const sharedTemporalFields = sharedDomainChannels
+    .filter(ch => (ch === 'x' || ch === 'y') && sharedDomainDefs[ch].type === 'temporal')
+    .map(ch => sharedDomainDefs[ch].field);
+  const temporalFields = [
+    ...new Set([...transformTemporalFields, ...(facetIsTemporal ? [facetDef.field] : []), ...sharedTemporalFields]),
+  ];
   renderTemporalCoercion('facetData', temporalFields).forEach(b);
   if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
 
   for (const ch of sharedDomainChannels) {
-    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData')};`);
+    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData', sharedDomainZeroBaseline[ch])};`);
   }
 
   const keyExpr = facetDef.timeUnit
@@ -1191,17 +1290,38 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
   const templateSpec = {...root.spec};
   if (root.encoding) templateSpec.encoding = {...root.encoding, ...(templateSpec.encoding || {})};
 
-  const sharedDomainChannels = ['color', 'shape', 'size', 'opacity'].filter(ch => {
+  // See buildRuntimeFacetPanels()'s identical (and more fully commented)
+  // block for why x/y are included -- Vega-Lite's own default facet-grid
+  // behavior is a shared position scale across every panel too, unless
+  // `resolve: {scale: {x/y: "independent"}}` says otherwise.
+  const resolveScale = (root.resolve && root.resolve.scale) || {};
+  const templateMark = typeof templateSpec.mark === 'string' ? templateSpec.mark : templateSpec.mark && templateSpec.mark.type;
+  const positionValueChannel = (() => {
+    const enc = templateSpec.encoding || {};
+    const xIsValue = enc.x && enc.x.type === 'quantitative';
+    const yIsValue = enc.y && enc.y.type === 'quantitative';
+    return xIsValue && !yIsValue ? 'x' : 'y';
+  })();
+  const sharedDomainChannels = ['color', 'shape', 'size', 'opacity', 'x', 'y'].filter(ch => {
     const def = templateSpec.encoding && templateSpec.encoding[ch];
-    return def && def.field && !(def.scale && def.scale.domain !== undefined);
+    if (!def || !def.field || (def.scale && def.scale.domain !== undefined)) return false;
+    if (ch === 'x' || ch === 'y') {
+      if (def.type !== 'quantitative' && def.type !== 'temporal') return false;
+      if (resolveScale[ch] === 'independent') return false;
+    }
+    return true;
   });
   const sharedDomainVars = {};
   const sharedDomainDefs = {};
+  const sharedDomainZeroBaseline = {};
   for (const ch of sharedDomainChannels) {
     const varName = `__facet${ch[0].toUpperCase()}${ch.slice(1)}Domain`;
     sharedDomainVars[ch] = varName;
     const def = templateSpec.encoding[ch];
     sharedDomainDefs[ch] = def;
+    if ((ch === 'x' || ch === 'y') && isBarOrArea(templateMark) && !templateSpec.encoding[`${ch}2`] && ch === positionValueChannel) {
+      sharedDomainZeroBaseline[ch] = true;
+    }
     templateSpec.encoding = {
       ...templateSpec.encoding,
       [ch]: {...def, scale: {...(def.scale || {}), domain: {__vl2dRawExpr: varName}}},
@@ -1230,14 +1350,25 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
   const transformTemporalFields = collectTemporalFields({}, wrapperTransform);
   const rowIsTemporal = Boolean(rowDef.timeUnit) || rowDef.type === 'temporal';
   const colIsTemporal = Boolean(colDef.timeUnit) || colDef.type === 'temporal';
+  // See buildRuntimeFacetPanels()'s identical comment -- a shared x/y
+  // domain needs that channel's own temporal field already coerced before
+  // it's computed from facetData.
+  const sharedTemporalFields = sharedDomainChannels
+    .filter(ch => (ch === 'x' || ch === 'y') && sharedDomainDefs[ch].type === 'temporal')
+    .map(ch => sharedDomainDefs[ch].field);
   const temporalFields = [
-    ...new Set([...transformTemporalFields, ...(rowIsTemporal ? [rowDef.field] : []), ...(colIsTemporal ? [colDef.field] : [])]),
+    ...new Set([
+      ...transformTemporalFields,
+      ...(rowIsTemporal ? [rowDef.field] : []),
+      ...(colIsTemporal ? [colDef.field] : []),
+      ...sharedTemporalFields,
+    ]),
   ];
   renderTemporalCoercion('facetData', temporalFields).forEach(b);
   if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
 
   for (const ch of sharedDomainChannels) {
-    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData')};`);
+    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData', sharedDomainZeroBaseline[ch])};`);
   }
 
   const rowKeyExpr = rowDef.timeUnit
@@ -1317,6 +1448,29 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
 // defining (but not exporting) that function.
 function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
   const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in spec);
+  // `repeat: {layer: [...]}` (as opposed to `repeat: {row/column: [...]}`,
+  // or the flat-array form) repeats its one template spec as several
+  // LAYERS of one shared view -- sharing x/y scales, differentiated only
+  // by whatever channel(s) the template itself binds to `{"repeat":
+  // "layer"}` (e.g. bar_grouped_repeated.vl.json's own `xOffset`/`color`,
+  // both `{"datum": {"repeat": "layer"}}`) -- not several independent
+  // panels the way every other composition here falls back to. Rewritten
+  // into an equivalent *native* `layer: [...]` spec (one substituted copy
+  // of the template per repeated value) and handed to
+  // buildUnitOrLayerBody() directly, the same properly-shared-scales path
+  // an ordinary `layer` composition already takes -- previously fell
+  // through to the generic "independent panels" fallback below, which
+  // doesn't even know `{"repeat": "layer"}` is a placeholder needing
+  // substitution at all (produces a broken literal object key, `d[{"repeat":
+  // "layer"}]`, and only ever one single, un-repeated panel).
+  if (compositionKey === 'repeat' && spec.repeat && Array.isArray(spec.repeat.layer)) {
+    const layerSpec = {
+      data: spec.data,
+      transform: spec.transform,
+      layer: spec.repeat.layer.map(v => substituteRepeatPlaceholders(spec.spec, {layer: v})),
+    };
+    return buildFunction(fnName, buildUnitOrLayerBody(layerSpec, ignoreUnsupported), prefix);
+  }
   if (!compositionKey) {
     // A plain unit spec's `encoding.row`/`.column`/`.facet` is Vega-Lite's
     // own shorthand for a facet operator (equivalent to wrapping this same
@@ -1336,7 +1490,7 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
       const templateSpec = {...spec, encoding: templateEncoding};
       delete templateSpec.data;
       delete templateSpec.transform;
-      const facetRoot = {data: spec.data, transform: spec.transform, spec: templateSpec};
+      const facetRoot = {data: spec.data, transform: spec.transform, spec: templateSpec, resolve: spec.resolve};
       return buildRuntimeFacetPanels(facetRoot, facetInfo, fnName, ignoreUnsupported, prefix);
     }
     return buildFunction(fnName, buildUnitOrLayerBody(spec, ignoreUnsupported), prefix);
@@ -1440,7 +1594,15 @@ export function specToCode(spec, options = {}) {
   }
 
   const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in root);
-  if (compositionKey && !ignoreUnsupported) {
+  // `repeat: {layer: [...]}` is a genuine, complete translation (rewritten
+  // into a native `layer: [...]` composition with properly shared scales,
+  // see buildPanelFunction()) rather than the "independent panels, no
+  // shared scales" sacrifice every other composition here falls back to --
+  // so it's exempted from the strict-mode refusal the same way a plain
+  // `layer` composition already is (UNSUPPORTED_COMPOSITIONS never listed
+  // "layer" itself either).
+  const isSupportedRepeatLayer = compositionKey === 'repeat' && root.repeat && Array.isArray(root.repeat.layer);
+  if (compositionKey && !ignoreUnsupported && !isSupportedRepeatLayer) {
     throw new Error(
       `Unsupported top-level composition: "${compositionKey}" is not yet supported by vl2d3 ` +
         '(single view and layer are supported)'

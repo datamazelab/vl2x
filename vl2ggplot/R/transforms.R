@@ -707,6 +707,17 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     # cheaper native-stat path.
     position_channel <- setdiff(c("x", "y"), agg_keys)
     stack_channel <- if (position_channel %in% group_keys) setdiff(group_keys, position_channel) else NULL
+    # `stack: null`/`stack: false` (e.g. bar_layered_transparent.vl.json's
+    # own `y: {..., stack: null}`, paired with `opacity: {value: 0.7}` --
+    # deliberately overlapping, semi-transparent bars, not a stacked total)
+    # explicitly opts OUT of Vega-Lite's own otherwise-default implicit
+    # stacking. `"stack" %in% names(...)` (not just `is.null(...$stack)`)
+    # distinguishes an explicit `null` from the key being absent entirely --
+    # jsonlite's `fromJSON(simplifyVector = FALSE)` keeps an explicit JSON
+    # `null` as a present-but-NULL list element, dropping the *absent* case
+    # entirely instead, so this check only matches the former.
+    stack_explicitly_disabled <- "stack" %in% names(encoding[[agg_keys]]) &&
+      (is.null(encoding[[agg_keys]][["stack"]]) || identical(encoding[[agg_keys]][["stack"]], FALSE))
     # A dodge channel (xOffset/yOffset, already stripped from `encoding`
     # itself by the caller -- see `has_dodge`'s own doc there) needs the
     # *raw*, un-collapsed data (its own field is mapped directly in aes(),
@@ -717,7 +728,7 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     # alongside its `x`/`color` stack), so a dodged+stacked chart stays on
     # the native-stat path below instead.
     is_implicit_stack <- mark_type %in% c("bar", "area") && length(stack_channel) == 1 &&
-      stack_channel %in% c("color", "detail", "opacity") && !has_dodge
+      stack_channel %in% c("color", "detail", "opacity") && !has_dodge && !stack_explicitly_disabled
     if (is_implicit_stack) {
       plan <- plan_explicit_aggregate(
         encoding, agg_keys, group_keys, var_name, ignore_unsupported, facet_group_fields,
@@ -729,7 +740,14 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
       return(plan)
     }
     if (op == "count" || is_stat_summary_op(op)) {
-      plan <- plan_native_stat(encoding, agg_keys, op, group_keys, var_name, ignore_unsupported)
+      # A real stack_channel (color/detail/opacity) present but stacking
+      # explicitly disabled (stack_explicitly_disabled, just above): ggplot2's
+      # own geom_bar()/geom_col() default `position` is "stack" regardless of
+      # whether *this* code densified/pre-stacked anything, so an explicit
+      # "identity" override is still needed here to actually get overlapping
+      # bars instead.
+      position_identity <- length(stack_channel) == 1 && stack_channel %in% c("color", "detail", "opacity") && stack_explicitly_disabled
+      plan <- plan_native_stat(encoding, agg_keys, op, group_keys, var_name, ignore_unsupported, position_identity = position_identity)
       plan$statements <- c(plan_notes, plan$statements)
       plan$aggregated <- TRUE
       return(plan)
@@ -742,9 +760,9 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
   plan
 }
 
-plan_native_stat <- function(encoding, agg_key, op, group_keys, var_name, ignore_unsupported = FALSE) {
+plan_native_stat <- function(encoding, agg_key, op, group_keys, var_name, ignore_unsupported = FALSE, position_identity = FALSE) {
   rewritten <- encoding
-  extra_fixed <- list()
+  extra_fixed <- if (position_identity) list(position = '"identity"') else list()
   statements <- character(0)
   notes <- character(0)
   # A groupby channel with its own `timeUnit` (and no aggregate/bin of its
