@@ -456,11 +456,32 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       # bar_layered_weather's several differently-sized layers (20px/12px/
       # 3px, all sharing the same band) still end up visibly different
       # widths, not identically thick.
-      size_value <- mark_scalar_value(mark_props[["size"]] %||% 20, "20", ignore_unsupported, .notes)
       x_expr <- sprintf("as.numeric(%s)", aes_pairs[["x"]])
-      half_width_expr <- sprintf("0.45 * (%s) / 20", size_value)
-      aes_pairs[["xmin"]] <- sprintf("(%s) - (%s)", x_expr, half_width_expr)
-      aes_pairs[["xmax"]] <- sprintf("(%s) + (%s)", x_expr, half_width_expr)
+      if (isTRUE(plan$manual_dodge_stack) && !is.null(plan$offset_field)) {
+        # A dodge field whose stack was already computed explicitly
+        # (transforms.R's plan_explicit_aggregate(), `manual_dodge_stack`)
+        # needs its own manual xmin/xmax dodge geometry here too -- ggplot2
+        # has no single built-in `position` that both dodges *and* stacks,
+        # so `position_dodge2()` (translator.R's usual dodge fallback,
+        # skipped for exactly this case) can't do it. Slices the outer
+        # (0.9-wide, matching geom_bar()'s own default) band into one
+        # sub-slot per distinct offset value, `sort(unique(...))`-ordered
+        # the same way vl2d3's own dodge sub-band scale is, each slot
+        # filling 90% of its own share (a small gap between adjacent
+        # dodge bars, mirroring position_dodge2()'s own default padding).
+        offset_ref <- field_ref(plan$offset_field$field)
+        n_groups_expr <- sprintf("length(unique(%s))", offset_ref)
+        rank_expr <- sprintf("match(%s, sort(unique(%s)))", offset_ref, offset_ref)
+        slot_width_expr <- sprintf("(0.9 / (%s))", n_groups_expr)
+        center_expr <- sprintf("((%s) - 0.45 + ((%s) - 0.5) * (%s))", x_expr, rank_expr, slot_width_expr)
+        half_width_expr <- sprintf("((%s) * 0.45)", slot_width_expr)
+      } else {
+        size_value <- mark_scalar_value(mark_props[["size"]] %||% 20, "20", ignore_unsupported, .notes)
+        center_expr <- x_expr
+        half_width_expr <- sprintf("0.45 * (%s) / 20", size_value)
+      }
+      aes_pairs[["xmin"]] <- sprintf("(%s) - (%s)", center_expr, half_width_expr)
+      aes_pairs[["xmax"]] <- sprintf("(%s) + (%s)", center_expr, half_width_expr)
       aes_pairs[["x"]] <- NULL
       return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
     }

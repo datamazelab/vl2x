@@ -26,7 +26,26 @@ function markTypeOf(mark) {
 export function planStacking(mark, encoding) {
   const markType = markTypeOf(mark);
   if (!STACKABLE_MARKS.includes(markType)) return null;
-  const groupChannel = GROUP_CHANNELS.find(ch => encoding[ch] && encoding[ch].field);
+  let groupChannel = GROUP_CHANNELS.find(ch => encoding[ch] && encoding[ch].field);
+  // A color/detail/opacity field that's the *same* field already driving
+  // an xOffset/yOffset dodge (e.g. bar_binned_yearmonth_grouped.vl.json's
+  // own `xOffset: {field: "symbol"}` + `color: {field: "symbol"}`, plain
+  // dodged-and-colored bars, not a further breakdown) isn't a second,
+  // independent grouping to stack by -- the dodge already fully expresses
+  // that one dimension, and every dodge slot then has exactly one row, so
+  // "stacking" it is a no-op at best and, since a temporal/continuous x
+  // axis has no band to dodge sub-positions within in the first place
+  // (unlike the nominal/ordinal case), a broken loss of the dodge
+  // positioning entirely at worst -- distinct from
+  // bar_grouped_stacked.vl.json's own genuine "dodge by Origin, stack by
+  // year within each Origin's slot", where the two fields differ.
+  if (groupChannel) {
+    const groupField = encoding[groupChannel].field;
+    const offsetSharesField = ['xOffset', 'yOffset'].some(
+      ch => encoding[ch] && encoding[ch].field === groupField
+    );
+    if (offsetSharesField) groupChannel = undefined;
+  }
   // `stack: true`/`"zero"`/`"normalize"`/`"center"` explicitly requested on
   // the position channel itself still stacks even with no color/detail/
   // opacity groupby at all (e.g. bar_multi_values_per_categories.vl.json's
@@ -126,6 +145,27 @@ export function renderStackingStatements(dataVar, plan) {
       : mode === 'center'
         ? `      return {...d, ${JSON.stringify(stack0)}: y0 - total / 2, ${JSON.stringify(stack1)}: y1 - total / 2};`
         : `      return {...d, ${JSON.stringify(stack0)}: y0, ${JSON.stringify(stack1)}: y1};`;
+  // A "zero" stack keeps its own baseline for positive values separate
+  // from negative ones (e.g. bar_diverging_stack_population_pyramid.vl
+  // .json's own signed `signed_people` -- female rows negative, male rows
+  // positive) -- a single running total across a mix of signs would walk
+  // the *second* sign's own segment off from whatever the first sign's
+  // cumulative total happened to reach, instead of it starting fresh at
+  // 0 the way a real diverging stack does. `normalize`/`center` (which
+  // rescale the *whole* stack's own total afterward) keep the plain single
+  // running total -- less common with mixed-sign data in the first place,
+  // and Vega-Lite's own diverging convention is specifically about the
+  // "zero" baseline.
+  const accDecl = mode === 'zero' ? '{ pos: 0, neg: 0 }' : '0';
+  const accStep =
+    mode === 'zero'
+      ? `      const __v = +d[${JSON.stringify(valueField)}];\n` +
+        `      const y0 = __v >= 0 ? acc.pos : acc.neg;\n` +
+        `      if (__v >= 0) acc.pos += __v; else acc.neg += __v;\n` +
+        `      const y1 = __v >= 0 ? acc.pos : acc.neg;`
+      : `      const y0 = acc;\n` +
+        `      acc += +d[${JSON.stringify(valueField)}];\n` +
+        `      const y1 = acc;`;
   if (!groupField) {
     // No real group field (an explicit `stack: true` with no color/detail/
     // opacity channel, see planStacking()'s own comment) -- nothing to
@@ -134,11 +174,9 @@ export function renderStackingStatements(dataVar, plan) {
     return [
       `${dataVar} = Array.from(d3.group(${dataVar}, d => ${categoryKeyExpr('d')}), ([, rows]) => {`,
       `    const total = d3.sum(rows, d => d[${JSON.stringify(valueField)}]);`,
-      `    let acc = 0;`,
+      `    let acc = ${accDecl};`,
       `    return rows.map(d => {`,
-      `      const y0 = acc;`,
-      `      acc += +d[${JSON.stringify(valueField)}];`,
-      `      const y1 = acc;`,
+      accStep,
       scaleLine,
       `    });`,
       `  }).flat();`,
@@ -178,15 +216,9 @@ export function renderStackingStatements(dataVar, plan) {
     `${dataVar} = Array.from(d3.group(${dataVar}, d => ${categoryKeyExpr('d')}), ([, rows]) => {`,
     `    rows = rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(groupField)}], b[${JSON.stringify(groupField)}]));`,
     `    const total = d3.sum(rows, d => d[${JSON.stringify(valueField)}]);`,
-    `    let acc = 0;`,
+    `    let acc = ${accDecl};`,
     `    return rows.map(d => {`,
-    `      const y0 = acc;`,
-    // d3.sum() above already coerces non-numeric (e.g. string) field values
-    // via its own internal `+value` -- this manual running total needs the
-    // same coercion, or a string-valued field silently turns `+=` into
-    // string concatenation ("0" + "0.14" + "0.6" -> "00.140.6", not 0.74).
-    `      acc += +d[${JSON.stringify(valueField)}];`,
-    `      const y1 = acc;`,
+    accStep,
     scaleLine,
     `    });`,
     `  }).flat();`,

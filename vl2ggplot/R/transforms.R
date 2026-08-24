@@ -462,7 +462,7 @@ plan_2d_bin <- function(mark_type, encoding, agg_keys) {
 }
 
 # Returns list(statements, encoding, extra_fixed, extra_aes, use_histogram).
-plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), has_dodge = FALSE) {
+plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), has_dodge = FALSE, offset_field = NULL) {
   keys <- channel_entries(encoding)
   .arc_theta_radius <- c("theta", "theta2", "radius", "radius2")
   if (mark_type != "arc") {
@@ -718,22 +718,38 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     # entirely instead, so this check only matches the former.
     stack_explicitly_disabled <- "stack" %in% names(encoding[[agg_keys]]) &&
       (is.null(encoding[[agg_keys]][["stack"]]) || identical(encoding[[agg_keys]][["stack"]], FALSE))
-    # A dodge channel (xOffset/yOffset, already stripped from `encoding`
-    # itself by the caller -- see `has_dodge`'s own doc there) needs the
-    # *raw*, un-collapsed data (its own field is mapped directly in aes(),
-    # same as any other passenger column stat_summary()'s on-the-fly
-    # grouping leaves alone) -- densify_channels' own
-    # dplyr::group_by()+summarise() would collapse it away entirely
-    # (bar_grouped_stacked.vl.json's own `xOffset: {field: "Origin"}`, e.g.,
-    # alongside its `x`/`color` stack), so a dodged+stacked chart stays on
-    # the native-stat path below instead.
+    # A dodge channel (xOffset/yOffset) alongside a real color/detail/
+    # opacity stack (e.g. bar_grouped_stacked.vl.json's own `xOffset:
+    # {field: "Origin"}` + `color: {timeUnit: "year", ...}`) means "dodge
+    # by Origin, then stack by year within each Origin's own slot" -- both
+    # real, common, and independently controlled by Vega-Lite (mirroring
+    # vl2d3's own stack.js, which composes the two the same way). ggplot2
+    # has no single built-in `position` that dodges *and* stacks together,
+    # so `plan_explicit_aggregate()` computes the stacked range explicitly
+    # (its own `offset_field` parameter, densifying and grouping by the
+    # dodge field as a genuine third dimension) and geoms.R's own dodge-
+    # aware geom_rect() path (see `has_dodge` there) draws the manually-
+    # positioned dodge slots.
+    # A color/detail/opacity field that's the *same* field already driving
+    # the dodge (e.g. bar_group_timeunit.vl.json's own `xOffset: {field:
+    # "Origin"}` + `color: {field: "Origin"}`, plain dodged-and-colored
+    # bars, not a further breakdown) isn't a second, independent grouping
+    # to stack by -- the dodge already fully expresses that one dimension,
+    # so every dodge slot has exactly one row and there's nothing left to
+    # stack (matching vl2d3's own identical `offsetSharesField` check,
+    # stack.js's planStacking()) -- besides being a no-op, grouping by the
+    # same field twice (Origin, Origin) is also a hard dplyr error
+    # ("Column name `Origin` must not be duplicated").
+    offset_shares_stack_field <- !is.null(offset_field) && length(stack_channel) == 1 &&
+      identical(encoding[[stack_channel]]$field, offset_field$field)
     is_implicit_stack <- mark_type %in% c("bar", "area") && length(stack_channel) == 1 &&
-      stack_channel %in% c("color", "detail", "opacity") && !has_dodge && !stack_explicitly_disabled
+      stack_channel %in% c("color", "detail", "opacity") && !stack_explicitly_disabled && !offset_shares_stack_field
     if (is_implicit_stack) {
       plan <- plan_explicit_aggregate(
         encoding, agg_keys, group_keys, var_name, ignore_unsupported, facet_group_fields,
         densify_channels = c(position_channel, stack_channel),
-        center_stack = identical(encoding[[agg_keys]]$stack, "center")
+        center_stack = identical(encoding[[agg_keys]]$stack, "center"),
+        offset_field = if (has_dodge) offset_field else NULL
       )
       plan$statements <- c(plan_notes, plan$statements)
       plan$aggregated <- TRUE
@@ -970,7 +986,7 @@ apply_error_extent <- function(mark_props, encoding, var_name, ignore_unsupporte
   list(statements = c(note, stmts), encoding = rewritten)
 }
 
-plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), densify_channels = NULL, center_stack = FALSE) {
+plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), densify_channels = NULL, center_stack = FALSE, offset_field = NULL) {
   notes <- character(0)
   if (length(group_keys) > 2) {
     if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
@@ -1026,6 +1042,13 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
   # downstream has nothing left to facet by (see facet_group_field_names()
   # in translator.R for why).
   group_field_refs <- c(group_field_refs, vapply(setdiff(facet_group_fields, vapply(group_keys, function(k) encoding[[k]]$field, character(1))), field_ref, character(1)))
+  # The dodge field (e.g. bar_grouped_stacked.vl.json's own `xOffset:
+  # {field: "Origin"}`) is a genuine third grouping dimension here, not
+  # just a passenger column -- each (category, offset) pair needs its own
+  # independently-aggregated, independently-stacked value, the same way
+  # planStacking()'s own `offsetField` (stack.js) folds a dodge into the
+  # stack's grouping key on the vl2d3 side.
+  if (!is.null(offset_field)) group_field_refs <- c(group_field_refs, field_ref(offset_field$field))
 
   value_assigns <- vapply(agg_keys, function(k) {
     def <- encoding[[k]]
@@ -1079,12 +1102,17 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     cat_field <- rewritten[[densify_channels[1]]]$field
     grp_field <- rewritten[[densify_channels[2]]]$field
     value_fields <- vapply(agg_keys, function(k) rewritten[[k]]$field, character(1))
+    # A dodge field (offset_field) makes this a genuine 3-way cross-product
+    # -- every (category, offset, stack-group) combination needs its own
+    # zero-filled row, not just (category, stack-group), or a dodge slot
+    # missing one stack-group's own value would stack the remaining ones
+    # starting from a nonzero baseline instead of a true zero.
+    densify_fields <- if (!is.null(offset_field)) c(cat_field, offset_field$field, grp_field) else c(cat_field, grp_field)
+    densify_lists <- paste(sprintf("unique(%s[[%s]])", var_name, vapply(densify_fields, format_value, character(1))), collapse = ", ")
+    densify_names <- paste(vapply(densify_fields, format_value, character(1)), collapse = ", ")
     stmts <- c(stmts, sprintf(
-      "%s <- merge(do.call(expand.grid, stats::setNames(list(unique(%s[[%s]]), unique(%s[[%s]])), c(%s, %s))), %s, all.x = TRUE)",
-      var_name,
-      var_name, format_value(cat_field), var_name, format_value(grp_field),
-      format_value(cat_field), format_value(grp_field),
-      var_name
+      "%s <- merge(do.call(expand.grid, stats::setNames(list(%s), c(%s))), %s, all.x = TRUE)",
+      var_name, densify_lists, densify_names, var_name
     ))
     fill_assigns <- paste(
       sprintf("%s = ifelse(is.na(%s), 0, %s)", render_name(value_fields), render_name(value_fields), render_name(value_fields)),
@@ -1108,18 +1136,36 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     # (its own already-supported x2/y2 range case) once the value channel
     # itself is repointed at `<field>_stack1` with a new `<field>2`
     # companion at `<field>_stack0`, exactly like any other explicit range.
-    if (isTRUE(center_stack)) {
+    #
+    # A dodge field needs the exact same explicit ymin/ymax treatment even
+    # for the plain "zero" baseline -- ggplot2 has no single built-in
+    # `position` that both dodges (by the offset field) *and* stacks (by
+    # the stack-group field) at once, so geom_col()'s own automatic
+    # position_stack() can't be relied on here at all; geoms.R's dodge-
+    # aware geom_rect() path draws the matching manual x dodge.
+    needs_manual_stack <- isTRUE(center_stack) || !is.null(offset_field)
+    if (needs_manual_stack) {
       value_field <- value_fields[1]
       stack0 <- out_field_name(value_field, "stack0")
       stack1 <- out_field_name(value_field, "stack1")
-      stmts <- c(stmts, sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, render_name(cat_field)))
+      group_by_fields <- if (!is.null(offset_field)) c(cat_field, offset_field$field) else cat_field
+      stmts <- c(stmts, sprintf("%s <- dplyr::group_by(%s, %s)", var_name, var_name, paste(vapply(group_by_fields, render_name, character(1)), collapse = ", ")))
       stmts <- c(stmts, sprintf("%s <- dplyr::arrange(%s, %s, .by_group = TRUE)", var_name, var_name, render_name(grp_field)))
-      stmts <- c(stmts, sprintf(
-        "%s <- dplyr::mutate(%s, .vl_cum = cumsum(%s), %s = .vl_cum - %s - sum(%s) / 2, %s = .vl_cum - sum(%s) / 2, .vl_cum = NULL)",
-        var_name, var_name, render_name(value_field),
-        render_name(stack0), render_name(value_field), render_name(value_field),
-        render_name(stack1), render_name(value_field)
-      ))
+      if (isTRUE(center_stack)) {
+        stmts <- c(stmts, sprintf(
+          "%s <- dplyr::mutate(%s, .vl_cum = cumsum(%s), %s = .vl_cum - %s - sum(%s) / 2, %s = .vl_cum - sum(%s) / 2, .vl_cum = NULL)",
+          var_name, var_name, render_name(value_field),
+          render_name(stack0), render_name(value_field), render_name(value_field),
+          render_name(stack1), render_name(value_field)
+        ))
+      } else {
+        stmts <- c(stmts, sprintf(
+          "%s <- dplyr::mutate(%s, .vl_cum = cumsum(%s), %s = .vl_cum - %s, %s = .vl_cum, .vl_cum = NULL)",
+          var_name, var_name, render_name(value_field),
+          render_name(stack0), render_name(value_field),
+          render_name(stack1)
+        ))
+      }
       stmts <- c(stmts, sprintf("%s <- dplyr::ungroup(%s)", var_name, var_name))
       # error_bounds() (geoms.R) reads the base channel as the *min* and its
       # `2`-companion as the *max* with no reordering of its own -- stack0
@@ -1131,5 +1177,15 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     }
   }
 
-  list(statements = stmts, encoding = rewritten, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE)
+  # A dodge field whose stacking was computed manually above already has
+  # its own real xmin/xmax dodge geometry coming from geoms.R's dodge-aware
+  # geom_rect() path (see translator.R's own `manual_dodge_stack` check) --
+  # signaled back so the caller skips its usual `position =
+  # position_dodge2()` fallback, which would otherwise dodge *every* row
+  # (including different stack-groups within the same dodge slot) apart
+  # instead of stacking them.
+  list(
+    statements = stmts, encoding = rewritten, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE,
+    manual_dodge_stack = !is.null(offset_field) && !is.null(densify_channels)
+  )
 }

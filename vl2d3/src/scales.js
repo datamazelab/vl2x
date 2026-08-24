@@ -30,6 +30,11 @@ const SCHEME_SEQUENTIAL = {
   warm: 'interpolateWarm',
   cool: 'interpolateCool',
   rainbow: 'interpolateRainbow',
+  // d3-scale-chromatic has no exact "teal" interpolator of its own --
+  // "lighttealblue" (e.g. bar_heatlane.vl.json's own scheme) is close
+  // enough to the built-in green-to-blue single-hue ramp to stand in for it.
+  lighttealblue: 'interpolateGnBu',
+  tealblues: 'interpolateGnBu',
 };
 
 // Vega-Lite's own "DateTime object" shorthand for a literal temporal
@@ -249,7 +254,22 @@ export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBase
     }
     const isNominalVar = `${varName}IsNominal`;
     const fieldJson = JSON.stringify(field);
-    const domain = zeroBaseline ? zeroDomainFromData(dataVar, field) : domainFromData(dataVar, field);
+    // `combinedValuesExpr` (e.g. bar_heatlane.vl.json's own untyped `y:
+    // {field: "y"}` + `y2: {field: "y2"}`, y2 always negative -- a
+    // symmetric-around-0 "lane" width) needs unioning in here the same way
+    // the quantitative branch below already does, or the ambiguous-type
+    // continuous fallback only ever sees this channel's own values,
+    // completely missing whatever a real y2/x2 companion range reaches
+    // (previously computed straight from `dataVar` regardless, silently
+    // clipping/shifting the domain wherever the companion channel's own
+    // extent exceeds this channel's).
+    const domain = zeroBaseline
+      ? combinedValuesExpr
+        ? zeroExtentDomain(combinedValuesExpr)
+        : zeroDomainFromData(dataVar, field)
+      : combinedValuesExpr
+        ? extentDomain(combinedValuesExpr)
+        : domainFromData(dataVar, field);
     const decl =
       `const ${isNominalVar} = ${dataVar}.some(d => typeof d[${fieldJson}] === "string"); ` +
       `// vl2d3: unsupported ambiguous field type (no "type" given), choosing a band or continuous scale at runtime from the actual data (--ignore-unsupported)\n` +
@@ -432,7 +452,25 @@ export function resolveColorScale(def, {dataVar, ignoreUnsupported = false, inva
     };
   }
   const domain = explicitDomain ?? ordinalDomainFromData(dataVar, field, def.sort);
-  const range = def.scale && def.scale.range ? formatValue(def.scale.range) : `d3.${SCHEME_ORDINAL[scheme] || 'schemeTableau10'}`;
+  // A `scheme` naming one of Vega's *sequential* palettes (e.g.
+  // bar_heatlane.vl.json's own "lighttealblue", used on a discrete/ordinal
+  // color channel) has no ready-made discrete array the way a genuinely
+  // categorical scheme (Tableau10, Set2, ...) does -- d3-scale-chromatic
+  // only exports those as continuous interpolator *functions* -- so this
+  // samples one discrete stop per distinct domain value instead (the same
+  // `d3.quantize(interpolator, n)` idiom discretizingScaleExpr() already
+  // uses for a quantitative channel's own scheme-only discretizing case),
+  // rather than silently falling through to the generic Tableau10 default.
+  let range;
+  if (def.scale && def.scale.range) {
+    range = formatValue(def.scale.range);
+  } else if (scheme && SCHEME_ORDINAL[scheme]) {
+    range = `d3.${SCHEME_ORDINAL[scheme]}`;
+  } else if (scheme && SCHEME_SEQUENTIAL[scheme]) {
+    range = `d3.quantize(d3.${SCHEME_SEQUENTIAL[scheme]}, Math.max(2, (${domain}).length))`;
+  } else {
+    range = 'd3.schemeTableau10';
+  }
   return {
     varName: 'color',
     decl: scaleDecl('color', `d3.scaleOrdinal(${domain}, ${range})`, domainNote, invalidOverride),

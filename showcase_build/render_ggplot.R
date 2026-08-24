@@ -38,7 +38,20 @@ for (i in seq_along(files)) {
     plot_obj <- suppressWarnings(suppressMessages(
       eval(parse(text = code), envir = env)
     ))
-    ggplot2::ggsave(png_path, plot = plot_obj, width = 7, height = 5, dpi = 120, bg = "white")
+    # The spec's own top-level `width`/`height` (a plain number, e.g. area_
+    # horizon.vl.json's own `"width": 300, "height": 50`, a deliberately
+    # very wide, very short aspect ratio the horizon-graph technique
+    # depends on) sizes this render instead of a flat 7x5in for every
+    # example regardless of its own shape -- previously ignored entirely,
+    # squashing/stretching every non-default-aspect chart into the generic
+    # one. Converted from CSS px (Vega-Lite's own unit) via the standard
+    # 96px/in reference DPI, clamped to a sane print-size range so a
+    # spec's own extreme width/height (very large, or small enough ggsave
+    # would otherwise refuse/degenerate) still produces a legible file.
+    px_to_in <- function(px) max(1.5, min(14, px / 96))
+    render_width <- if (is.numeric(spec$width)) px_to_in(spec$width) else 7
+    render_height <- if (is.numeric(spec$height)) px_to_in(spec$height) else 5
+    ggplot2::ggsave(png_path, plot = plot_obj, width = render_width, height = render_height, dpi = 120, bg = "white")
     list(ok = TRUE)
   }, error = function(e) {
     msg <- strsplit(conditionMessage(e), "\n")[[1]][1]

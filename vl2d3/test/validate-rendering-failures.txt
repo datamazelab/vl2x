@@ -6,18 +6,14 @@
 
 ===== boxplot_1D_invalid.vl.json [NaN geometry: 5 shape(s), tags=rect,line] =====
 
-===== histogram_nonlinear.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
-
-===== point_ordinal_bin_offset_random.vl.json [NaN geometry: 1 shape(s), tags=circle] =====
-
 ===== rect_params.vl.json [NaN geometry: 1 shape(s), tags=rect] =====
 
 ===== geo_graticule.vl.json [zero shapes] =====
 import * as d3 from "d3";
 
 export default async function chart(container, options = {}) {
-  const width = options.width ?? 640;
-  const height = options.height ?? 400;
+  const width = options.width ?? 200;
+  const height = options.height ?? 200;
   const marginTop = options.marginTop ?? 20;
   const marginRight = options.marginRight ?? 20;
   const marginBottom = options.marginBottom ?? 30;
@@ -52,8 +48,8 @@ export default async function chart(container, options = {}) {
 import * as d3 from "d3";
 
 export default async function chart(container, options = {}) {
-  const width = options.width ?? 640;
-  const height = options.height ?? 400;
+  const width = options.width ?? 200;
+  const height = options.height ?? 200;
   const marginTop = options.marginTop ?? 20;
   const marginRight = options.marginRight ?? 20;
   const marginBottom = options.marginBottom ?? 30;
@@ -88,8 +84,8 @@ export default async function chart(container, options = {}) {
 import * as d3 from "d3";
 
 export default async function chart(container, options = {}) {
-  const width = options.width ?? 640;
-  const height = options.height ?? 400;
+  const width = options.width ?? 500;
+  const height = options.height ?? 300;
   const marginTop = options.marginTop ?? 20;
   const marginRight = options.marginRight ?? 20;
   const marginBottom = options.marginBottom ?? 30;
@@ -123,8 +119,8 @@ export default async function chart(container, options = {}) {
 import * as d3 from "d3";
 
 export default async function chart(container, options = {}) {
-  const width = options.width ?? 640;
-  const height = options.height ?? 400;
+  const width = options.width ?? 200;
+  const height = options.height ?? 200;
   const marginTop = options.marginTop ?? 20;
   const marginRight = options.marginRight ?? 20;
   const marginBottom = options.marginBottom ?? 30;

@@ -471,12 +471,36 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
   const lines = [];
   const b = s => lines.push('  ' + s);
 
-  b('const width = options.width ?? 640;');
-  b('const height = options.height ?? 400;');
-  b('const marginTop = options.marginTop ?? 20;');
-  b('const marginRight = options.marginRight ?? 20;');
-  b('const marginBottom = options.marginBottom ?? 30;');
-  b('const marginLeft = options.marginLeft ?? 50;');
+  // The spec's own top-level `width`/`height` (a plain number, e.g. area_
+  // horizon.vl.json's own `"width": 300, "height": 50`) is this chart
+  // function's own DEFAULT size, not just the generic 640x400 fallback --
+  // an explicit `options.width`/`.height` from the caller still always
+  // wins (the same override precedence a facet/concat panel's own size
+  // already has, see buildRuntimeFacetPanels()/buildPanelFunction()), but
+  // previously only those panel-building paths ever threaded a spec's own
+  // size in at all; a plain standalone/layer chart function baked in the
+  // generic 640x400 regardless, silently ignoring its own spec's size
+  // whenever the caller didn't *also* separately know to pass it back in.
+  const defaultWidth = typeof root.width === 'number' ? root.width : 640;
+  const defaultHeight = typeof root.height === 'number' ? root.height : 400;
+  b(`const width = options.width ?? ${formatValue(defaultWidth)};`);
+  b(`const height = options.height ?? ${formatValue(defaultHeight)};`);
+  // The generic 20/20/30/50 default margins alone can exceed a small
+  // explicit height/width outright (e.g. area_horizon.vl.json's own
+  // `"height": 50` -- exactly consumed by the default 20+30 top+bottom
+  // margin, leaving a *zero*-height clip-path/plot area that silently
+  // clips every mark to nothing) -- scaled down proportionally the same
+  // way a small facet panel's own default margins already are
+  // (buildRuntimeFacetPanels()/buildPanelFunction()), rather than only
+  // ever applying to those panel-building paths.
+  const defaultMarginTop = defaultHeight <= 50 ? Math.max(1, Math.round(defaultHeight * 0.3)) : 20;
+  const defaultMarginBottom = defaultHeight <= 50 ? Math.max(1, Math.round(defaultHeight * 0.4)) : 30;
+  const defaultMarginLeft = defaultWidth <= 80 ? Math.max(1, Math.round(defaultWidth * 0.3)) : 50;
+  const defaultMarginRight = defaultWidth <= 80 ? Math.max(1, Math.round(defaultWidth * 0.1)) : 20;
+  b(`const marginTop = options.marginTop ?? ${formatValue(defaultMarginTop)};`);
+  b(`const marginRight = options.marginRight ?? ${formatValue(defaultMarginRight)};`);
+  b(`const marginBottom = options.marginBottom ?? ${formatValue(defaultMarginBottom)};`);
+  b(`const marginLeft = options.marginLeft ?? ${formatValue(defaultMarginLeft)};`);
   lines.push('');
 
   // Clamped (not bare `height - marginBottom` / `width - marginRight`):
@@ -638,10 +662,25 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
           `${p.dataVar}.map(d => d[${JSON.stringify(`${stack.valueField}_stack1`)}])`,
         ];
       }
-      return [`${p.dataVar}.map(d => d[${JSON.stringify(p.encoding[channel].field)}])`];
+      const exprs = [`${p.dataVar}.map(d => d[${JSON.stringify(p.encoding[channel].field)}])`];
+      // A companion `${channel}2` range (e.g.
+      // stacked_bar_population_transform.vl.json's own explicit top-level
+      // `stack` *transform*, `y: {field: "v1"}` + `y2: {field: "v2"}` --
+      // distinct from planStacking()'s own *implicit* per-mark stacking,
+      // excluded above, but just as real a range) needs unioning into the
+      // domain too, whenever it has its own field -- otherwise the domain
+      // only ever sees this channel's own (start) values, silently
+      // clipping off whichever end of the range v2 alone reaches further
+      // than v1 ever does (e.g. a normalized [0, 1] stack's own top edge).
+      const companionDef = p.encoding[`${channel}2`];
+      if (companionDef && companionDef.field) {
+        exprs.push(`${p.dataVar}.map(d => d[${JSON.stringify(companionDef.field)}])`);
+      }
+      return exprs;
     };
     const needsCombining =
-      declaringChildren.length > 1 || declaringChildren.some(p => p.stackPlan && p.stackPlan.posChannel === channel);
+      declaringChildren.length > 1 ||
+      declaringChildren.some(p => (p.stackPlan && p.stackPlan.posChannel === channel) || (p.encoding[`${channel}2`] && p.encoding[`${channel}2`].field));
     const combinedValuesExpr = needsCombining
       ? `[].concat(${declaringChildren.flatMap(valuesExprsFor).join(', ')})`
       : null;
@@ -792,7 +831,20 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // (dropped, same as before this offset support existed) rather than
     // building a degenerate one-slot-per-row scale.
     if (!def || 'value' in def || def.type === 'quantitative' || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
-    const minBandSize = root.config && root.config.bar && typeof root.config.bar.minBandSize === 'number' ? root.config.bar.minBandSize : undefined;
+    // A DEFAULT floor of 1px (not just an explicit `config.bar.minBandSize`
+    // override, see resolveOffsetScale()'s own comment) even with no config
+    // at all -- with enough distinct offset values sharing one outer band
+    // (e.g. bar_grouped_thin.vl.json's own ~3000 movie titles), the
+    // *natural* dodge sub-band shrinks to a small fraction of a device
+    // pixel, which real Vega-Lite's own canvas renderer still shows
+    // (sub-pixel coverage antialiasing draws *something*) but this
+    // project's SVG output renders as fully, literally invisible --
+    // clamping to a minimum of 1 keeps every group's own bar visible here
+    // too, at the cost of legitimately overflowing past its own outer
+    // band's slot in this extreme-cardinality case (matching, not
+    // worsening, what real Vega-Lite's own rendering looks like there).
+    const minBandSize =
+      root.config && root.config.bar && typeof root.config.bar.minBandSize === 'number' ? root.config.bar.minBandSize : 1;
     // A `datum`-only offset def (no `field`, e.g. bar_grouped_repeated.vl
     // .json's own per-repeated-layer `xOffset: {datum: {"repeat":
     // "layer"}}`) has no column to derive a domain from -- built directly

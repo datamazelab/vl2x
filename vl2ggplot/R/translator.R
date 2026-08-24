@@ -512,7 +512,7 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   # the resulting summarise() drops that column while the plot's aes()
   # (inherited separately, by ggplot2 itself) still expects it.
   plan <- if (length(channel_entries(encoding_effective)) > 0) {
-    plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported, facet_group_fields, has_dodge = !is.null(offset_field))
+    plan_layer_data(mark_type, encoding_effective, work_var, ignore_unsupported, facet_group_fields, has_dodge = !is.null(offset_field), offset_field = offset_field)
   } else {
     list(statements = character(0), encoding = encoding, extra_fixed = list(), extra_aes = list(), use_histogram = FALSE, aggregated = FALSE)
   }
@@ -520,7 +520,15 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
 
   extra_fixed <- plan$extra_fixed
   extra_aes <- plan$extra_aes
-  if (!is.null(offset_field)) {
+  # `plan$manual_dodge_stack` (plan_explicit_aggregate(), transforms.R):
+  # this dodge field's own stacking was already computed explicitly there
+  # (ggplot2 has no single built-in `position` that both dodges *and*
+  # stacks) -- render_geom_layer_code() (geoms.R) draws the matching manual
+  # xmin/xmax dodge geometry off the same encoding, so the usual `position
+  # = position_dodge2()` + forced `group` fallback below (which would
+  # instead dodge every row, including different stack-groups within the
+  # same dodge slot, apart from each other) must be skipped here.
+  if (!is.null(offset_field) && !isTRUE(plan$manual_dodge_stack)) {
     extra_fixed <- dodge_extra_fixed(extra_fixed)
     # geom_boxplot() (unlike geom_bar()/geom_col()/geom_point(), which
     # dodge_extra_aes()'s own `group` override exists for) already groups
@@ -539,7 +547,8 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     data_var = data_var, encoding = plan$encoding, original_encoding = encoding,
     mark = node$mark, extra_fixed = extra_fixed, extra_aes = extra_aes,
     use_histogram = plan$use_histogram, aggregated = isTRUE(plan$aggregated),
-    extent_params = collect_extent_params(node$transform %||% list())
+    extent_params = collect_extent_params(node$transform %||% list()),
+    manual_dodge_stack = isTRUE(plan$manual_dodge_stack), offset_field = offset_field
   )
 }
 
@@ -704,7 +713,7 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   emit(emitter, sprintf("%s <- ggplot2::ggplot(%s)", plot_var, prepared$data_var))
 
   resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, resolve_static_params(spec$params))
-  geom <- render_geom_layer(resolved_mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE), ignore_unsupported, prepared$data_var, prepared$extent_params)
+  geom <- render_geom_layer(resolved_mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE, manual_dodge_stack = prepared$manual_dodge_stack, offset_field = prepared$offset_field), ignore_unsupported, prepared$data_var, prepared$extent_params)
   emit(emitter, geom$notes)
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
