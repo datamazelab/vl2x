@@ -218,7 +218,32 @@ render_quantitative_coercion <- function(var_name, fields) {
 # has no "invalid" numeric reading), and so is a bracket/nested-path field
 # (field_ref() itself rejects those; skipped here rather than letting that
 # throw, mirroring vl2d3's own equivalent skip).
-collect_path_continuity_fields <- function(mark_type, encoding) {
+# An aggregated/pivoted/binned line/area (e.g. stacked_area.vl.json's own
+# `y: {aggregate: "sum", ...}`, or trail_comet.vl.json's own `fold`-style
+# pivot transform) reshapes its data into new rows with no 1:1 relationship
+# to the original ones -- the whole "gap between two raw rows" concept
+# collect_path_continuity_fields()/render_invalid_run_id()/
+# render_invalid_zero_fill() are built around doesn't apply post-
+# aggregation (an aggregate already skips non-finite inputs on its own, via
+# na.rm = TRUE, and a run-id column added pre-aggregation wouldn't survive
+# a group_by()/summarise() or vl_pivot() call anyway -- it names no grouping
+# key and isn't itself aggregated, so dplyr/vl_pivot's own reshape silently
+# drops it, later reaching the final aes() as a dangling, nonexistent
+# column reference).
+has_aggregating_channel <- function(encoding, transform_list) {
+  channel_hit <- any(vapply(names(encoding), function(k) {
+    def <- encoding[[k]]
+    is.list(def) && (!is.null(def$aggregate) || !is.null(def$bin))
+  }, logical(1)))
+  if (channel_hit) return(TRUE)
+  any(vapply(transform_list %||% list(), function(t) {
+    !is.null(t$aggregate) || !is.null(t$pivot) || !is.null(t$fold) || !is.null(t$bin) || !is.null(t$joinaggregate) || !is.null(t$window)
+  }, logical(1)))
+}
+
+collect_path_continuity_fields <- function(mark_type, encoding, transform_list = list()) {
+  produced <- transform_produced_fields(transform_list)
+  if (isTRUE(produced$dynamic)) return(character(0))
   channels <- if (identical(mark_type, "area")) c("x", "y", "x2", "y2") else c("x", "y")
   fields <- character(0)
   for (ch in channels) {
@@ -232,7 +257,7 @@ collect_path_continuity_fields <- function(mark_type, encoding) {
     if (!ok) next
     fields <- c(fields, def$field)
   }
-  unique(fields)
+  drop_bracket_fields(setdiff(unique(fields), produced$fields))
 }
 
 # A mark's own `invalid` property (Vega-Lite default: `"filter"`) -- unlike
@@ -555,8 +580,8 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     quantitative_coercion <- render_quantitative_coercion(work_var, collect_quantitative_fields(encoding_effective, node$transform %||% list()))
     if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
 
-    if (mark_type0 %in% c("line", "trail", "area")) {
-      continuity_fields <- collect_path_continuity_fields(mark_type0, encoding_effective)
+    if (mark_type0 %in% c("line", "trail", "area") && !has_aggregating_channel(encoding_effective, node$transform)) {
+      continuity_fields <- collect_path_continuity_fields(mark_type0, encoding_effective, node$transform)
       if (length(continuity_fields)) {
         mode <- invalid_handling_mode(mark_props0)
         if (is.null(mode) || isFALSE(mode)) {

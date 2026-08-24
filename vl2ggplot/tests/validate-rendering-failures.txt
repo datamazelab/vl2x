@@ -555,7 +555,11 @@ layer_data <- dplyr::mutate(layer_data, date = vl_parse_date(date))
 chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = date))
 layer1_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 layer1_data <- dplyr::mutate(layer1_data, date = vl_parse_date(date))
-chart <- chart + ggplot2::geom_line(data = layer1_data, mapping = ggplot2::aes(x = date, group = 1))
+layer1_data <- dplyr::mutate(layer1_data, .vl_gap_run = cumsum(is.na(date)))
+chart <- chart + ggplot2::geom_line(
+  data = layer1_data,
+  mapping = ggplot2::aes(x = date, group = .vl_gap_run)
+)
 layer2_data <- read.csv("data/stocks.csv", stringsAsFactors = FALSE, check.names = FALSE)
 layer2_data <- dplyr::mutate(layer2_data, date = vl_parse_date(date))
 # vl2ggplot: unsupported filter predicate shape, keeping every row (ignore_unsupported)
@@ -587,9 +591,15 @@ chart <- ggplot2::ggplot(layer_data, ggplot2::aes(x = date))
 layer1_data <- layer_data
 layer1_data <- dplyr::mutate(layer1_data, date = vl_parse_date(date))
 layer1_data <- dplyr::mutate(layer1_data, price = if (is.character(price)) suppressWarnings(as.numeric(price)) else price)
+layer1_data <- dplyr::mutate(layer1_data, .vl_gap_run = cumsum(is.na(date) | is.na(price)))
 chart <- chart + ggplot2::geom_line(
   data = layer1_data,
-  mapping = ggplot2::aes(x = date, y = price, colour = factor(symbol), group = factor(symbol))
+  mapping = ggplot2::aes(
+  x = date,
+  y = price,
+  colour = factor(symbol),
+  group = interaction(factor(symbol), .vl_gap_run)
+)
 )
 layer2_data <- layer_data
 layer2_data <- dplyr::mutate(layer2_data, date = vl_parse_date(date))
@@ -722,10 +732,11 @@ chart <- chart + ggplot2::geom_rect(
 layer2_data <- layer_data
 layer2_data <- dplyr::mutate(layer2_data, year = vl_parse_date(year))
 layer2_data <- dplyr::mutate(layer2_data, population = if (is.character(population)) suppressWarnings(as.numeric(population)) else population)
+layer2_data <- dplyr::mutate(layer2_data, .vl_gap_run = cumsum(is.na(year) | is.na(population)))
 layer2_data <- dplyr::mutate(layer2_data, year_year = as.Date(format(year, "%Y-01-01")))
 chart <- chart + ggplot2::geom_line(
   data = layer2_data,
-  mapping = ggplot2::aes(x = year_year, y = population, group = 1),
+  mapping = ggplot2::aes(x = year_year, y = population, group = .vl_gap_run),
   colour = "#333"
 )
 layer3_data <- layer_data

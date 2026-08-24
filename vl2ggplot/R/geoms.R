@@ -343,6 +343,31 @@ error_bounds <- function(encoding, axis, ignore_unsupported = FALSE, .notes = NU
 # `plan` (from transforms.R's plan_layer_data()) may add extra fixed params
 # (e.g. stat = "count"/"summary") and note whether this layer needs
 # geom_histogram instead of the plain mark geom.
+# mark.line/mark.point (e.g. area_overlay.vl.json's own `{"type": "area",
+# "line": true, "point": true}`) overlay the area's own top edge with a
+# stroked line and/or a marker per data point -- ggplot2 has no single-geom
+# equivalent (unlike vl2d3, which draws these by hand off the same
+# coordinates), but layering separate geom_line()/geom_point() calls on top
+# of the same geom_area()/geom_ribbon(), reusing `y_expr` as their own `y`,
+# achieves the identical visual. Shared between the plain-area case (whose
+# own `aes_pairs[["y"]]` is exactly the top edge) and the ranged/y2 case
+# (geom_ribbon, whose `y` has already been replaced by ymin/ymax by the
+# time this runs, so its caller passes the pre-replacement value instead).
+build_area_overlay_layers <- function(aes_pairs, y_expr, mark_props, data_arg) {
+  if (is.null(y_expr) || (!isTRUE(mark_props[["line"]]) && !isTRUE(mark_props[["point"]]))) return(character(0))
+  overlay_aes <- aes_pairs[intersect(c("x", "y"), names(aes_pairs))]
+  overlay_aes[["y"]] <- y_expr
+  if (!is.null(aes_pairs[["fill"]])) overlay_aes[["colour"]] <- aes_pairs[["fill"]]
+  extra_layers <- character(0)
+  if (isTRUE(mark_props[["line"]])) {
+    extra_layers <- c(extra_layers, build_call("ggplot2::geom_line", overlay_aes, list(), data_arg))
+  }
+  if (isTRUE(mark_props[["point"]])) {
+    extra_layers <- c(extra_layers, build_call("ggplot2::geom_point", overlay_aes, list(), data_arg))
+  }
+  extra_layers
+}
+
 render_geom_layer <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE, extent_data_var = NULL, extent_params = list()) {
   notes_env <- new.env()
   code <- render_geom_layer_code(mark, encoding, data_arg, plan, ignore_unsupported, notes_env, extent_data_var, extent_params)
@@ -378,7 +403,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # (a point/circle/square drawn with a fillable shape instead of its
   # default outline-only one) -- the same switch a mark-level `stroke`
   # forces implicitly below by necessity.
-  if (mark_type %in% c("point", "circle", "square", "tick") &&
+  if (mark_type %in% c("point", "circle", "square") &&
       (isTRUE(mark_props[["filled"]]) || !is.null(mark_props[["stroke"]])) && !is.null(aes_pairs[["colour"]])) {
     aes_pairs[["fill"]] <- aes_pairs[["colour"]]
     aes_pairs[["colour"]] <- NULL
@@ -398,6 +423,25 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # carry the range for a horizontal-vs-vertical errorbar/errorband.
   if (mark_type == "rule") {
     return(render_rule_layer(encoding, aes_pairs, fixed, data_arg, ignore_unsupported, .notes))
+  }
+  if (mark_type == "tick" && is.null(encoding$x2) && is.null(encoding$y2) &&
+      is.null(encoding$xError) && is.null(encoding$yError) && is.null(plan$offset_field) &&
+      (!is.null(aes_pairs[["x"]]) || !is.null(aes_pairs[["y"]]))) {
+    # A dodged tick (an xOffset/yOffset field, e.g. tick_grouped.vl.json)
+    # isn't handled by render_tick_layer() at all -- it has no equivalent
+    # of the manual per-group dodge arithmetic the bar/rect "real discrete
+    # x position" case implements (geoms.R, above) for its own xmin/xmax,
+    # and geom_segment() doesn't support position_dodge2() the way
+    # geom_point() (this mark's own fallback, just below) natively does --
+    # falls through to the generic point-based rendering instead, an
+    # accepted narrower gap rather than a broken/erroring dodge. Likewise a
+    # tick with *neither* x nor y of its own (e.g.
+    # parallel_coordinate.vl.json's own repeat-of-layers construction,
+    # whose innermost tick layer inherits no usable position at all) falls
+    # through too, to the generic "1D strip / centered fallback" every
+    # other point-like mark already shares (below, `fixed[["x"]] <- '""'`
+    # etc) -- render_tick_layer() has no equivalent of that fallback.
+    return(render_tick_layer(encoding, aes_pairs, fixed, mark_props, data_arg, ignore_unsupported, .notes))
   }
   y_range <- error_bounds(encoding, "y", ignore_unsupported, .notes)
   x_range <- error_bounds(encoding, "x", ignore_unsupported, .notes)
@@ -449,6 +493,10 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     return(build_call("ggplot2::geom_rect", aes_pairs, fixed, data_arg))
   }
   if (!is.null(y_range) && mark_type %in% c("bar", "rect", "area", "errorband", "errorbar")) {
+    # Captured before ymin/ymax below replace `y` entirely -- see this
+    # branch's own area/errorband case for why this (not ymax) is the
+    # right edge for an overlaid line/point.
+    overlay_y_expr <- y_range$min
     aes_pairs[["ymin"]] <- y_range$min
     aes_pairs[["ymax"]] <- y_range$max
     aes_pairs[["y"]] <- NULL
@@ -536,7 +584,21 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
         fixed[["xmin"]] <- "-Inf"
         fixed[["xmax"]] <- "Inf"
       }
-      return(build_call("ggplot2::geom_ribbon", aes_pairs, fixed, data_arg))
+      main_call <- build_call("ggplot2::geom_ribbon", aes_pairs, fixed, data_arg)
+      if (mark_type != "area") return(main_call)
+      # mark.line/mark.point overlay on a *ranged* area (e.g.
+      # area_overlay_with_y2.vl.json's own explicit `y2: {datum: 0}`
+      # baseline) -- same idea as the plain-area overlay below, but there's
+      # no single `aes_pairs[["y"]]` left to reuse (replaced by ymin/ymax
+      # just above). error_bounds()'s own range2 branch always returns the
+      # *base* channel's own value as `min` (regardless of which of
+      # base/range2 is numerically smaller -- ranges aren't guaranteed
+      # ordered), so `overlay_y_expr` (captured before ymin/ymax replaced
+      # `y` above) is exactly the "top edge" Vega-Lite itself draws the
+      # line/point overlay along.
+      extra_layers <- build_area_overlay_layers(aes_pairs, overlay_y_expr, mark_props, data_arg)
+      if (length(extra_layers) == 0) return(main_call)
+      return(paste(c(main_call, extra_layers), collapse = " +\n  "))
     }
     if (is.null(aes_pairs[["x"]])) aes_pairs[["x"]] <- '""'
     return(build_call("ggplot2::geom_errorbar", aes_pairs, fixed, data_arg))
@@ -771,19 +833,107 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # a ranged area's own `ymin`/`ymax` aes has no single obvious "top edge"
   # `y` to reuse, so that case is left as area-only (an accepted, narrower
   # gap rather than guessing which bound the overlay means).
-  extra_layers <- character(0)
-  if (mark_type == "area" && !is.null(aes_pairs[["y"]])) {
-    overlay_aes <- aes_pairs[intersect(c("x", "y"), names(aes_pairs))]
-    if (!is.null(aes_pairs[["fill"]])) overlay_aes[["colour"]] <- aes_pairs[["fill"]]
-    if (isTRUE(mark_props[["line"]])) {
-      extra_layers <- c(extra_layers, build_call("ggplot2::geom_line", overlay_aes, list(), data_arg))
-    }
-    if (isTRUE(mark_props[["point"]])) {
-      extra_layers <- c(extra_layers, build_call("ggplot2::geom_point", overlay_aes, list(), data_arg))
-    }
+  extra_layers <- if (mark_type == "area" && !is.null(aes_pairs[["y"]])) {
+    build_area_overlay_layers(aes_pairs, aes_pairs[["y"]], mark_props, data_arg)
+  } else {
+    character(0)
   }
   if (length(extra_layers) == 0) return(main_call)
   paste(c(main_call, extra_layers), collapse = " +\n  ")
+}
+
+# A "tick" mark (e.g. tick_strip.vl.json) draws a short dash per row, not
+# a dot -- geom_function_name()'s own default ("tick" -> geom_point()) only
+# ever drew a marker at the exact point, never an actual tick shape (this
+# project's own equivalent gap to vl2d3's pre-fix renderTick() bug, which
+# at least drew *something* dash-shaped, just in the wrong orientation).
+# Mirrors vl2d3's own renderTick() (marks.js): a genuinely 1D strip (only
+# one of x/y has a real field) maps directly onto ggplot2's own built-in
+# equivalent, geom_rug(); a 2D strip (both x and y have fields) draws a
+# short geom_segment() *perpendicular* to whichever channel is the
+# continuous "value" axis, spanning within its companion axis's own
+# discrete band -- vertical (pinned x, dash spans y) by default, flipping
+# to horizontal only when y is the continuous channel and x is the
+# discrete one.
+render_tick_layer <- function(encoding, aes_pairs, fixed, mark_props, data_arg, ignore_unsupported = FALSE, .notes = NULL) {
+  has_x <- !is.null(aes_pairs[["x"]]) && nzchar(aes_pairs[["x"]])
+  has_y <- !is.null(aes_pairs[["y"]]) && nzchar(aes_pairs[["y"]])
+  if (!has_x && !has_y) {
+    # A blank-but-present x/y (e.g. parallel_coordinate.vl.json's own
+    # repeat-of-layers construction, whose innermost tick layer has an
+    # entirely empty `encoding: {}` of its own -- some part of that
+    # construct's own encoding inheritance leaves both x and y resolving to
+    # "" rather than a real expression or genuinely absent) has nothing
+    # meaningful for either the geom_rug() or geom_segment() case below to
+    # draw -- falls back to the plain geom_point() rendering every other
+    # mark type (and this one, before this whole function existed) already
+    # tolerates a not-fully-resolved position from, rather than a hard
+    # "missing aesthetics" error.
+    return(build_call("ggplot2::geom_point", aes_pairs, fixed, data_arg))
+  }
+
+  # mark_fixed_params() already converted a `size` mark prop as though this
+  # were a point-marker's own *area* (vl_point_size_to_ggplot()) -- meaningless
+  # for a tick's line-segment shape, so that (and point's own border-width
+  # aesthetic, "stroke") are dropped/renamed here; any real thickness comes
+  # through as geom_segment()/geom_rug()'s own "linewidth" instead.
+  fixed[["size"]] <- NULL
+  if (!is.null(fixed[["stroke"]])) {
+    fixed[["linewidth"]] <- fixed[["stroke"]]
+    fixed[["stroke"]] <- NULL
+  }
+
+  if (has_x && !has_y) {
+    rug_aes <- aes_pairs[intersect(c("x", "colour"), names(aes_pairs))]
+    return(build_call("ggplot2::geom_rug", rug_aes, merge_named(fixed, list(sides = '"b"')), data_arg))
+  }
+  if (has_y && !has_x) {
+    rug_aes <- aes_pairs[intersect(c("y", "colour"), names(aes_pairs))]
+    return(build_call("ggplot2::geom_rug", rug_aes, merge_named(fixed, list(sides = '"l"')), data_arg))
+  }
+
+  x_continuous <- identical(encoding$x$type, "quantitative") || identical(encoding$x$type, "temporal")
+  y_continuous <- identical(encoding$y$type, "quantitative") || identical(encoding$y$type, "temporal")
+  horizontal <- y_continuous && !x_continuous
+
+  # Vega-Lite's own `config.tick.bandSize` default (20px) sized against the
+  # discrete companion axis's own unit band -- mirrors the identical
+  # mark.size-based half-width convention the bar/rect "real discrete x
+  # position" case (above) already uses for the same reason.
+  size_value <- mark_scalar_value(mark_props[["size"]] %||% 20, "20", ignore_unsupported, .notes)
+  half_width_expr <- sprintf("0.45 * (%s) / 20", size_value)
+
+  seg_aes <- aes_pairs[intersect(c("colour"), names(aes_pairs))]
+  # A bare geom_blank() layer mapping the discrete companion channel to its
+  # own real (factor-wrapped, when ordinal/nominal) field, alongside the
+  # geom_segment() below computing that same channel's position as plain
+  # arithmetic (`as.numeric(<factor>) +/- half`) -- geom_segment() alone,
+  # with no other layer in the chart ever mapping the raw factor itself,
+  # gives ggplot2 nothing to train a genuinely *discrete* scale from, so
+  # the axis silently falls back to each level's own bare integer code
+  # (1, 2, 3, ...) instead of its real label (e.g. tick_strip.vl.json's
+  # own Cylinders values, 3/4/5/6/8) -- geom_blank() draws nothing itself,
+  # existing only to give the scale a real discrete value to train against
+  # (the same trick bar_layered_weather.vl.json's own analogous xmin/xmax
+  # convention gets "for free" from its shared plot-level `aes(x =
+  # factor(id))`, which a standalone tick mark has no equivalent of).
+  if (horizontal) {
+    x_expr <- sprintf("as.numeric(%s)", aes_pairs[["x"]])
+    seg_aes[["x"]] <- sprintf("(%s) - (%s)", x_expr, half_width_expr)
+    seg_aes[["xend"]] <- sprintf("(%s) + (%s)", x_expr, half_width_expr)
+    seg_aes[["y"]] <- aes_pairs[["y"]]
+    seg_aes[["yend"]] <- aes_pairs[["y"]]
+    blank_layer <- build_call("ggplot2::geom_blank", list(x = aes_pairs[["x"]]), list(), data_arg)
+  } else {
+    y_expr <- sprintf("as.numeric(%s)", aes_pairs[["y"]])
+    seg_aes[["y"]] <- sprintf("(%s) - (%s)", y_expr, half_width_expr)
+    seg_aes[["yend"]] <- sprintf("(%s) + (%s)", y_expr, half_width_expr)
+    seg_aes[["x"]] <- aes_pairs[["x"]]
+    seg_aes[["xend"]] <- aes_pairs[["x"]]
+    blank_layer <- build_call("ggplot2::geom_blank", list(y = aes_pairs[["y"]]), list(), data_arg)
+  }
+  main_call <- build_call("ggplot2::geom_segment", seg_aes, fixed, data_arg)
+  paste(c(blank_layer, main_call), collapse = " +\n  ")
 }
 
 render_rule_layer <- function(encoding, aes_pairs, fixed, data_arg, ignore_unsupported = FALSE, .notes = NULL) {

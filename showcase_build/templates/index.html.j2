@@ -25,7 +25,9 @@
     <strong>vl2ggplot</strong> (R/ggplot2). Click a thumbnail to see the
     generated code and rendered chart side by side for each.
 <HR>
-    Note that these are direct transpiles from the source vega-lite JSON. In some cases (largely D3 and ggplot2), this will not render correctly or at all. This does not mean that it is not possible to construct equivalent visualizations. It just can't be done simply through transforming the JSON to code (or there's a transpiler bug). Interactive features are unlikely to work in D3 and ggplot2 in the current implementation.
+Note that these are direct transpiles from the source vega-lite JSON. In some cases (largely D3 and ggplot2), this will not render correctly or at all. This does not mean that it is not possible to construct equivalent visualizations. It just can't be done simply through transforming the JSON to code (or there's a transpiler bug). Interactive features are unlikely to work in D3 and ggplot2 in the current implementation.
+<HR>
+The system automatically tries to determine if transpiling worked. However, in some situations the determination is likely to be a false positive. The result may be run but not look correct or some feature may be incomplete.
   </p>
 
   <div class="controls">

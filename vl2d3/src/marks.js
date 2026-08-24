@@ -1936,23 +1936,55 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const TICK_HALF = typeof markProps.size === 'number' ? markProps.size / 2 : 10;
 
   if (x && y && xField && yField) {
-    // A dodged/grouped offset on x narrows the tick to its own sub-band
-    // (and re-centers it there via dodgeAwareAccessor()) instead of every
-    // group's tick sitting on top of the shared category position.
-    const xOffsetScale = scales.xOffset;
+    // A tick mark is drawn *perpendicular* to whichever channel is the
+    // continuous "value" axis (e.g. tick_strip.vl.json's own quantitative
+    // Horsepower on x, ordinal Cylinders on y -- each row is a short
+    // *vertical* dash pinned to its own Horsepower position, spanning
+    // within its Cylinders band) -- Vega-Lite's own tick mark defaults to
+    // "vertical" orientation (dash spans y, pinned x) unless y is the
+    // continuous channel and x is the discrete one, the one case that
+    // flips it to "horizontal" (dash spans x, pinned y). Previously this
+    // always drew horizontal regardless of which channel was continuous,
+    // silently transposing the whole plot for the (more common, vertical)
+    // default case.
+    const xIsContinuous = encoding.x.type === 'quantitative' || encoding.x.type === 'temporal';
+    const yIsContinuous = encoding.y.type === 'quantitative' || encoding.y.type === 'temporal';
+    const horizontal = yIsContinuous && !xIsContinuous;
     const centerX = dodgeAwareAccessor(encoding, scales, 'x');
-    const plainHalf = x.kind === 'band' ? 'x.bandwidth() / 2' : '4';
-    const half =
-      xOffsetScale && encoding.xOffset && encoding.xOffset.field
-        ? xOffsetScale.conditional
-          ? `(${xOffsetScale.varName} ? ${xOffsetScale.varName}.bandwidth() / 2 : ${plainHalf})`
-          : `${xOffsetScale.varName}.bandwidth() / 2`
-        : plainHalf;
     const centerY = dodgeAwareAccessor(encoding, scales, 'y');
-    lines.push(`    .attr("x1", d => ${centerX} - ${half})`);
-    lines.push(`    .attr("x2", d => ${centerX} + ${half})`);
-    lines.push(`    .attr("y1", d => ${centerY})`);
-    lines.push(`    .attr("y2", d => ${centerY})`);
+    if (horizontal) {
+      // Dash varies along x (pinned at y) -- x is the discrete band axis.
+      // A dodged/grouped offset on x narrows the tick to its own sub-band
+      // (and re-centers it there via dodgeAwareAccessor()) instead of every
+      // group's tick sitting on top of the shared category position.
+      const xOffsetScale = scales.xOffset;
+      const plainHalf = x.kind === 'band' ? 'x.bandwidth() / 2' : '4';
+      const half =
+        xOffsetScale && encoding.xOffset && encoding.xOffset.field
+          ? xOffsetScale.conditional
+            ? `(${xOffsetScale.varName} ? ${xOffsetScale.varName}.bandwidth() / 2 : ${plainHalf})`
+            : `${xOffsetScale.varName}.bandwidth() / 2`
+          : plainHalf;
+      lines.push(`    .attr("x1", d => ${centerX} - ${half})`);
+      lines.push(`    .attr("x2", d => ${centerX} + ${half})`);
+      lines.push(`    .attr("y1", d => ${centerY})`);
+      lines.push(`    .attr("y2", d => ${centerY})`);
+    } else {
+      // Dash varies along y (pinned at x) -- the (more common) default
+      // case, y is the discrete band axis. Same idea, mirrored onto y.
+      const yOffsetScale = scales.yOffset;
+      const plainHalf = y.kind === 'band' ? 'y.bandwidth() / 2' : '4';
+      const half =
+        yOffsetScale && encoding.yOffset && encoding.yOffset.field
+          ? yOffsetScale.conditional
+            ? `(${yOffsetScale.varName} ? ${yOffsetScale.varName}.bandwidth() / 2 : ${plainHalf})`
+            : `${yOffsetScale.varName}.bandwidth() / 2`
+          : plainHalf;
+      lines.push(`    .attr("y1", d => ${centerY} - ${half})`);
+      lines.push(`    .attr("y2", d => ${centerY} + ${half})`);
+      lines.push(`    .attr("x1", d => ${centerX})`);
+      lines.push(`    .attr("x2", d => ${centerX})`);
+    }
   } else if (x && !y) {
     // 1D strip plot along x: short vertical ticks centered on the plot.
     const centerX2 = dodgeAwareAccessor(encoding, scales, 'x');
