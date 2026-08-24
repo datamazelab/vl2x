@@ -320,7 +320,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   mark_type <- if (is.character(mark)) mark else mark$type
   mark_props <- if (is.character(mark)) list() else mark[names(mark) != "type"]
 
-  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes, extent_data_var, extent_params)
+  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes, extent_data_var, extent_params, standalone = isTRUE(plan$standalone))
   fixed <- merge_named(mark_fixed_params(mark_props, mark_type, ignore_unsupported, .notes), channels$fixed)
   if (!is.null(plan$extra_fixed)) fixed <- merge_named(fixed, plan$extra_fixed)
 
@@ -676,7 +676,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # category axis regardless of its own type", so a confirmed-quantitative
   # x already settles this even when y's type is unknown.
   if (mark_type == "bar" && is.null(fixed[["orientation"]]) &&
-      identical(encoding$x$type, "quantitative") && !identical(encoding$y$type, "quantitative")) {
+      identical(encoding$x$type, "quantitative") && !is.null(encoding$y) && !identical(encoding$y$type, "quantitative")) {
     fixed[["orientation"]] <- '"y"'
   }
   # `stack: "normalize"` on the aggregated value axis asks for each

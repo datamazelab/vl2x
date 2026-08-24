@@ -672,7 +672,13 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
   if (identical(mark_type0, "arc")) {
-    emit(emitter, sprintf('%s <- %s + ggplot2::coord_polar(theta = "y")', plot_var, plot_var))
+    # A real `radius` channel (build_layer_channels()'s own has_arc_radius,
+    # encoding.R) maps theta onto x instead of the classic single-category
+    # pie's y -- coord_polar()'s own default `theta = "x"` matches that
+    # directly, so only the classic (no radius channel) pie needs the
+    # explicit override.
+    coord_polar_call <- if (!is.null(prepared$encoding[["radius"]])) "ggplot2::coord_polar()" else 'ggplot2::coord_polar(theta = "y")'
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, coord_polar_call))
   }
 
   enc_for_scale <- prepared$encoding

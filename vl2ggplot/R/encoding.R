@@ -98,10 +98,30 @@ resolve_value_channel_expr <- function(value, extent_data_var, extent_params, ig
   inner # already valid R once the extent-param substitution above is applied
 }
 
-build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list()) {
+build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list(), standalone = FALSE) {
   aes_pairs <- list()
   fixed <- list()
   sort_field <- NULL
+
+  # An "arc" mark's own `radius` channel (e.g. arc_ordinal_theta.vl.json's
+  # `radius: {field: "strength", type: "quantitative"}`, a wind-rose/coxcomb
+  # chart) needs a *different* aes mapping than the classic single-category
+  # pie recipe: `theta` normally maps onto ggplot2's y (the classic pie's
+  # `geom_bar(aes(y = ..., x = "")) + coord_polar(theta = "y")`), but a real
+  # radius channel means theta is instead the *angular position* (mapped
+  # onto x, matching ggplot2's own well-known Nightingale/coxcomb-chart
+  # recipe: `geom_col(aes(x = category, y = value), width = 1) +
+  # coord_polar()`, theta defaulting to "x") and radius is the bar's own
+  # height. See translate_unit() (translator.R) for the matching
+  # conditional coord_polar() direction. Restricted to a *standalone* arc
+  # (`standalone`, threaded down from render_geom_layer_code()'s own `plan`)
+  # -- a layer composition's shared wrapper-level `aes()` call is built
+  # separately (translate_layer(), still the classic theta->y mapping) and
+  # would otherwise disagree with a remapped child layer's own aes here,
+  # producing a mixed discrete/continuous "x" scale conflict (verified via
+  # arc_radial.vl.json, whose arc mark inherits a wrapper-level radius with
+  # no own encoding).
+  has_arc_radius <- mark_type == "arc" && !is.null(encoding[["radius"]]) && isTRUE(standalone)
 
   for (channel in names(encoding)) {
     def <- encoding[[channel]]
@@ -113,7 +133,15 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
       next
     }
 
-    aes_name <- if (channel == "color") color_channel_aes(mark_type) else unname(.channel_aes_name[channel])
+    aes_name <- if (channel == "color") {
+      color_channel_aes(mark_type)
+    } else if (has_arc_radius && channel == "theta") {
+      "x"
+    } else if (has_arc_radius && channel == "radius") {
+      "y"
+    } else {
+      unname(.channel_aes_name[channel])
+    }
     if (is.na(aes_name)) next
 
     if (!is.null(def$field)) {
