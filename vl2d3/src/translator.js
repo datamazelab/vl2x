@@ -316,6 +316,29 @@ function pathContinuityChannels(mark) {
   return [];
 }
 
+// The mirror-image restriction of collectInvalidFilterFields()'s own
+// excludeChannels: gathers *only* a line/area's path-continuity channels'
+// own fields (pathContinuityChannels()), for renderInvalidZeroFill() to
+// coerce to 0 -- used instead of collectInvalidFilterFields() whenever
+// invalidHandlingMode() isn't the default `"filter"`, since those are then
+// the only channels whose invalid values still need any handling at all
+// (every other channel keeps going through the ordinary upfront row-drop
+// filter regardless of this mark-level mode -- Vega-Lite's `mark.invalid`
+// only ever changes line/area's own *path* continuity, never a color/size/
+// opacity channel's unrelated row-drop behavior).
+function collectInvalidZeroFillFields(encoding, transformList, continuityChannels) {
+  if (hasDynamicProducedFields(transformList)) return [];
+  const produced = collectProducedFields(transformList);
+  const fields = new Set();
+  for (const ch of continuityChannels) {
+    const def = encoding[ch];
+    if (!def || typeof def !== 'object' || !def.field || !(def.type === 'quantitative' || def.type === 'temporal' || def.type === undefined)) continue;
+    if (/[[\].]/.test(def.field) || produced.has(def.field)) continue;
+    fields.add(def.field);
+  }
+  return [...fields];
+}
+
 function collectInvalidFilterFields(encoding, transformList, excludeChannels = []) {
   if (hasDynamicProducedFields(transformList)) return [];
   const produced = collectProducedFields(transformList);
@@ -448,6 +471,23 @@ function renderInvalidFilter(dataVar, fields) {
   return [`${dataVar} = ${dataVar}.filter(d => ${cond});`];
 }
 
+// `mark.invalid` (or `config.mark.invalid`) explicitly set to `null`/`false`
+// (as opposed to the default `"filter"`) asks Vega-Lite to neither drop the
+// row nor break a line/area path at it -- the invalid value is used as-is,
+// which for a continuous position channel resolves to 0 (e.g.
+// area_invalid_null.vl.json's own null `y` values, each drawn as a literal
+// zero rather than a gap or a dropped row: a "V" dipping to the baseline at
+// that x, not a break in the shape). marks.js's own `.defined()` clause
+// (positionDefinedClause()) only ever applies to whatever's still in
+// `dataVar` at draw time, so coercing the invalid values to 0 here, upstream
+// of that, produces the right shape with no changes needed on the marks.js
+// side at all -- there's simply nothing left to be "undefined" about by then.
+function renderInvalidZeroFill(dataVar, fields) {
+  if (fields.length === 0) return [];
+  const assigns = fields.map(f => `${JSON.stringify(f)}: (d[${JSON.stringify(f)}] == null || Number.isNaN(d[${JSON.stringify(f)}])) ? 0 : d[${JSON.stringify(f)}]`).join(', ');
+  return [`${dataVar} = ${dataVar}.map(d => ({ ...d, ${assigns} }));`];
+}
+
 // Vega-Lite allows a `layer` entry to itself be a nested layer composition
 // (a layer of layers) -- flatten this recursively into a single list of
 // unit-view specs, applying `mergeDown` at each level so shared
@@ -571,6 +611,8 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
     if (invalidHandlingMode(root, child.mark) === 'filter') {
       renderInvalidFilter(dataVar, collectInvalidFilterFields(encodingIn, child.transform, pathContinuityChannels(child.mark))).forEach(b);
+    } else {
+      renderInvalidZeroFill(dataVar, collectInvalidZeroFillFields(encodingIn, child.transform, pathContinuityChannels(child.mark))).forEach(b);
     }
 
     const temporalFields = collectTemporalFields(encodingIn, child.transform || []);

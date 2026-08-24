@@ -98,7 +98,7 @@ resolve_value_channel_expr <- function(value, extent_data_var, extent_params, ig
   inner # already valid R once the extent-param substitution above is applied
 }
 
-build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list(), standalone = FALSE) {
+build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list(), standalone = FALSE, invalid_run_field = NULL) {
   aes_pairs <- list()
   fixed <- list()
   sort_field <- NULL
@@ -204,6 +204,17 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
   # colour mapping are both otherwise correct.
   if (mark_type %in% c("line", "trail", "area") && is.null(aes_pairs[["group"]])) {
     grouping_exprs <- unlist(aes_pairs[intersect(c("colour", "fill", "shape"), names(aes_pairs))], use.names = FALSE)
+    if (!is.null(invalid_run_field)) {
+      # A run id partitioning the rows on either side of an invalid-value
+      # gap (render_invalid_run_id(), translator.R) -- folded in here
+      # alongside any real colour/detail grouping (rather than overriding
+      # it outright) so a multi-series line/area still only breaks *within*
+      # its own series, not across series boundaries too. Referenced
+      # directly (not via field_ref()) since this is a synthetic,
+      # code-generated column name, not a user data field -- field_ref()'s
+      # unescaped-dot-means-nested-path convention doesn't apply to it.
+      grouping_exprs <- c(grouping_exprs, invalid_run_field)
+    }
     if (length(grouping_exprs) == 1) {
       aes_pairs[["group"]] <- grouping_exprs
     } else if (length(grouping_exprs) > 1) {

@@ -210,6 +210,74 @@ render_quantitative_coercion <- function(var_name, fields) {
   sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))
 }
 
+# Which of a mark's own continuous position channels (the ones a line/area's
+# drawn path actually walks) an invalid value there needs `invalid_handling_
+# mode()`-driven treatment for -- x/y for line/trail, plus x2/y2 for area
+# (whose implicit-zero baseline can be just as broken/invalid as its own
+# top edge). An ordinal/nominal channel is skipped (a real category value
+# has no "invalid" numeric reading), and so is a bracket/nested-path field
+# (field_ref() itself rejects those; skipped here rather than letting that
+# throw, mirroring vl2d3's own equivalent skip).
+collect_path_continuity_fields <- function(mark_type, encoding) {
+  channels <- if (identical(mark_type, "area")) c("x", "y", "x2", "y2") else c("x", "y")
+  fields <- character(0)
+  for (ch in channels) {
+    def <- encoding[[ch]]
+    if (is.null(def) || is.null(def$field)) next
+    if (!is.null(def$type) && def$type %in% c("ordinal", "nominal")) next
+    ok <- tryCatch({
+      field_ref(def$field)
+      TRUE
+    }, error = function(e) FALSE)
+    if (!ok) next
+    fields <- c(fields, def$field)
+  }
+  unique(fields)
+}
+
+# A mark's own `invalid` property (Vega-Lite default: `"filter"`) -- unlike
+# vl2d3's invalidHandlingMode(), this only looks at the mark level (not
+# `config.mark.invalid`), since every spec this project has hit so far that
+# relies on the config-level default uses a non-line/area mark, where this
+# doesn't come into play at all.
+invalid_handling_mode <- function(mark_props) {
+  if ("invalid" %in% names(mark_props)) return(mark_props[["invalid"]])
+  "filter"
+}
+
+# `invalid: null`/`false` (as opposed to the default `"filter"`) asks
+# Vega-Lite to neither drop the row nor break the path at it -- the invalid
+# value is used as-is, which for a continuous position channel resolves to a
+# literal 0 (e.g. area_invalid_null.vl.json's own null `y` values, each
+# drawn as a dip to the baseline rather than a gap or a dropped row).
+render_invalid_zero_fill <- function(var_name, fields) {
+  if (length(fields) == 0) return(character(0))
+  assigns <- vapply(fields, function(f) {
+    ref <- field_ref(f)
+    sprintf("%s = ifelse(is.na(%s), 0, %s)", render_name(unescape_field_path(f)), ref, ref)
+  }, character(1))
+  sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(assigns, collapse = ", "))
+}
+
+# The *default* `"filter"` mode instead breaks a line/area's path at an
+# invalid position value (e.g. line_skip_invalid_mid.vl.json's own lone NA
+# in the middle) rather than connecting straight across it -- ggplot2
+# itself already silently drops any row with an NA aesthetic before
+# drawing, so simply leaving the NA row where it is (as this project
+# otherwise does) just reconnects its two neighbours directly, the wrong
+# shape. This instead tags every row with a run id that increments at each
+# invalid row; build_layer_channels() folds that id into the geom's own
+# `group` aes (via its own `invalid_run_field` argument), so the rows on
+# either side of a gap fall into separate groups and the automatic
+# NA-row-drop can no longer bridge across them.
+.INVALID_RUN_FIELD <- ".vl_gap_run"
+
+render_invalid_run_id <- function(var_name, fields) {
+  if (length(fields) == 0) return(character(0))
+  na_cond <- paste(vapply(fields, function(f) sprintf("is.na(%s)", field_ref(f)), character(1)), collapse = " | ")
+  sprintf("%s <- dplyr::mutate(%s, %s = cumsum(%s))", var_name, var_name, .INVALID_RUN_FIELD, na_cond)
+}
+
 extract_date_function_fields <- function(expr) {
   pattern <- paste0("\\b(", paste(names(.date_funcs), collapse = "|"), ")\\s*\\(\\s*datum\\.([A-Za-z_][A-Za-z0-9_.]*)\\s*\\)")
   m <- gregexpr(pattern, expr, perl = TRUE)
@@ -455,6 +523,7 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   encoding_effective <- utils::modifyList(inherited_encoding, encoding)
   mark_type0 <- if (is.character(node$mark)) node$mark else node$mark$type
   mark_props0 <- if (is.character(node$mark)) list() else node$mark[names(node$mark) != "type"]
+  invalid_run_field <- NULL
   # channel_entries(encoding_effective), not just this child's own encoding:
   # a channel this child needs prep for (e.g. a shared wrapper-level
   # timeUnit'd x with no aggregation of its own) may be declared only on the
@@ -485,6 +554,19 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
 
     quantitative_coercion <- render_quantitative_coercion(work_var, collect_quantitative_fields(encoding_effective, node$transform %||% list()))
     if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
+
+    if (mark_type0 %in% c("line", "trail", "area")) {
+      continuity_fields <- collect_path_continuity_fields(mark_type0, encoding_effective)
+      if (length(continuity_fields)) {
+        mode <- invalid_handling_mode(mark_props0)
+        if (is.null(mode) || isFALSE(mode)) {
+          emit(emitter, render_invalid_zero_fill(work_var, continuity_fields))
+        } else if (identical(mode, "filter")) {
+          emit(emitter, render_invalid_run_id(work_var, continuity_fields))
+          invalid_run_field <- .INVALID_RUN_FIELD
+        }
+      }
+    }
 
     if (!is.null(node$transform)) emit(emitter, render_transforms(node$transform, work_var, ignore_unsupported))
 
@@ -548,7 +630,8 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     mark = node$mark, extra_fixed = extra_fixed, extra_aes = extra_aes,
     use_histogram = plan$use_histogram, aggregated = isTRUE(plan$aggregated),
     extent_params = collect_extent_params(node$transform %||% list()),
-    manual_dodge_stack = isTRUE(plan$manual_dodge_stack), offset_field = offset_field
+    manual_dodge_stack = isTRUE(plan$manual_dodge_stack), offset_field = offset_field,
+    invalid_run_field = invalid_run_field
   )
 }
 
@@ -713,7 +796,7 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   emit(emitter, sprintf("%s <- ggplot2::ggplot(%s)", plot_var, prepared$data_var))
 
   resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, resolve_static_params(spec$params))
-  geom <- render_geom_layer(resolved_mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE, manual_dodge_stack = prepared$manual_dodge_stack, offset_field = prepared$offset_field), ignore_unsupported, prepared$data_var, prepared$extent_params)
+  geom <- render_geom_layer(resolved_mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE, manual_dodge_stack = prepared$manual_dodge_stack, offset_field = prepared$offset_field, invalid_run_field = prepared$invalid_run_field), ignore_unsupported, prepared$data_var, prepared$extent_params)
   emit(emitter, geom$notes)
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
@@ -938,7 +1021,7 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, layer_param_values)
     geom <- render_geom_layer(
       resolved_mark, prepared$encoding, data_arg,
-      list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE),
+      list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE, invalid_run_field = prepared$invalid_run_field),
       ignore_unsupported,
       prepared$data_var %||% wrapper_data_var,
       merge_named(wrapper_extent_params, prepared$extent_params)
@@ -1070,7 +1153,7 @@ translate_repeat_layer <- function(spec, emitter, hint, ignore_unsupported = FAL
       if (is.null(prepared$data_var)) stop("A view must have a data source")
       geom <- render_geom_layer(
         prepared$mark, prepared$encoding, prepared$data_var,
-        list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE),
+        list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE, invalid_run_field = prepared$invalid_run_field),
         ignore_unsupported, prepared$data_var, prepared$extent_params
       )
       emit(emitter, geom$notes)

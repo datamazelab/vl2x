@@ -319,30 +319,6 @@ chart <- chart + ggplot2::geom_rect(
 
 chart
 
-===== histogram_nonlinear.vl.json [EXEC] =====
-Discrete value supplied to a continuous scale.
-ℹ Example values: 0, 8.33, 12.50, 16.67, and 33.33.
-library(ggplot2)
-
-chart_data <- data.frame(
-  startTime = c("0", "8.33", "12.50", "16.67", "33.33", "50.00", "66.67", "83.33"),
-  endTime = c("8.33", "12.50", "16.67", "33.33", "50.00", "66.67", "83.33", "∞"),
-  residency = c(0, 0, 31.17, 38.96, 6.49, 2.9, 2.6, 16.88),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-chart_data <- dplyr::mutate(chart_data, residency = if (is.character(residency)) suppressWarnings(as.numeric(residency)) else residency)
-chart <- ggplot2::ggplot(chart_data)
-chart <- chart + ggplot2::geom_rect(
-  mapping = ggplot2::aes(xmin = factor(startTime), xmax = endTime, ymax = residency, ymin = 0)
-)
-chart <- chart + ggplot2::scale_y_continuous(limits = c(0, 100))
-chart <- chart + ggplot2::labs(title = "Distribution of Frame Render Time (fps)")
-# NOTE: width/height are set when saving/displaying, e.g. ggsave(..., width = list(step = 40), height = 100)
-
-
-chart
-
 ===== interactive_airport_crossfilter.vl.json [EXEC] =====
 <text>:34:88: unexpected symbol
 33: vconcat2_rep12_data <- vconcat2_rep1_data

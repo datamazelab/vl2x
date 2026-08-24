@@ -297,7 +297,41 @@ error_bounds <- function(encoding, axis, ignore_unsupported = FALSE, .notes = NU
     return(list(min = sprintf("(%s) - (%s)", base_expr, err_expr), max = sprintf("(%s) + (%s)", base_expr, err_expr)))
   }
   if (!is.null(encoding[[range2_key]])) {
-    return(list(min = base_expr, max = channel_value_expr(encoding[[range2_key]], ignore_unsupported, .notes)))
+    # A companion range field (e.g. histogram_nonlinear.vl.json's own `x2:
+    # {field: "endTime"}`, no type of its own at all) is positioned on
+    # exactly the same scale the *base* channel resolved to, regardless of
+    # its own type annotation (or lack of one).
+    range2_def <- encoding[[range2_key]]
+    if (identical(base$type, "ordinal") || identical(base$type, "nominal")) {
+      # An ordinal/nominal base (a discrete factor()-backed scale) needs its
+      # companion positioned on the SAME numbering -- computing each field's
+      # factor() levels independently (discrete_field_ref()'s usual
+      # per-field behavior) assigns each its own separate numbering over its
+      # own distinct values, and for two different-but-overlapping value
+      # sets (e.g. "startTime"/"endTime" bin edges, sharing most but not all
+      # of their distinct values) that produces two INCOMPATIBLE numberings
+      # -- ggplot2 then draws nonsensical/reversed rects (or, when the
+      # companion is left entirely unwrapped, refuses to plot at all:
+      # "Discrete value supplied to a continuous scale"). Building one
+      # shared level set -- the union of both fields' own distinct values,
+      # in the order values are first encountered scanning the two fields
+      # row-by-row together, matching `sort: null`'s "use the data's own
+      # order" semantics -- keeps both ends of each bin on one consistent
+      # numeric axis once as.numeric()'d.
+      base_ref <- field_ref(base$field)
+      range2_ref <- field_ref(range2_def$field)
+      combined_expr <- sprintf("unique(as.vector(rbind(%s, %s)))", base_ref, range2_ref)
+      shared_levels_expr <- if (is.list(base$sort) && is.null(names(base$sort))) {
+        sprintf("union(%s, %s)", format_value(base$sort), combined_expr)
+      } else {
+        combined_expr
+      }
+      return(list(
+        min = sprintf("factor(%s, levels = %s)", base_ref, shared_levels_expr),
+        max = sprintf("factor(%s, levels = %s)", range2_ref, shared_levels_expr)
+      ))
+    }
+    return(list(min = base_expr, max = channel_value_expr(range2_def, ignore_unsupported, .notes)))
   }
   NULL
 }
@@ -320,7 +354,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   mark_type <- if (is.character(mark)) mark else mark$type
   mark_props <- if (is.character(mark)) list() else mark[names(mark) != "type"]
 
-  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes, extent_data_var, extent_params, standalone = isTRUE(plan$standalone))
+  channels <- build_layer_channels(encoding, mark_type, ignore_unsupported, .notes, extent_data_var, extent_params, standalone = isTRUE(plan$standalone), invalid_run_field = plan$invalid_run_field)
   fixed <- merge_named(mark_fixed_params(mark_props, mark_type, ignore_unsupported, .notes), channels$fixed)
   if (!is.null(plan$extra_fixed)) fixed <- merge_named(fixed, plan$extra_fixed)
 
@@ -533,6 +567,19 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       # columns) -- a proper zero-baseline-anchored box, not the Gantt-
       # style "thick line at a fixed height" case below (which only makes
       # sense when the companion axis is categorical, not a real value).
+      # geom_rect() needs a genuinely numeric xmin/xmax -- error_bounds()
+      # wraps a discrete/ordinal base channel's own range in factor() (e.g.
+      # histogram_nonlinear.vl.json's own ordinal `x`/`x2` bin edges), which
+      # ggplot2's own scale-type inference then sees as a *discrete* value
+      # fed into what geom_rect expects to be a *continuous* one ("Discrete
+      # value supplied to a continuous scale") -- `as.numeric()` reads the
+      # factor's own 1-based position (matching the identical as.numeric()
+      # conversion the y_range branch's own "real discrete x position" case
+      # above already relies on for the same reason).
+      if (identical(encoding$x$type, "ordinal") || identical(encoding$x$type, "nominal")) {
+        aes_pairs[["xmin"]] <- sprintf("as.numeric(%s)", aes_pairs[["xmin"]])
+        aes_pairs[["xmax"]] <- sprintf("as.numeric(%s)", aes_pairs[["xmax"]])
+      }
       aes_pairs[["ymax"]] <- aes_pairs[["y"]]
       aes_pairs[["ymin"]] <- "0"
       aes_pairs[["y"]] <- NULL
