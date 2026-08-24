@@ -760,7 +760,8 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     // (dropped, same as before this offset support existed) rather than
     // building a degenerate one-slot-per-row scale.
     if (!def || 'value' in def || def.type === 'quantitative' || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
-    const scale = resolveOffsetScale(offsetChannel, def, {dataVar: allDataExpr, outerScale});
+    const minBandSize = root.config && root.config.bar && typeof root.config.bar.minBandSize === 'number' ? root.config.bar.minBandSize : undefined;
+    const scale = resolveOffsetScale(offsetChannel, def, {dataVar: allDataExpr, outerScale, minBandSize});
     b(scale.decl);
     scales[offsetChannel] = scale;
   }

@@ -541,10 +541,26 @@ export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false, in
 // known until the data has loaded either, so this scale itself becomes
 // conditional on that same runtime flag (`null` when the outer scale
 // turned out continuous -- callers must handle that, see marks.js).
-export function resolveOffsetScale(channel, def, {dataVar, outerScale}) {
+export function resolveOffsetScale(channel, def, {dataVar, outerScale, minBandSize}) {
   const varName = channel; // "xOffset" or "yOffset"
   const domain = ordinalDomainFromData(dataVar, def.field, def.sort);
-  const bandScaleExpr = `d3.scaleBand(${domain}, [0, ${outerScale.varName}.bandwidth()]).padding(0.05)`;
+  // `config.bar.minBandSize` (e.g. bar_grouped_thin_minBandSize.vl.json's
+  // own `4`) is a floor on each dodged sub-band's own bandwidth -- with
+  // enough distinct offset values sharing one outer band, the *natural*
+  // sub-band can shrink well under a pixel wide (invisible); rather than
+  // implement d3.scaleBand()'s own step-size formula by hand to solve for
+  // the range that produces exactly `minBandSize`, this just measures the
+  // *natural* bandwidth the plain (unclamped) scale already produces and
+  // scales the range up by however much that's short -- bandwidth is
+  // directly proportional to range width for a fixed domain/padding, so
+  // this is exact, not an approximation. The sub-bands then legitimately
+  // overflow past their own outer band's slot (matching real Vega-Lite's
+  // own rendering for this case) rather than staying artificially confined.
+  const bandScaleExpr = minBandSize
+    ? `(() => { const __dom = ${domain}; const __outerBW = ${outerScale.varName}.bandwidth(); let __s = d3.scaleBand(__dom, [0, __outerBW]).padding(0.05); ` +
+      `if (__s.bandwidth() < ${formatValue(minBandSize)}) __s = d3.scaleBand(__dom, [0, __s.bandwidth() > 0 ? __outerBW * ${formatValue(minBandSize)} / __s.bandwidth() : ${formatValue(minBandSize)} * __dom.length]).padding(0.05); ` +
+      `return __s; })()`
+    : `d3.scaleBand(${domain}, [0, ${outerScale.varName}.bandwidth()]).padding(0.05)`;
   if (outerScale.kind === 'ambiguous') {
     return {
       varName,

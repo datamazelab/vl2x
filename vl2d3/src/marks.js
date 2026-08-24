@@ -71,11 +71,21 @@ function conditionalAccessorExpr(def, scales, channel, noBaseFallback, ignoreUns
   for (let i = conditions.length - 1; i >= 0; i--) {
     const c = conditions[i];
     if (c.test === undefined) continue;
+    // A *string* test can still reference a live param (e.g.
+    // param_search_input.vl.json's own `search_input`, bound to a search
+    // box, used inside `test(regexp(search_input,'i'), datum.Name)`) --
+    // `regexp(...)`/`test(...)` are Vega expression-language builtins
+    // translateExpr() doesn't implement (it has no way to distinguish
+    // "genuinely undefined identifier" from "valid JS" in general), and
+    // would otherwise reach the generated code as bare, unresolvable
+    // identifiers, throwing a ReferenceError at *render* time instead of
+    // translation time.
+    const isUnresolvableVegaExpr = typeof c.test === 'string' && /\b(?:regexp|test)\s*\(/.test(c.test);
     let testExpr;
-    if (typeof c.test === 'string') {
+    if (typeof c.test === 'string' && !isUnresolvableVegaExpr) {
       testExpr = translateExpr(c.test, 'd');
     } else if (ignoreUnsupported) {
-      testExpr = `false /* vl2d3: unsupported condition "test" bound to a param/selection, treating as not met (--ignore-unsupported) */`;
+      testExpr = `false /* vl2d3: unsupported condition "test" bound to a param/selection or unimplemented expression function, treating as not met (--ignore-unsupported) */`;
     } else {
       throw new Error('Unsupported: a condition\'s "test" is bound to a param/selection, not a static expression');
     }
@@ -152,9 +162,9 @@ function hasRowDependentColor(encoding) {
   return Boolean(encoding.color);
 }
 
-function opacityAttr(encoding, scales) {
+function opacityAttr(encoding, scales, ignoreUnsupported = false) {
   if (!encoding.opacity) return null;
-  return accessor(encoding.opacity, scales, 'opacity', '1');
+  return accessor(encoding.opacity, scales, 'opacity', '1', ignoreUnsupported);
 }
 
 function tooltipTitle(encoding) {
@@ -294,7 +304,7 @@ function renderBoxplot(encoding, scales, dims, dataVar, markProps, ignoreUnsuppo
           ? `Math.min(${catScale.varName}.bandwidth(), 14)`
           : '14';
 
-  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL), ignoreUnsupported);
   const stroke = markColorFallback(markProps, 'stroke', 'black');
   // Vega-Lite's own boxplot defaults: a white median tick, and outlier
   // points in the mark's base color (not the box's own per-category fill,
@@ -450,7 +460,9 @@ function renderErrorbar(encoding, scales, dims, dataVar, markProps, ignoreUnsupp
       ? dims.centerXExpr
       : dims.centerYExpr;
 
-  const stroke = encoding.color ? accessor(encoding.color, scales, 'color') : formatValue(markColorFallback(markProps, 'stroke', 'black'));
+  const stroke = encoding.color
+    ? accessor(encoding.color, scales, 'color', formatValue(markColorFallback(markProps, 'stroke', 'black')), ignoreUnsupported)
+    : formatValue(markColorFallback(markProps, 'stroke', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
 
   lines.push(`svg.append("g")`);
@@ -508,7 +520,7 @@ function renderErrorbar(encoding, scales, dims, dataVar, markProps, ignoreUnsupp
 // offset to it -- mirrors error_bounds() in vl2ggplot's geoms.R). No
 // grouping/stats computation needed here at all, unlike renderErrorbar()'s
 // raw-values case -- just a rule per existing row.
-function renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, errChannel) {
+function renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, errChannel, ignoreUnsupported = false) {
   const catChannel = errChannel === 'x' ? 'y' : 'x';
   const baseField = JSON.stringify(encoding[errChannel].field);
   const errField = JSON.stringify(encoding[`${errChannel}Error`].field);
@@ -525,7 +537,9 @@ function renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, err
       ? dims.centerXExpr
       : dims.centerYExpr;
 
-  const stroke = encoding.color ? accessor(encoding.color, scales, 'color') : formatValue(markColorFallback(markProps, 'stroke', 'black'));
+  const stroke = encoding.color
+    ? accessor(encoding.color, scales, 'color', formatValue(markColorFallback(markProps, 'stroke', 'black')), ignoreUnsupported)
+    : formatValue(markColorFallback(markProps, 'stroke', 'black'));
   const rowDependent = hasRowDependentColor(encoding);
 
   const lines = [];
@@ -609,7 +623,7 @@ function renderErrorband(encoding, scales, dims, dataVar, markProps, ignoreUnsup
 
   const bandVar = 'errBand';
   const lines = [];
-  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL), ignoreUnsupported);
   const bandOpacity = markProps.opacity !== undefined ? formatValue(markProps.opacity) : '0.3';
 
   if (catDef && catDef.field) {
@@ -738,7 +752,7 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       // way, no need to re-derive the interval from raw per-row values.
       const errChannel = encoding.xError ? 'x' : encoding.yError ? 'y' : null;
       if (errChannel) {
-        return renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, errChannel);
+        return renderErrorbarFromError(encoding, scales, dims, dataVar, markProps, errChannel, ignoreUnsupported);
       }
       if (encoding.x2 || encoding.y2) {
         return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
@@ -823,7 +837,7 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   const yTemporalBar = !yBand && y && encoding.y && encoding.y.type === 'temporal';
   const xAmbiguous = x && x.kind === 'ambiguous';
   const yAmbiguous = y && y.kind === 'ambiguous';
-  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL), ignoreUnsupported);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   // Both variable names are plain (not field-derived) since the whole
@@ -1056,10 +1070,26 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // A genuine 2D box on both axes -- e.g. prepare.js's 2D-bin case (each
     // row is one heatmap cell, with its own x and y bin edges), or any
     // other spec giving an explicit range on both channels at once.
-    lines.push(`    .attr("x", d => Math.min(x(d[${JSON.stringify(encoding.x.field)}]), x(d[${JSON.stringify(encoding.x2.field)}])))`);
-    lines.push(`    .attr("width", d => Math.abs(x(d[${JSON.stringify(encoding.x2.field)}]) - x(d[${JSON.stringify(encoding.x.field)}])))`);
-    lines.push(`    .attr("y", d => Math.min(y(d[${JSON.stringify(encoding.y.field)}]), y(d[${JSON.stringify(encoding.y2.field)}])))`);
-    lines.push(`    .attr("height", d => Math.abs(y(d[${JSON.stringify(encoding.y2.field)}]) - y(d[${JSON.stringify(encoding.y.field)}])))`);
+    // `mark.xOffset`/`x2Offset`/`yOffset`/`y2Offset` (a plain pixel number,
+    // not an encoding channel -- e.g. bar_heatlane.vl.json's own `"xOffset":
+    // 2, "x2Offset": -2`, insetting each box 2px on both sides to form a
+    // visible gap between adjacent lanes) shift that one edge's own scaled
+    // pixel position directly, same as Vega-Lite's own semantics for them.
+    const xOffsetPx = simpleMarkProp(markProps.xOffset, 0, 'xOffset', ignoreUnsupported);
+    const x2OffsetPx = simpleMarkProp(markProps.x2Offset, 0, 'x2Offset', ignoreUnsupported);
+    const yOffsetPx = simpleMarkProp(markProps.yOffset, 0, 'yOffset', ignoreUnsupported);
+    const y2OffsetPx = simpleMarkProp(markProps.y2Offset, 0, 'y2Offset', ignoreUnsupported);
+    const xExpr = xOffsetPx ? `(x(d[${JSON.stringify(encoding.x.field)}]) + ${formatValue(xOffsetPx)})` : `x(d[${JSON.stringify(encoding.x.field)}])`;
+    const x2Expr = x2OffsetPx ? `(x(d[${JSON.stringify(encoding.x2.field)}]) + ${formatValue(x2OffsetPx)})` : `x(d[${JSON.stringify(encoding.x2.field)}])`;
+    const yExpr = yOffsetPx ? `(y(d[${JSON.stringify(encoding.y.field)}]) + ${formatValue(yOffsetPx)})` : `y(d[${JSON.stringify(encoding.y.field)}])`;
+    const y2Expr = y2OffsetPx ? `(y(d[${JSON.stringify(encoding.y2.field)}]) + ${formatValue(y2OffsetPx)})` : `y(d[${JSON.stringify(encoding.y2.field)}])`;
+    lines.push(`    .attr("x", d => Math.min(${xExpr}, ${x2Expr}))`);
+    lines.push(`    .attr("width", d => Math.abs(${x2Expr} - ${xExpr}))`);
+    lines.push(`    .attr("y", d => Math.min(${yExpr}, ${y2Expr}))`);
+    lines.push(`    .attr("height", d => Math.abs(${y2Expr} - ${yExpr}))`);
+    if (markProps.cornerRadius) {
+      lines.push(`    .attr("rx", ${formatValue(simpleMarkProp(markProps.cornerRadius, 0, 'cornerRadius', ignoreUnsupported))})`);
+    }
   } else if (encoding.x2 && !encoding.y2) {
     if (encoding.x.binned) {
       // Vega-Lite's default `config.bar.binSpacing` (1px) leaves a small
@@ -1230,7 +1260,7 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
   } else {
     throw new Error('Unsupported bar orientation: expected at least one x or y position channel');
   }
-  const barOpacity = opacityAttr(encoding, scales);
+  const barOpacity = opacityAttr(encoding, scales, ignoreUnsupported);
   if (barOpacity) lines.push(`    .attr("opacity", d => ${barOpacity})`);
   appendTitle(lines, '    ', encoding);
   if (needsWidthBlock) {
@@ -1297,8 +1327,8 @@ function renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupport
         ? formatValue(Math.sqrt(encoding.size.value / Math.PI))
         : formatValue(markProps.size ? Math.sqrt(simpleMarkProp(markProps.size, 9, 'size', ignoreUnsupported) / Math.PI) : 3) +
           markPropNote(markProps.size, 'size', ignoreUnsupported);
-  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
-  const opacity = opacityAttr(encoding, scales);
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL), ignoreUnsupported);
+  const opacity = opacityAttr(encoding, scales, ignoreUnsupported);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
 
@@ -1532,8 +1562,8 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const alongFallback = alongChannel === 'x' ? dims.centerXExpr : dims.centerYExpr;
   const valueFallback = valueChannel === 'x' ? dims.centerXExpr : dims.centerYExpr;
 
-  const alongPos = alongScale ? accessor(encoding[alongChannel], scales, alongChannel) : alongFallback;
-  const valueTop = valueScale ? accessor(encoding[valueChannel], scales, valueChannel) : valueFallback;
+  const alongPos = alongScale ? accessor(encoding[alongChannel], scales, alongChannel, 'undefined', ignoreUnsupported) : alongFallback;
+  const valueTop = valueScale ? accessor(encoding[valueChannel], scales, valueChannel, 'undefined', ignoreUnsupported) : valueFallback;
   // The baseline (`y2`/`x2`, whichever is the value channel's own
   // companion): a plain field reference is the common case, but it can
   // also be a literal `datum` (e.g. area_overlay_with_y2.vl.json's
@@ -1555,7 +1585,7 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const sortField = encoding[alongChannel] ? encoding[alongChannel].field : encoding[valueChannel].field;
   const sortFieldJson = JSON.stringify(sortField);
   const lines = [];
-  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL));
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL), ignoreUnsupported);
 
   // Same reasoning as renderLine()'s own `definedClause` -- x2/y2's own
   // field (not a fixed `datum`/implicit-0 baseline, which is never
@@ -1666,7 +1696,7 @@ function renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const {x, y} = scales;
   const hasX = hasChannelContent(encoding.x);
   const hasY = hasChannelContent(encoding.y);
-  const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'));
+  const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'), ignoreUnsupported);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   lines.push(`svg.append("g")`);
@@ -1729,7 +1759,7 @@ function renderTick(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     if (ignoreUnsupported) return SKIP_COMMENT('"tick"/"boxplot" mark has neither x nor y encoding');
     throw new Error('"tick" mark requires an x and/or y encoding');
   }
-  const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'));
+  const stroke = fillExpr(encoding, scales, markColorFallback(markProps, 'stroke', 'black'), ignoreUnsupported);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   lines.push(`svg.append("g")`);
@@ -1821,7 +1851,7 @@ function renderText(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const textField = encoding.text
     ? rawField(encoding.text) || formatValue(encoding.text.value)
     : formatValue(Array.isArray(markProps.text) ? markProps.text.join('\n') : markProps.text);
-  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', 'black'));
+  const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', 'black'), ignoreUnsupported);
   const rowDependent = hasRowDependentColor(encoding);
   const lines = [];
   lines.push(`svg.append("g")`);
