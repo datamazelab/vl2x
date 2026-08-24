@@ -159,21 +159,23 @@ for the full list of fallbacks.
 |---|---|
 | Single unit view (`mark` + `encoding`) | ✅ |
 | `layer` (including nested layer-of-layers) | ✅ — children rendered on shared scales/axes |
-| `facet`, `repeat`, `concat`, `hconcat`, `vconcat` | ❌ throws a clear "not yet supported" error |
-| Marks: `bar`, `point`, `circle`, `line`, `area`, `rule`, `tick`, `text`, `arc` | ✅ |
-| Marks: `rect`, `boxplot`, `errorbar`, `errorband`, `geoshape`, `image`, `trail` | ❌ |
+| `facet`, `concat`, `hconcat`, `vconcat` | ❌ throws a clear "not yet supported" error |
+| `repeat` | ✅ for `repeat: {layer: [...]}` (field substitution into each repeated layer, sharing one panel) — ❌ (same as `facet`) for the row/column-grid form |
+| Marks: `bar`, `rect`, `point`, `circle`, `square`, `line`, `area`, `rule`, `tick`, `text`, `arc`, `boxplot`, `errorbar`, `errorband` | ✅ |
+| Marks: `geoshape`, `image`, `trail` | ❌ |
 | `x`/`y` scales: linear, time, band, point, log/pow/sqrt | ✅ (inferred from field type + mark) |
 | `color`: ordinal (with a basic swatch legend) and sequential/continuous | ✅ |
 | `size`, `opacity` | ✅ (quantitative only) |
 | Multi-series `line`/`area` grouped by `color`/`detail` | ✅ |
 | 1D strip/dot plots (only one of x/y given) | ✅ |
 | Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ (0–2 groupby fields; one binned channel as a histogram) — see limitations |
-| `xOffset`/`yOffset` (dodged/grouped position) | ✅ — a nested sub-band scale inside the outer position band |
+| `xOffset`/`yOffset` (dodged/grouped position) | ✅ — a nested sub-band scale inside the outer position band; composes with a `color`/`detail`-driven `stack` on the *same* mark (dodge picks the sub-band, stack fills it) |
+| Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`) and an explicit top-level `transform: stack` | ✅ — `zero`/`normalize`/`center` modes; mixed-sign ("diverging") stacks in `zero` mode via two separate running accumulators |
 | 2D binning (`bin` on both x and y, `count` aggregate) | ✅ — real per-cell binning via nested `d3.bin()`, not an approximation |
 | Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `window`, `joinaggregate`, `density`, `fold`, `pivot` | ✅ |
 | Top-level `transform`: `extent` | ✅ — resolved directly at the point of use (a rule mark's `value: {"expr": "scale('x', param[0])"}`), not as a data-pipeline step |
 | Aggregate ops: the common statistical ones, plus `argmin`/`argmax` | ✅ — `argmin`/`argmax` return the whole matching row; a later bracket-indexed reference into it (`argmax_field['Other Field']`) is flattened into a plain field before any mark/scale code sees it |
-| Top-level `transform`: `lookup`, `impute`, `flatten`, `quantile`, `regression`, `loess`, `sample`, `stack`, `sort` | ❌ |
+| Top-level `transform`: `lookup`, `impute`, `flatten`, `quantile`, `regression`, `loess`, `sample`, `sort` | ❌ |
 | `params`/`selection` (interactivity, conditional encodings as *static* values) | ⚠️ a `condition`/`param` reference passes through as a literal object (so the generated code is valid and the "default" branch renders), but there's no live selection/binding behavior |
 | Geographic encoding (`longitude`/`latitude`) or `projection`-driven marks | ❌ no map projection support |
 | Vega expression strings (`filter`/`calculate`) | ⚠️ best-effort: `datum` → row var, common `Math.*` functions, date-component extraction (`year()`, `month()`, ...); anything else (custom Vega functions, `datetime()`, string helpers like `toString`/`isValid`/`length`) passes through as literal text and fails loudly at chart-render time rather than silently miscalculating |
@@ -219,24 +221,18 @@ buckets results three ways instead of a plain pass/fail:
   Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **330/633 OK, 301/633 skipped (documented
-boundaries above), 2/633 failed** (residual edge cases, each combining
-several unusual features at once; diminishing returns to chase further for
-a v1). A second, stricter harness (`test/validate-rendering.js`) additionally
-inspects the *rendered SVG geometry* of every `--ignore-unsupported` run
-(not just whether translation+execution threw), catching a spec that
-"succeeds" but silently draws nothing or `NaN`-positioned shapes: **587/633
-render with real, finite geometry**. See
+At the time of writing: **408/633 OK, 225/633 skipped (documented
+boundaries above), 0/633 failed**. A second, stricter harness
+(`test/validate-rendering.js`) additionally inspects the *rendered SVG
+geometry* of every `--ignore-unsupported` run (not just whether
+translation+execution threw), catching a spec that "succeeds" but silently
+draws nothing or `NaN`-positioned shapes: **609/633 render with real, finite
+geometry** (5/633 have at least one `NaN`-geometry shape, 4/633 execute but
+draw nothing, 15/633 fail outright). See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full methodology.
 
-Two design choices worth calling out explicitly:
+One design choice worth calling out explicitly:
 
-- **No auto-stacking.** Vega-Lite automatically stacks `bar`/`area` marks
-  when a `color`/`detail` channel is present and the value channel isn't
-  explicitly unstacked. `vl2d3` does not implement this — a
-  color-by-category bar/area chart renders as overlapping series on shared
-  scales, not a stacked one. Implementing Vega-Lite-compatible stacking
-  correctly is a project-sized feature on its own.
 - **No live interactivity.** `params`/`selection` don't create any bound
   DOM event handlers, sliders, or brushes — a static-value `condition`
   reference still renders (using its default branch), but nothing responds

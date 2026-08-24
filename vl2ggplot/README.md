@@ -151,11 +151,12 @@ the full list of fallbacks.
 | 1D strip/dot/bar plots (only one of x/y given) | ✅ — constant `""`/fixed-param fallback |
 | Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ — routed through native `stat_count`/`stat_summary`/`stat_summary_bin`/`geom_histogram` where possible, explicit `dplyr::group_by()`+`summarise()` otherwise (0–2 groupby fields) |
 | Mark-level `extent` / `xError`/`yError`/`xError2`/`yError2` channels (error bars/bands) | ✅ — arithmetic bounds from Error channels, or an implicit mean±stderr/stdev/ci/iqr `dplyr` summary when no explicit channel is given |
-| `xOffset`/`yOffset` (dodged/grouped position) | ✅ → `position = "dodge2"` |
+| `xOffset`/`yOffset` (dodged/grouped position) | ✅ → `position = "dodge2"`, or manual `geom_rect()` xmin/xmax when a `color`/`detail` stack field is also present (ggplot2 has no built-in position that dodges *and* stacks at once) |
+| Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`) and an explicit top-level `transform: stack` | ✅ — `zero`/`normalize`/`center` modes; the one gap is `center` mode combined with a dodge field on the same mark |
 | Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `window`, `joinaggregate`, `density`, `fold`, `pivot` | ✅ |
 | Top-level `transform`: `extent` | ✅ — resolved directly at the point of use (a rule mark's `value: {"expr": "scale('x', param[0])"}`), not as a data-pipeline step |
 | Aggregate ops: the common statistical ones, plus `argmin`/`argmax` | ✅ — `argmin`/`argmax` return the whole matching row (a list-column); a later bracket-indexed reference into it (`argmax_field['Other Field']`) is flattened into a plain column before any aes()/geom code sees it |
-| Top-level `transform`: `lookup`, `impute`, `flatten`, `quantile`, `regression`, `loess`, `sample`, `stack`, `sort` | ❌ |
+| Top-level `transform`: `lookup`, `impute`, `flatten`, `quantile`, `regression`, `loess`, `sample`, `sort` | ❌ |
 | `x`/`y` scales: linear, date, discrete (with `sort`/`reverse`), log/pow/sqrt (via ggplot2's `trans`) | ✅ |
 | `color`/`size`/`opacity` scales: explicit `range`, `domain`, viridis/ColorBrewer `scheme` | ✅ — `quantile`/`quantize`/`threshold` (discretizing) scale types ❌ |
 | Geographic encoding (`longitude`/`latitude`) or `projection`-driven marks | ❌ no map projection support |
@@ -200,22 +201,16 @@ pass/fail:
   not to implement yet (an `"Unsupported: ..."` error). Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **503/633 OK, 122/633 skipped (documented boundaries
-above), 8/633 failed** against the corpus's real-world example specs (see
+At the time of writing: **523/633 OK, 104/633 skipped (documented boundaries
+above), 6/633 failed** against the corpus's real-world example specs (see
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full methodology and
-what those 8 residual failures combine). A second, stricter harness
+what those 6 residual failures combine). A second, stricter harness
 (`tests/validate_rendering.R`) additionally captures the *full* error
 message (not just ggplot2's own truncated status text) for anything that
-fails under `ignore_unsupported = TRUE`: **580/633 execute cleanly**.
+fails under `ignore_unsupported = TRUE`: **602/633 execute cleanly**.
 
 One design choice worth calling out explicitly:
 
-- **No auto-stacking.** `vl2ggplot` does not implement Vega-Lite's
-  automatic bar/area stacking by `color`/`detail` — ggplot2 has its own
-  `position_stack()` for this, but mapping Vega-Lite's stacking rules onto
-  it correctly is a project-sized feature on its own. (Dodged/grouped
-  positioning via `xOffset`/`yOffset` *is* implemented, via
-  `position = "dodge2"`.)
 - **`extent`/error-channel handling is a documented simplification.**
   Vega-Lite's default confidence-interval extent uses a bootstrap; this
   project's `ci` extent uses a normal-theory approximation

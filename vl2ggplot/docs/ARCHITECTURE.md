@@ -38,8 +38,8 @@ Vega-Lite's:
 
 So this project is real translation work — closer in spirit to `vl2d3` than
 to `vl2altair`/`vl2vlapi` — but because the *target* grammar is so much
-richer than D3, its practical coverage of the same 633-spec corpus (503/633
-OK) sits much closer to its mechanical siblings than to `vl2d3`'s 330/633.
+richer than D3, its practical coverage of the same 633-spec corpus (523/633
+OK) sits much closer to its mechanical siblings than to `vl2d3`'s 408/633.
 
 ## Shared runtime helpers (`R/runtime.R`)
 
@@ -303,6 +303,94 @@ mistake that reading the generator in isolation wouldn't catch:
   `unescape_field_path()` applied explicitly, since they never went through
   `field_ref()` in the first place.
 
+## Dodge and stack together: ggplot2 has no single built-in position for both
+
+ggplot2's `position_dodge2()` dodges every row apart from every other row in
+the same x position — including rows that belong to *different* stack
+groups within the same dodge slot, which it has no concept of. A spec with
+both an `xOffset`/`yOffset` field (dodge) and a `color`/`detail`-driven
+`stack` on the same mark (e.g. a grouped-and-stacked bar chart) needs both
+at once, which no off-the-shelf `position` does. `plan_explicit_aggregate()`
+(`transforms.R`) computes this manually instead: the offset field becomes a
+genuine third `group_by()` dimension (not just a passenger column), the
+per-group cumulative-sum stack computation groups by `(category, offset)`
+instead of just `category`, and `render_geom_layer_code()` (`geoms.R`)
+builds the resulting box directly as `geom_rect()` with dodge-aware
+`xmin`/`xmax` (one sub-slot per distinct offset value, sized like the
+existing bar/rect band-width convention) rather than relying on any
+`position` argument at all. The one case this doesn't cover: `stack:
+"center"` combined with a dodge field, which would need the same manual
+per-group cumulative-sum-then-recenter logic the plain (non-dodged) `center`
+case already has, just further split by the dodge dimension too — left
+unhandled as a narrow, compounding edge case.
+
+A same-field special case falls out of this for free: when the dodge field
+and the stack field are identical (Vega-Lite already fully expresses that
+one dimension via dodging alone), stacking on top of it would try to
+`group_by()` the same column twice — a dplyr error ("column name must not
+be duplicated"), not a silently wrong chart. `is_implicit_stack`'s own
+detection excludes this case explicitly rather than reaching that error.
+
+## Tick marks are line segments, not points
+
+`geom_function_name()`'s default mapping for `"tick"` is `geom_point()` — a
+marker at the position, not Vega-Lite's own short dash. For a genuinely 1D
+strip (only one of x/y given), ggplot2's own `geom_rug()` is a direct,
+built-in equivalent. For a 2D strip (both x and y given, e.g.
+`tick_strip.vl.json`'s horsepower-by-cylinder-count chart), the tick is a
+short `geom_segment()` drawn *perpendicular* to whichever channel is
+continuous — spanning within the discrete companion axis's own band,
+mirroring `vl2d3`'s own `renderTick()` orientation logic exactly
+(`render_tick_layer()` in `geoms.R`).
+
+Getting the discrete companion axis's own numeric position (`as.numeric(x)`,
+the same convention the bar/rect "real discrete x position" case already
+uses) loses that axis's real labels, though — a bare numeric scale shows
+each level's own 1-based integer code (1, 2, 3, ...) instead of its actual
+value, since nothing else in the chart maps the raw factor for the scale to
+train real labels from. A `geom_blank()` layer mapping that same channel to
+its own real (factor-wrapped) field, drawing nothing itself, exists purely
+to give the scale something real to train against — the same thing
+`bar_layered_weather.vl.json`'s own analogous `xmin`/`xmax` convention gets
+"for free" from its shared plot-level `aes(x = factor(id))`, which a
+standalone tick mark has no equivalent of.
+
+A dodged tick (an offset field alongside the tick) and a tick with neither a
+real x nor a real y of its own (seen in `parallel_coordinate.vl.json`'s own
+deeply-nested repeat-of-layers construction, whose innermost tick layer
+resolves no usable position from its inherited encoding) both fall through
+to the ordinary `geom_point()`-based rendering instead — `render_tick_layer()`
+has no dodge-aware or blank-position handling of its own, and every other
+point-like mark already tolerates both of those shapes via existing,
+independently-maintained fallback code further down `geoms.R` that a fresh
+reimplementation would only risk diverging from.
+
+## `mark.invalid`: filter (the default) means break the path, not drop the row
+
+Vega-Lite's default handling of an invalid (null/NaN) value on a
+`line`/`area` mark's own position channel is `"filter"` — but for these two
+marks specifically, that doesn't mean *drop the row* (which would silently
+reconnect its two neighbors straight across the gap); it means *break the
+drawn path there*, leaving a real visual gap. ggplot2's own default
+behavior for an `NA` in a required aesthetic is exactly the "reconnect
+across it" shape, which under-represents the missing data. `prepare_unit()`
+now tags every row with a run id that increments at each invalid value
+(`render_invalid_run_id()` in `translator.R`), which `build_layer_channels()`
+folds into the geom's own `group` aesthetic (alongside any real
+`color`/`detail` grouping) — so the automatic `NA`-row-drop can no longer
+bridge across a gap, since the rows on either side already belong to
+different groups.
+
+`invalid: null`/`false` (asking Vega-Lite to *not* filter/break at all)
+means the opposite: the invalid value is used as-is, which for a continuous
+position resolves to a literal 0 (a dip to the baseline, not a gap).
+`render_invalid_zero_fill()` coerces those values to 0 upstream of drawing
+instead. Both paths are skipped whenever the mark is aggregated/pivoted/
+binned (`has_aggregating_channel()`) — the whole "gap between two raw rows"
+concept doesn't survive a `group_by()`+`summarise()` or `vl_pivot()`
+reshape, whose own output rows have no 1:1 relationship to the original
+ones a run-id column added beforehand could still meaningfully describe.
+
 ## Corpus validation methodology
 
 Like `vl2d3` (and unlike `vl2altair`/`vl2vlapi`'s near-100% pass/fail), a
@@ -317,20 +405,34 @@ buckets every spec into one of three outcomes:
 3. **Failed** — anything else. By construction, every failure in this bucket
    is either a real bug or an undocumented gap worth documenting.
 
-At the time of writing: **503/633 OK, 122/633 skipped, 8/633 failed**. A
+At the time of writing: **523/633 OK, 104/633 skipped, 6/633 failed**. A
 second, stricter harness, `tests/validate_rendering.R`, runs the full corpus
 a second time under `ignore_unsupported = TRUE` and captures the *complete*
 error message for anything that still fails (`render_ggplot.R`'s own status
-tracking keeps only ggplot2's first, often-truncated line) — **580/633
-execute cleanly** under it. The 8 residual strict failures each combine
+tracking keeps only ggplot2's first, often-truncated line) — **602/633
+execute cleanly** under it. The 6 residual strict failures each combine
 several unusual features at once — diminishing returns to chase further for
-a v1 — including a log-scaled histogram whose pre-binned `x`/`x2` range
-collides with the Gantt-chart `geom_linerange` workaround, a `rule` mark
-whose position channels are all simultaneously interactive-`param`-bound
-values (no static resolution path for the bound parameters), and an
-`{extent: {param: ...}}` *bin option* referencing a brush-selection param
-(distinct from the top-level `extent` *transform*, which is supported —
-this is `bin`'s own, still-interactivity-dependent `extent`).
+a v1:
+
+- **`histogram_log.vl.json`** — a log-scaled, pre-binned histogram whose
+  `geom_rect()` call ends up with only `xmin`/`xmax` (no plain `x`/`y`) and
+  `stat = "count"`, which `stat_count()` requires a genuine `x` or `y`
+  aesthetic to compute from.
+- **`boxplot_1D_invalid.vl.json`** — a boxplot whose own `x` has invalid
+  (non-numeric) values; unlike `mark.invalid` support for line/area (above),
+  nothing filters an invalid row upstream of `stat_boxplot()` for a
+  non-path mark, so it chokes on the resulting `NA`.
+- **`isotype_bar_chart_emoji.vl.json`** — a `calculate` expression using a
+  JS object-literal as an inline lookup table (`{'cattle': '🐄', ...}
+  [animal]`), a shape `translate_expr()` doesn't recognize and so passes
+  through as literal (invalid) R syntax.
+- **`layer_bar_labels_grey.vl.json`** — a `dplyr::group_by()` call ends up
+  with the same field name twice from two independent code paths that both
+  decided to group by it, which dplyr rejects as a duplicate column name.
+- **`layer_falkensee.vl.json`**, **`layer_timeunit_rect.vl.json`** — both
+  compute a temporal range's midpoint (`(start + end) / 2`) directly on
+  `Date` objects, which R's own `Date` class doesn't define a binary `+`
+  for at all (needs an explicit numeric conversion first).
 
 Every bug described above was found through one of these two harnesses —
 none were caught by reading the generator code or by the hand-written unit

@@ -24,12 +24,16 @@
     (JavaScript/vega-lite-api), <strong>vl2d3</strong> (JavaScript/D3), and
     <strong>vl2ggplot</strong> (R/ggplot2). Click a thumbnail to see the
     generated code and rendered chart side by side for each.
-<HR>
+    </p>
+<p class="intro">
 Note that these are direct transpiles from the source vega-lite JSON. In some cases (largely D3 and ggplot2), this will not render correctly or at all. This does not mean that it is not possible to construct equivalent visualizations. It just can't be done simply through transforming the JSON to code (or there's a transpiler bug). Interactive features are unlikely to work in D3 and ggplot2 in the current implementation.
-<HR>
+</p>
+<p class="intro">
 The system automatically tries to determine if transpiling worked. However, in some situations the determination is likely to be a false positive. The result may be run but not look correct or some feature may be incomplete.
   </p>
-
+  <p class="intro">
+    <B>An important note:</B> Some of these examples, specifically vl2ggplot and vl2d3 may not work without the helper library. There are some features (e.g., certain transformations) that are implemented in vega-lite but not in ggplot2. This may require the helper functions.
+   </p>
   <div class="controls">
     <input type="search" id="search" placeholder="Search by name or description…">
     <select id="support-filter">

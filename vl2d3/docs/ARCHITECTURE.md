@@ -114,6 +114,27 @@ wherever it's written, the same way `d3.js`/`ggplot.R` already sit next to
 publish it as an installable package a generated file could reference by
 name.
 
+## Composing dodge and stack on the same mark
+
+A dodged field (`xOffset`/`yOffset`) and a stacked one (`color`/`detail`
+driving an implicit `stack`) can both be present on the same `bar`/`area`
+mark — dodge picks the sub-band, stack fills it (`planStacking()` in
+`stack.js`). The one exception: when the dodge field and the stack field are
+the *same* field, that's plain dodging with no stacking at all (dodging
+already fully expresses that one dimension) — `planStacking()` nulls out the
+stack-group channel in that case rather than trying to stack a group of one.
+
+Stacking a mix of positive and negative values (e.g. a population-pyramid-
+style diverging bar chart) can't use a single running cumulative sum — each
+new sign's segment would continue from wherever the *other* sign's
+accumulator last left off, instead of starting fresh at 0.
+`renderStackingStatements()` maintains two separate running totals
+(`{pos: 0, neg: 0}`) for the default zero-baseline mode, routing each row's
+own `y0`/`y1` through whichever accumulator matches its own value's sign.
+`normalize`/`center` modes keep a single running total (their own
+after-the-fact rescale already treats the whole stack as one span,
+regardless of individual signs).
+
 ## Other bugs corpus validation caught
 
 A representative sample, because each says something about where static
@@ -202,6 +223,25 @@ reading of the generator would have missed the problem:
   identifiers). `simpleMarkProp()` in `marks.js` now detects an
   object-valued mark property and throws a clear "bound to an
   expression/signal" error instead.
+- **A "tick" mark always drew a horizontal dash, regardless of which axis was
+  the continuous one.** Vega-Lite draws a tick *perpendicular* to whichever
+  channel is continuous (a vertical dash pinned to an x position, spanning
+  within a discrete y band — the more common shape — or a horizontal dash the
+  other way around when y is continuous and x is the discrete one). The
+  original code always produced the horizontal shape, silently transposing
+  every chart of the (more common) other kind — a bug invisible from reading
+  the generator (it produces a plausible-looking tick either way) and only
+  caught by actually looking at the rendered geometry. `renderTick()` in
+  `marks.js` now checks each channel's own `type` to pick the orientation.
+- **`mark.invalid: null`/`false` (as opposed to the default `"filter"`) was
+  silently ignored.** Vega-Lite's default drops/gaps invalid position values
+  on a line/area's own path; explicitly asking for `null`/`false` instead
+  means "use the value as-is," which for a continuous position resolves to a
+  literal 0 (a dip to the baseline, not a gap or a dropped row) — a
+  deliberately out-of-scope case originally, until a spec exercising it
+  showed the gap. `renderInvalidZeroFill()` in `translator.js` coerces those
+  fields to 0 upstream of drawing instead of leaving them to become `NaN`
+  path coordinates.
 
 ## Corpus validation methodology
 
@@ -230,18 +270,17 @@ URL(url, options.baseURL ?? import.meta.url)` rather than just handing the
 relative string straight to `d3.json`/`d3.csv` (which requires an absolute
 URL outside a browser document context).
 
-At the time of writing: 330/633 OK, 301/633 skipped, 2/633 failed (see the
-README's *Known limitations* for what those two combine). A companion
-harness, `test/validate-rendering.js`, runs the full corpus a second time
-under `--ignore-unsupported` and additionally inspects the *rendered SVG
-geometry* of every drawn shape (not just whether translation+execution
-threw) — the gap it closes: a D3 selection given a `NaN` coordinate (e.g.
-an accessor reading a field some silently-skipped upstream transform never
-produced) doesn't throw at all, it just draws an invalid shape a browser
-quietly refuses to display, which showed up as a false "OK" against the
-plain execute-without-throwing bar. At the time of writing: 587/633 render
-with real, finite geometry, 22/633 have at least one `NaN`-geometry shape,
-5/633 execute but draw nothing, 19/633 fail outright. Every bug described
-above was found through one of these two harnesses — none were caught by
-reading the generator code or by the hand-written unit suite, which is the
-whole reason they exist.
+At the time of writing: 408/633 OK, 225/633 skipped, 0/633 failed. A
+companion harness, `test/validate-rendering.js`, runs the full corpus a
+second time under `--ignore-unsupported` and additionally inspects the
+*rendered SVG geometry* of every drawn shape (not just whether
+translation+execution threw) — the gap it closes: a D3 selection given a
+`NaN` coordinate (e.g. an accessor reading a field some silently-skipped
+upstream transform never produced) doesn't throw at all, it just draws an
+invalid shape a browser quietly refuses to display, which showed up as a
+false "OK" against the plain execute-without-throwing bar. At the time of
+writing: 609/633 render with real, finite geometry, 5/633 have at least one
+`NaN`-geometry shape, 4/633 execute but draw nothing, 15/633 fail outright.
+Every bug described above was found through one of these two harnesses —
+none were caught by reading the generator code or by the hand-written unit
+suite, which is the whole reason they exist.

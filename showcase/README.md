@@ -71,7 +71,7 @@ needed) for any example that doesn't have one in `vega-lite-example-compiled/`
 as a fallback in `build_site.py`'s thumbnail lookup if you need it.
 
 Current pass rates (translate + render), out of 633: Altair 633, vega-lite-api
-633, D3 292 (drawn live), ggplot2 380 (pre-rendered) — matching each project's
+633, D3 618 (drawn live), ggplot2 589 (pre-rendered) — matching each project's
 own `docs/ARCHITECTURE.md` numbers modulo methodology differences (this
 harness also counts execution failures the same way as translation failures,
 where each project's own validator distinguishes them).
