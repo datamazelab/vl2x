@@ -77,7 +77,7 @@ for (let i = 0; i < files.length; i++) {
   let code;
   try {
     const spec = JSON.parse(readFileSync(path.join(SPECS_DIR, files[i]), 'utf8'));
-    code = vegaLiteToD3Code(spec, {ignoreUnsupported: true});
+    code = vegaLiteToD3Code(spec, {ignoreUnsupported: true, includeSourcePaths: true});
     if (code.includes('./vl2d3-runtime.js')) {
       code = code.replace('./vl2d3-runtime.js', `./vl2d3-runtime.js?v=${RUNTIME_HASH}`);
       writeFileSync(path.join(outDir, 'vl2d3-runtime.js'), RUNTIME_JS);

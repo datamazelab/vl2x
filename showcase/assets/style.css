@@ -219,7 +219,38 @@ h3 { font-size: 1.25em; }
   font-size: 13px;
   color: var(--muted);
   margin-bottom: 6px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
+
+.source-path-toggle {
+  font-size: 12px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.source-path-toggle input { cursor: pointer; }
+
+.source-path-toggle code {
+  background: var(--panel-alt);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+
+/* Hides a `.hljs-comment` span highlight.js already isolated one per
+   physical `# from: ...`/`// from: ...` line (see example.html.j2's own
+   toggle logic) -- the line itself collapses to blank rather than being
+   removed outright, which is simpler and doesn't disturb any other line's
+   position while the toggle is flipped back and forth. */
+.hljs-comment.source-path-comment-hidden { display: none; }
 
 .example-title {
   font-size: 2.2em;

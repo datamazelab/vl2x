@@ -22,7 +22,7 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
         try:
             spec = json.loads(spec_path.read_text())
-            code = vegalite_to_altair_code(spec, format_with_black=True)
+            code = vegalite_to_altair_code(spec, format_with_black=True, include_source_paths=True)
             (out_dir / "altair.py").write_text(code)
             statuses[name] = {"ok": True}
         except Exception as e:  # noqa: BLE001

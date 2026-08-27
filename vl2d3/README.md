@@ -93,7 +93,16 @@ import {vegaLiteToD3Code} from './src/index.js';
 
 const code = vegaLiteToD3Code(spec); // spec: plain object
 const code = vegaLiteToD3Code(spec, {ignoreUnsupported: true}); // best-effort fallback (see below)
+const code = vegaLiteToD3Code(spec, {includeSourcePaths: true}); // annotate each block with its source
 ```
+
+`includeSourcePaths` (default `false`): precedes each generated block of
+statements with a `// from: <json path>` comment naming the part of the
+input spec it came from (e.g. `// from: mark, encoding.x, encoding.y`,
+`// from: layer[0].transform`) — useful for tracing generated code back to
+the spec, at the cost of a noisier script. Paths are relative to the view
+being rendered; nested inside a facet/repeat/concat panel, they don't carry
+that outer composition's own prefix.
 
 The returned string is a complete ES module exporting a single async
 function, `chart(container, options)`:

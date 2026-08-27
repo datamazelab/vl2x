@@ -52,7 +52,14 @@ import {vegaLiteToVegaLiteApiCode} from './src/index.js';
 
 const code = vegaLiteToVegaLiteApiCode(spec);                   // spec: plain object
 const code = vegaLiteToVegaLiteApiCode(spec, {chartVar: 'plot'}); // rename the output variable
+const code = vegaLiteToVegaLiteApiCode(spec, {includeSourcePaths: true}); // annotate each chain step with its source
 ```
+
+`includeSourcePaths` (default `false`): precedes each generated chain
+step with a `// from: <json path>` comment naming the part of the input
+spec it came from (e.g. `// from: encoding.x`, `// from: transform[0]`) --
+useful for tracing generated code back to the spec, at the cost of forcing
+every chain onto one step per line so the comments have somewhere to go.
 
 The returned string is a complete ES module: it declares `const chart = ...`
 and `export default chart`, so `import`-ing it (or `eval`-ing it in a

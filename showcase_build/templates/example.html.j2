@@ -20,7 +20,13 @@
   <a class="github-link" href="https://github.com/datamazelab/vl2x" target="_blank" rel="noopener">GitHub</a>
 </header>
 <main>
-  <div class="breadcrumb">{{ name }}.vl.json{% if category %} · category: {{ category }}{% endif %}</div>
+  <div class="breadcrumb">
+    {{ name }}.vl.json{% if category %} · category: {{ category }}{% endif %}
+    <label class="source-path-toggle">
+      <input type="checkbox" id="toggle-source-paths" checked>
+      show <code>from:</code> source-mapping comments
+    </label>
+  </div>
   <h1 class="example-title">{{ title }}</h1>
   {% if description %}<p class="example-desc">{{ description }}</p>{% endif %}
 
@@ -106,6 +112,35 @@
     hljs.highlightAll();
   } catch (e) {
     console.error('syntax highlighting failed (charts below are unaffected):', e);
+  }
+
+  // Each of the 4 translators can optionally annotate its generated code
+  // with a "# from: <json path>" / "// from: <json path>" comment above
+  // the statement(s) it produced (see each project's own `include_source_
+  // paths`/`includeSourcePaths` option) -- this showcase always builds
+  // with that turned on, so every code panel below carries them. Rather
+  // than a second, comment-stripped copy of every generated file, the
+  // toggle just hides/shows them client-side: a plain `#`/`//` line
+  // comment always highlight.js's own tokenizer isolates into its own
+  // `.hljs-comment` span (a line comment can't span multiple lines), so
+  // matching on that span's own text is a reliable, simple way to find
+  // exactly the "from:" ones -- and only those -- without touching the
+  // *other* comments a panel can carry (the provenance header, an
+  // "unsupported feature" fallback note), which stay visible regardless.
+  function setSourcePathCommentsVisible(visible) {
+    document.querySelectorAll('.code-wrap code.hljs .hljs-comment').forEach(function (el) {
+      var text = el.textContent.replace(/^\s+/, '');
+      if (text.indexOf('# from: ') === 0 || text.indexOf('// from: ') === 0) {
+        el.classList.toggle('source-path-comment-hidden', !visible);
+      }
+    });
+  }
+  var sourcePathToggle = document.getElementById('toggle-source-paths');
+  if (sourcePathToggle) {
+    setSourcePathCommentsVisible(sourcePathToggle.checked);
+    sourcePathToggle.addEventListener('change', function () {
+      setSourcePathCommentsVisible(sourcePathToggle.checked);
+    });
   }
 
   // Relative to *this page's own URL* (examples/<name>/index.html), not

@@ -27,18 +27,28 @@ STRUCTURAL_KEYS = {
 
 
 class Emitter:
-    def __init__(self) -> None:
+    def __init__(self, include_source_paths: bool = False) -> None:
         self.lines: list[str] = []
         self.dataset_vars: dict[str, str] = {}
         self._counts: dict[str, int] = {}
         self._data_var_cache: dict[int, str] = {}
+        self.include_source_paths = include_source_paths
 
     def new_var(self, hint: str) -> str:
         n = self._counts.get(hint, 0) + 1
         self._counts[hint] = n
         return hint if n == 1 else f"{hint}_{n}"
 
-    def add_stmt(self, line: str) -> None:
+    def add_stmt(self, line: str, path: str | None = None) -> None:
+        # `path` is a dotted/bracketed JSON path into the *original* spec
+        # (e.g. "encoding.x", "transform[1]") identifying which part of the
+        # input this one generated statement came from -- emitted as a
+        # comment directly above it (opt-in via `include_source_paths`, off
+        # by default) so a reader can tell at a glance which spec property
+        # produced which line, without diffing the spec against the output
+        # by hand.
+        if self.include_source_paths and path:
+            self.lines.append(f"# from: {path}")
         self.lines.append(line)
 
 
@@ -56,7 +66,7 @@ def _hoist_datasets(datasets: dict, emitter: Emitter) -> None:
         emitter.dataset_vars[name] = var
 
 
-def _render_data(data: object, emitter: Emitter, hint: str) -> str | None:
+def _render_data(data: object, emitter: Emitter, hint: str, path: str = "") -> str | None:
     """Render a Vega-Lite ``data`` value into a Python expression.
 
     Every dict-shaped data value is hoisted into its own variable rather than
@@ -79,7 +89,7 @@ def _render_data(data: object, emitter: Emitter, hint: str) -> str | None:
         else:
             rendered = format_value(data)
         var = emitter.new_var(hint)
-        emitter.add_stmt(f"{var} = {rendered}")
+        emitter.add_stmt(f"{var} = {rendered}", path=f"{path}data")
         emitter._data_var_cache[id(data)] = var
         return var
     return format_value(data)
@@ -101,33 +111,38 @@ def _merge_down(child: dict, wrapper: dict, merge_encoding: bool) -> dict:
     return child
 
 
-def _apply_common(varname: str, spec: dict, emitter: Emitter, consumed: set) -> None:
+def _apply_common(varname: str, spec: dict, emitter: Emitter, consumed: set, path: str = "") -> None:
     """Apply transform/params/resolve/projection/config, and route anything
     left over through a generic ``.properties(**leftover)`` call."""
     if "transform" in spec:
-        for t in spec["transform"]:
+        for i, t in enumerate(spec["transform"]):
+            t_path = f"{path}transform[{i}]"
             call = render_transform_call(t)
             if call is None:
                 emitter.add_stmt(
                     f"{varname}.transform = list({varname}.transform "
                     f"if {varname}.transform is not alt.Undefined else []) + "
-                    f"[{format_value(t)}]"
+                    f"[{format_value(t)}]",
+                    path=t_path,
                 )
             else:
-                emitter.add_stmt(f"{varname} = {varname}.{call}")
+                emitter.add_stmt(f"{varname} = {varname}.{call}", path=t_path)
         consumed.add("transform")
 
     param_vars = []
     if "params" in spec:
-        for p in spec["params"]:
+        for i, p in enumerate(spec["params"]):
             pv = emitter.new_var("param")
-            emitter.add_stmt(f"{pv} = {render_param(p)}")
+            emitter.add_stmt(f"{pv} = {render_param(p)}", path=f"{path}params[{i}]")
             param_vars.append(pv)
         consumed.add("params")
     if "selection" in spec:
         for name, definition in spec["selection"].items():
             pv = emitter.new_var("param")
-            emitter.add_stmt(f"{pv} = {render_legacy_selection(name, definition)}")
+            emitter.add_stmt(
+                f"{pv} = {render_legacy_selection(name, definition)}",
+                path=f"{path}selection.{name}",
+            )
             param_vars.append(pv)
         consumed.add("selection")
     if param_vars:
@@ -138,27 +153,36 @@ def _apply_common(varname: str, spec: dict, emitter: Emitter, consumed: set) -> 
         for kind in ("scale", "axis", "legend"):
             if kind in resolve:
                 emitter.add_stmt(
-                    f"{varname} = {varname}.resolve_{kind}({render_kwargs(resolve[kind])})"
+                    f"{varname} = {varname}.resolve_{kind}({render_kwargs(resolve[kind])})",
+                    path=f"{path}resolve.{kind}",
                 )
         consumed.add("resolve")
 
     if "projection" in spec:
-        emitter.add_stmt(f"{varname} = {varname}.project({render_kwargs(spec['projection'])})")
+        emitter.add_stmt(
+            f"{varname} = {varname}.project({render_kwargs(spec['projection'])})",
+            path=f"{path}projection",
+        )
         consumed.add("projection")
 
     if "config" in spec:
-        emitter.add_stmt(f"{varname} = {varname}.configure({render_kwargs(spec['config'])})")
+        emitter.add_stmt(
+            f"{varname} = {varname}.configure({render_kwargs(spec['config'])})", path=f"{path}config"
+        )
         consumed.add("config")
 
     leftover = {k: v for k, v in spec.items() if k not in consumed and k not in STRUCTURAL_KEYS}
     if leftover:
-        emitter.add_stmt(f"{varname} = {varname}.properties({render_kwargs(leftover)})")
+        leftover_path = ", ".join(f"{path}{k}" for k in leftover)
+        emitter.add_stmt(
+            f"{varname} = {varname}.properties({render_kwargs(leftover)})", path=leftover_path
+        )
 
 
-def _translate_unit(spec: dict, emitter: Emitter, hint: str) -> str:
+def _translate_unit(spec: dict, emitter: Emitter, hint: str, path: str = "") -> str:
     varname = emitter.new_var(hint)
     data_hint = "source" if hint == "chart" else f"{hint}_data"
-    data_expr = _render_data(spec.get("data"), emitter, data_hint)
+    data_expr = _render_data(spec.get("data"), emitter, data_hint, path)
     emitter.add_stmt(f"{varname} = alt.Chart({data_expr or ''})")
     consumed = {"data"}
 
@@ -170,51 +194,62 @@ def _translate_unit(spec: dict, emitter: Emitter, hint: str) -> str:
             mark = dict(mark)
             mtype = mark.pop("type")
             mkwargs = mark
-        emitter.add_stmt(f"{varname} = {varname}.mark_{mtype}({render_kwargs(mkwargs)})")
+        emitter.add_stmt(
+            f"{varname} = {varname}.mark_{mtype}({render_kwargs(mkwargs)})", path=f"{path}mark"
+        )
         consumed.add("mark")
 
     if "encoding" in spec:
         enc_kwargs = render_encoding_kwargs(spec["encoding"])
-        emitter.add_stmt(render_call_kv(f"{varname} = {varname}.encode", list(enc_kwargs.items())))
+        enc_path = ", ".join(f"{path}encoding.{k}" for k in enc_kwargs)
+        emitter.add_stmt(
+            render_call_kv(f"{varname} = {varname}.encode", list(enc_kwargs.items())), path=enc_path
+        )
         consumed.add("encoding")
 
-    _apply_common(varname, spec, emitter, consumed)
+    _apply_common(varname, spec, emitter, consumed, path)
     return varname
 
 
-def _translate_layer(spec: dict, emitter: Emitter, hint: str) -> str:
+def _translate_layer(spec: dict, emitter: Emitter, hint: str, path: str = "") -> str:
     wrapper = spec
     base_hint = "layer" if hint == "chart" else hint
     children_vars = [
-        translate_spec(_merge_down(child, wrapper, merge_encoding=True), emitter, f"{base_hint}{i}")
-        for i, child in enumerate(wrapper["layer"], start=1)
+        translate_spec(
+            _merge_down(child, wrapper, merge_encoding=True), emitter, f"{base_hint}{i + 1}",
+            path=f"{path}layer[{i}]."
+        )
+        for i, child in enumerate(wrapper["layer"])
     ]
     varname = emitter.new_var(hint)
-    emitter.add_stmt(f"{varname} = alt.layer({', '.join(children_vars)})")
+    emitter.add_stmt(f"{varname} = alt.layer({', '.join(children_vars)})", path=f"{path}layer")
     consumed = {"layer", "data", "transform", "encoding"}
-    _apply_common(varname, wrapper, emitter, consumed)
+    _apply_common(varname, wrapper, emitter, consumed, path)
     return varname
 
 
-def _translate_multi(spec: dict, emitter: Emitter, hint: str, key: str, func: str) -> str:
+def _translate_multi(spec: dict, emitter: Emitter, hint: str, key: str, func: str, path: str = "") -> str:
     wrapper = spec
     base_hint = key if hint == "chart" else hint
     children_vars = [
-        translate_spec(_merge_down(child, wrapper, merge_encoding=False), emitter, f"{base_hint}{i}")
-        for i, child in enumerate(wrapper[key], start=1)
+        translate_spec(
+            _merge_down(child, wrapper, merge_encoding=False), emitter, f"{base_hint}{i + 1}",
+            path=f"{path}{key}[{i}]."
+        )
+        for i, child in enumerate(wrapper[key])
     ]
     varname = emitter.new_var(hint)
-    emitter.add_stmt(f"{varname} = {func}({', '.join(children_vars)})")
+    emitter.add_stmt(f"{varname} = {func}({', '.join(children_vars)})", path=f"{path}{key}")
     consumed = {key, "data", "transform"}
-    _apply_common(varname, wrapper, emitter, consumed)
+    _apply_common(varname, wrapper, emitter, consumed, path)
     return varname
 
 
-def _translate_facet(spec: dict, emitter: Emitter, hint: str) -> str:
+def _translate_facet(spec: dict, emitter: Emitter, hint: str, path: str = "") -> str:
     wrapper = spec
     child_hint = "view" if hint == "chart" else f"{hint}_view"
     child = _merge_down(wrapper["spec"], wrapper, merge_encoding=False)
-    child_var = translate_spec(child, emitter, child_hint)
+    child_var = translate_spec(child, emitter, child_hint, path=f"{path}spec.")
 
     facet_val = wrapper["facet"]
     fkwargs: dict = {}
@@ -229,17 +264,19 @@ def _translate_facet(spec: dict, emitter: Emitter, hint: str) -> str:
         fkwargs["columns"] = wrapper["columns"]
 
     varname = emitter.new_var(hint)
-    emitter.add_stmt(f"{varname} = {child_var}.facet({render_kwargs(fkwargs)})")
+    emitter.add_stmt(
+        f"{varname} = {child_var}.facet({render_kwargs(fkwargs)})", path=f"{path}facet"
+    )
     consumed = {"facet", "spec", "data", "transform", "columns"}
-    _apply_common(varname, wrapper, emitter, consumed)
+    _apply_common(varname, wrapper, emitter, consumed, path)
     return varname
 
 
-def _translate_repeat(spec: dict, emitter: Emitter, hint: str) -> str:
+def _translate_repeat(spec: dict, emitter: Emitter, hint: str, path: str = "") -> str:
     wrapper = spec
     child_hint = "view" if hint == "chart" else f"{hint}_view"
     child = _merge_down(wrapper["spec"], wrapper, merge_encoding=False)
-    child_var = translate_spec(child, emitter, child_hint)
+    child_var = translate_spec(child, emitter, child_hint, path=f"{path}spec.")
 
     repeat_val = wrapper["repeat"]
     rkwargs: dict = {}
@@ -253,35 +290,50 @@ def _translate_repeat(spec: dict, emitter: Emitter, hint: str) -> str:
         rkwargs["columns"] = wrapper["columns"]
 
     varname = emitter.new_var(hint)
-    emitter.add_stmt(f"{varname} = {child_var}.repeat({render_kwargs(rkwargs)})")
+    emitter.add_stmt(
+        f"{varname} = {child_var}.repeat({render_kwargs(rkwargs)})", path=f"{path}repeat"
+    )
     consumed = {"repeat", "spec", "data", "transform", "columns"}
-    _apply_common(varname, wrapper, emitter, consumed)
+    _apply_common(varname, wrapper, emitter, consumed, path)
     return varname
 
 
-def translate_spec(spec: dict, emitter: Emitter, hint: str = "chart") -> str:
+def translate_spec(spec: dict, emitter: Emitter, hint: str = "chart", path: str = "") -> str:
     spec = dict(spec)
     spec.pop("$schema", None)
 
     if "layer" in spec:
-        return _translate_layer(spec, emitter, hint)
+        return _translate_layer(spec, emitter, hint, path)
     if "facet" in spec and "spec" in spec:
-        return _translate_facet(spec, emitter, hint)
+        return _translate_facet(spec, emitter, hint, path)
     if "repeat" in spec and "spec" in spec:
-        return _translate_repeat(spec, emitter, hint)
+        return _translate_repeat(spec, emitter, hint, path)
     if "hconcat" in spec:
-        return _translate_multi(spec, emitter, hint, "hconcat", "alt.hconcat")
+        return _translate_multi(spec, emitter, hint, "hconcat", "alt.hconcat", path)
     if "vconcat" in spec:
-        return _translate_multi(spec, emitter, hint, "vconcat", "alt.vconcat")
+        return _translate_multi(spec, emitter, hint, "vconcat", "alt.vconcat", path)
     if "concat" in spec:
-        return _translate_multi(spec, emitter, hint, "concat", "alt.concat")
-    return _translate_unit(spec, emitter, hint)
+        return _translate_multi(spec, emitter, hint, "concat", "alt.concat", path)
+    return _translate_unit(spec, emitter, hint, path)
 
 
-def spec_to_code(spec: dict, chart_var: str = "chart", format_with_black: bool = True) -> str:
+def spec_to_code(
+    spec: dict,
+    chart_var: str = "chart",
+    format_with_black: bool = True,
+    include_source_paths: bool = False,
+) -> str:
     """Translate a full Vega-Lite JSON spec (as a Python dict) into a
-    standalone Altair Python script (as a string)."""
-    emitter = Emitter()
+    standalone Altair Python script (as a string).
+
+    ``include_source_paths`` (default ``False``): when ``True``, each
+    generated statement is preceded by a ``# from: <json path>`` comment
+    naming the part of the *input* spec it was translated from (e.g.
+    ``# from: encoding.x``, ``# from: transform[0]``) -- useful for tracing
+    generated code back to the spec that produced it, at the cost of a much
+    noisier script.
+    """
+    emitter = Emitter(include_source_paths=include_source_paths)
     root = dict(spec)
     root.pop("$schema", None)
     datasets = root.pop("datasets", None)
@@ -296,7 +348,8 @@ def spec_to_code(spec: dict, chart_var: str = "chart", format_with_black: bool =
     # hand-editing this output and losing that round-trip.
     header_comment = (
         f"# Generated by vl2altair.vegalite_to_altair_code(spec, "
-        f"chart_var={chart_var!r}, format_with_black={format_with_black!r})"
+        f"chart_var={chart_var!r}, format_with_black={format_with_black!r}, "
+        f"include_source_paths={include_source_paths!r})"
     )
     lines = [header_comment, "import altair as alt", ""]
     lines.extend(emitter.lines)

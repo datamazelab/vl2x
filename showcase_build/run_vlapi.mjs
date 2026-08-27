@@ -21,7 +21,7 @@ for (let i = 0; i < files.length; i++) {
   mkdirSync(outDir, {recursive: true});
   try {
     const spec = JSON.parse(readFileSync(path.join(SPECS_DIR, files[i]), 'utf8'));
-    const code = vegaLiteToVegaLiteApiCode(spec);
+    const code = vegaLiteToVegaLiteApiCode(spec, {includeSourcePaths: true});
     writeFileSync(path.join(outDir, 'vlapi.js'), code);
     statuses[name] = {ok: true};
   } catch (e) {

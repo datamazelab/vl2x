@@ -53,7 +53,13 @@ from vl2altair import vegalite_to_altair_code
 code = vegalite_to_altair_code(spec)                     # spec: dict
 code = vegalite_to_altair_code(spec, chart_var="my_chart") # rename the output variable
 code = vegalite_to_altair_code(spec, format_with_black=False) # skip black
+code = vegalite_to_altair_code(spec, include_source_paths=True) # annotate each statement with its source
 ```
+
+`include_source_paths` (default `False`): precedes each generated statement
+with a `# from: <json path>` comment naming the part of the input spec it
+came from (e.g. `# from: encoding.x`, `# from: transform[0]`) — useful for
+tracing generated code back to the spec, at the cost of a noisier script.
 
 The returned string is a complete script: it ends with a bare `chart`
 expression, so `exec()`-ing it in a namespace binds `ns["chart"]` to a live

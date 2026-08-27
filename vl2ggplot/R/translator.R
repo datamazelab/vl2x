@@ -42,16 +42,30 @@ resolve_dataset_refs <- function(node, datasets) {
   node
 }
 
-new_emitter <- function() {
+new_emitter <- function(include_source_paths = FALSE) {
   e <- new.env()
   e$lines <- character(0)
   e$counts <- list()
+  e$include_source_paths <- include_source_paths
   e
 }
 
 emit <- function(emitter, ...) {
   lines <- c(...)
   emitter$lines <- c(emitter$lines, lines)
+}
+
+# `path` is a dotted/bracketed JSON path into the *original* spec (e.g.
+# "encoding.x", "transform[1]") identifying which part of the input the
+# statement(s) emitted right after this call came from -- emitted as a
+# comment (opt-in via the emitter's own `include_source_paths`, off by
+# default, set once via new_emitter()) so a reader can tell at a glance
+# which spec property produced which lines, without diffing the spec
+# against the output by hand.
+emit_from <- function(emitter, path) {
+  if (isTRUE(emitter$include_source_paths) && !is.null(path) && nzchar(path)) {
+    emit(emitter, sprintf("# from: %s", path))
+  }
 }
 
 new_var <- function(emitter, hint) {
@@ -483,7 +497,7 @@ desugar_compound_aggregate_encoding <- function(node) {
   node
 }
 
-prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL, facet_group_fields = character(0)) {
+prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherited_encoding = list(), ignore_unsupported = FALSE, inherited_offset_field = NULL, facet_group_fields = character(0), path = "") {
   node <- desugar_compound_aggregate_encoding(node)
   node_encoding <- node$encoding %||% list()
   geo_channel <- intersect(names(node_encoding), .geo_channels)
@@ -593,7 +607,10 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
       }
     }
 
-    if (!is.null(node$transform)) emit(emitter, render_transforms(node$transform, work_var, ignore_unsupported))
+    if (!is.null(node$transform)) {
+      if (length(node$transform) > 0) emit_from(emitter, paste0(path, "transform"))
+      emit(emitter, render_transforms(node$transform, work_var, ignore_unsupported))
+    }
 
     bracket_plan <- flatten_bracket_fields(encoding_effective, work_var)
     if (length(bracket_plan$statements)) emit(emitter, bracket_plan$statements)
@@ -706,7 +723,7 @@ dodge_extra_aes <- function(extra_aes, offset_field) {
   extra_aes
 }
 
-translate_spec <- function(spec, emitter, hint = "chart", ignore_unsupported = FALSE) {
+translate_spec <- function(spec, emitter, hint = "chart", ignore_unsupported = FALSE, path = "") {
   spec <- spec[names(spec) != "$schema"]
 
   if (!is.null(spec$concat) || !is.null(spec$hconcat) || !is.null(spec$vconcat)) {
@@ -719,9 +736,9 @@ translate_spec <- function(spec, emitter, hint = "chart", ignore_unsupported = F
     return(translate_repeat(spec, emitter, hint, ignore_unsupported))
   }
   if (!is.null(spec$layer)) {
-    return(translate_layer(spec, emitter, hint, ignore_unsupported))
+    return(translate_layer(spec, emitter, hint, ignore_unsupported, path))
   }
-  translate_unit(spec, emitter, hint, ignore_unsupported)
+  translate_unit(spec, emitter, hint, ignore_unsupported, path)
 }
 
 apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported = FALSE) {
@@ -800,7 +817,7 @@ apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_u
   }
 }
 
-translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
+translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE, path = "") {
   # An encoding-level row/column (or facet) channel's own timeUnit needs
   # the same derived-field treatment inject_facet_timeunit_transforms()
   # gives the top-level `facet` operator (translate_facet()) -- injected
@@ -813,7 +830,8 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   prepared <- prepare_unit(
     spec, emitter, hint,
     ignore_unsupported = ignore_unsupported,
-    facet_group_fields = facet_group_field_names(early_facet_def)
+    facet_group_fields = facet_group_field_names(early_facet_def),
+    path = path
   )
   if (is.null(prepared$data_var)) stop("A view must have a data source")
 
@@ -823,6 +841,13 @@ translate_unit <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, resolve_static_params(spec$params))
   geom <- render_geom_layer(resolved_mark, prepared$encoding, NULL, list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = TRUE, manual_dodge_stack = prepared$manual_dodge_stack, offset_field = prepared$offset_field, invalid_run_field = prepared$invalid_run_field), ignore_unsupported, prepared$data_var, prepared$extent_params)
   emit(emitter, geom$notes)
+  # The geom call's own aes() mapping reads every one of this view's own
+  # encoding channels at once (like vl2altair/vl2vlapi's own combined
+  # `.encode(...)`/`.encode(...)` call) -- one summary comment naming "mark"
+  # alongside every channel actually present, rather than one per channel.
+  mark_path <- paste0(path, "mark")
+  enc_paths <- vapply(names(prepared$original_encoding %||% list()), function(ch) paste0(path, "encoding.", ch), character(1))
+  emit_from(emitter, paste(c(mark_path, enc_paths), collapse = ", "))
   emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
   mark_type0 <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
   if (identical(mark_type0, "arc")) {
@@ -940,7 +965,7 @@ flatten_layers <- function(node, wrapper) {
   list(merged)
 }
 
-translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
+translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE, path = "") {
   base_hint <- if (identical(hint, "chart")) "layer" else hint
   plot_var <- new_var(emitter, hint)
 
@@ -1013,7 +1038,10 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
     if (length(coercion)) emit(emitter, coercion)
     quantitative_coercion <- render_quantitative_coercion(wrapper_data_var, collect_quantitative_fields(wrapper_encoding, spec$transform %||% list()))
     if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
-    if (!is.null(spec$transform)) emit(emitter, render_transforms(spec$transform, wrapper_data_var, ignore_unsupported))
+    if (!is.null(spec$transform)) {
+      if (length(spec$transform) > 0) emit_from(emitter, paste0(path, "transform"))
+      emit(emitter, render_transforms(spec$transform, wrapper_data_var, ignore_unsupported))
+    }
   }
   # An `extent` transform on the wrapper (not any individual layer child --
   # this project's own layer translation, unlike D3's mergeDown(), applies
@@ -1036,11 +1064,13 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
   layer_param_values <- resolve_static_params(spec$params)
   for (i in seq_along(layer_children)) {
     child <- layer_children[[i]]
+    child_path <- paste0(path, "layer[", i - 1, "].")
+    emit_from(emitter, paste0(path, "layer[", i - 1, "]"))
     prepared <- prepare_unit(
       child, emitter, sprintf("%s%d", base_hint, i),
       inherited_data_var = wrapper_data_var, inherited_encoding = wrapper_encoding,
       ignore_unsupported = ignore_unsupported, inherited_offset_field = wrapper_offset_field,
-      facet_group_fields = facet_group_field_names(facet_def)
+      facet_group_fields = facet_group_field_names(facet_def), path = child_path
     )
     data_arg <- prepared$data_var # NULL means "inherit the plot's data"
     resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, layer_param_values)
@@ -1052,6 +1082,9 @@ translate_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
       merge_named(wrapper_extent_params, prepared$extent_params)
     )
     emit(emitter, geom$notes)
+    mark_path <- paste0(child_path, "mark")
+    enc_paths <- vapply(names(prepared$original_encoding %||% list()), function(ch) paste0(child_path, "encoding.", ch), character(1))
+    emit_from(emitter, paste(c(mark_path, enc_paths), collapse = ", "))
     emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
 
     mark_type_i <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
@@ -1266,15 +1299,23 @@ translate_multi <- function(spec, emitter, hint, ignore_unsupported = FALSE) {
 #'   translator makes a best-effort sacrifice instead (dropping a feature,
 #'   substituting an approximation, or skipping one step) so the chart still
 #'   renders, at the cost of no longer faithfully representing the spec.
+#' @param include_source_paths When `TRUE` (default `FALSE`), each generated
+#'   statement (or block of statements) is preceded by a `# from: <json
+#'   path>` comment naming the part of the *input* spec it was translated
+#'   from (e.g. `# from: mark, encoding.x`, `# from: layer[0].transform`) --
+#'   useful for tracing generated code back to the spec that produced it, at
+#'   the cost of a noisier script. Paths are always relative to the *view*
+#'   being rendered (a unit or layer chart) -- nested inside a facet/repeat/
+#'   concat panel, they don't carry that outer composition's own prefix.
 #' @return A single string: a complete, standalone R script.
 #' @export
-vegalite_to_ggplot <- function(spec, chart_var = "chart", ignore_unsupported = FALSE) {
+vegalite_to_ggplot <- function(spec, chart_var = "chart", ignore_unsupported = FALSE, include_source_paths = FALSE) {
   if (!is.null(spec$datasets)) {
     spec <- resolve_dataset_refs(spec, spec$datasets)
     spec$datasets <- NULL
   }
 
-  emitter <- new_emitter()
+  emitter <- new_emitter(include_source_paths)
   final_var <- translate_spec(spec, emitter, chart_var, ignore_unsupported)
 
   body <- emitter$lines
@@ -1291,8 +1332,8 @@ vegalite_to_ggplot <- function(spec, chart_var = "chart", ignore_unsupported = F
   # shown here) after the source spec changes, rather than hand-editing this
   # output and losing that round-trip.
   provenance_comment <- sprintf(
-    "# Generated by vl2ggplot::vegalite_to_ggplot(spec, chart_var = %s, ignore_unsupported = %s)",
-    deparse(chart_var), if (ignore_unsupported) "TRUE" else "FALSE"
+    "# Generated by vl2ggplot::vegalite_to_ggplot(spec, chart_var = %s, ignore_unsupported = %s, include_source_paths = %s)",
+    deparse(chart_var), if (ignore_unsupported) "TRUE" else "FALSE", if (include_source_paths) "TRUE" else "FALSE"
   )
   header <- c(
     provenance_comment,

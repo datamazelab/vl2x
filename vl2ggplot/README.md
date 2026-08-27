@@ -83,7 +83,16 @@ spec <- jsonlite::fromJSON("chart.vl.json", simplifyVector = FALSE)
 code <- vegalite_to_ggplot(spec)                    # variable name defaults to "chart"
 code <- vegalite_to_ggplot(spec, chart_var = "plot") # rename the output variable
 code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE) # best-effort fallback (see below)
+code <- vegalite_to_ggplot(spec, include_source_paths = TRUE) # annotate each statement with its source
 ```
+
+`include_source_paths` (default `FALSE`): precedes each generated
+statement (or block of statements) with a `# from: <json path>` comment
+naming the part of the input spec it came from (e.g. `# from: mark,
+encoding.x`, `# from: layer[0].transform`) — useful for tracing generated
+code back to the spec, at the cost of a noisier script. Paths are relative
+to the view being rendered; nested inside a facet/repeat/concat panel,
+they don't carry that outer composition's own prefix.
 
 The returned string is a complete, standalone R script (not a live plot
 object) — `library(ggplot2)` at the top, then data-loading/`dplyr`

@@ -504,8 +504,24 @@ function flattenLayers(node, wrapper) {
 // Build the body (everything between the function signature and its
 // closing brace) of a single-view-or-layer chart function, as an array of
 // already-indented lines ending in `return svg.node();`.
-function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
+function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, includeSourcePaths = false) {
   const children = flattenLayers(root, {});
+  // A JSON-path prefix for each flattened child, relative to *this* unit/
+  // layer view (not the full spec root -- a facet/repeat panel or nested
+  // layer-of-layers composition further up the tree isn't reflected here,
+  // an accepted scoping limit given how deeply nested that plumbing already
+  // is). A single child (the common case -- no real `layer` composition at
+  // all) gets an empty prefix so its own comments read as "mark"/
+  // "transform[0]" rather than a redundant "layer[0].mark"; `childBoundary`
+  // (no trailing dot, undefined for the single-child case) labels the
+  // child's own block of statements as a whole, distinct from any one
+  // property inside it.
+  const isMultiChild = children.length > 1;
+  const childPrefix = isMultiChild ? children.map((_, i) => `layer[${i}].`) : [''];
+  const childBoundary = isMultiChild ? children.map((_, i) => `layer[${i}]`) : [undefined];
+  const bFrom = path => {
+    if (includeSourcePaths && path) b(`// from: ${path}`);
+  };
   const paramValues = resolveStaticParams(root.params);
 
   const lines = [];
@@ -568,6 +584,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
 
   // -- per-child data preparation --
   const prepared = children.map((child, i) => {
+    bFrom(childBoundary[i]);
     let encodingIn = unescapeEncodingFields(child.encoding || {});
     const geoChannel = GEO_CHANNELS.find(k => k in encodingIn);
     if (geoChannel) {
@@ -618,7 +635,10 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
     const temporalFields = collectTemporalFields(encodingIn, child.transform || []);
     renderTemporalCoercion(dataVar, temporalFields).forEach(b);
 
-    if (child.transform) renderTransforms(child.transform, dataVar, ignoreUnsupported).forEach(b);
+    if (child.transform) {
+      bFrom(child.transform.length ? `${childPrefix[i]}transform` : undefined);
+      renderTransforms(child.transform, dataVar, ignoreUnsupported).forEach(b);
+    }
 
     const {statements: bracketStmts, encoding: encodingAfterBracket} = flattenBracketFields(encodingIn, dataVar);
     bracketStmts.forEach(b);
@@ -654,7 +674,10 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
       encoding = applyStackingToEncoding(encoding, stackPlan);
     }
 
-    return {dataVar, encoding, originalEncoding: encodingIn, mark: child.mark, stackPlan, extentParams: collectExtentParams(child.transform)};
+    return {
+      dataVar, encoding, originalEncoding: encodingIn, mark: child.mark, stackPlan,
+      extentParams: collectExtentParams(child.transform), path: childPrefix[i],
+    };
   });
   lines.push('');
 
@@ -976,6 +999,16 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null) {
         : {...configDefaults, ...p.mark, ...resolveMarkPropExprs(p.mark, paramValues)};
     let markCode = renderMark(mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
     if (!/[;}]\s*$/.test(markCode)) markCode += ';';
+    if (includeSourcePaths) {
+      // The mark-drawing code below reads every one of this child's own
+      // encoding channels directly, inline (`x(d["field"])`, ...) -- there's
+      // no separate per-channel statement to attach a comment to the way
+      // vl2altair/vl2vlapi's own combined `.encode(...)` call has, so this
+      // lists the channels alongside "mark" itself as one summary comment
+      // for the whole block instead.
+      const encPaths = Object.keys(p.originalEncoding || {}).map(ch => `${p.path}encoding.${ch}`);
+      b(`// from: ${[`${p.path}mark`, ...encPaths].join(', ')}`);
+    }
     lines.push(markCode.replace(/^/gm, '  '));
     lines.push('');
   }
@@ -1157,9 +1190,9 @@ function stepPanelDimsCode(templateEncoding, sizeSpecSource, rowsVar) {
   return {statements, fragments};
 }
 
-function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, prefix = '') {
+function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, prefix = '', includeSourcePaths = false) {
   const {def: facetDef, direction} = facetInfo;
-  if (direction === 'grid') return buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix);
+  if (direction === 'grid') return buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix, includeSourcePaths);
   const lines = [];
 
   // The shared per-panel template: one real function, called once per
@@ -1233,10 +1266,12 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
 
   const templateName = `${fnName}_facetTemplate`;
   lines.push(
-    ...buildFunction(templateName, buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows'), '', [
-      '__facetRows',
-      ...sharedDomainChannels.map(ch => sharedDomainVars[ch]),
-    ])
+    ...buildFunction(
+      templateName,
+      buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows', includeSourcePaths),
+      '',
+      ['__facetRows', ...sharedDomainChannels.map(ch => sharedDomainVars[ch])]
+    )
   );
 
   const body = [];
@@ -1377,7 +1412,7 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
 // descending by the facet value itself -- a narrower feature than the
 // single-axis case above; no example in this project's own test suite
 // needs more.
-function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix = '') {
+function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix = '', includeSourcePaths = false) {
   const {row: rowDef, column: colDef} = facetDef;
   const lines = [];
 
@@ -1424,10 +1459,12 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
 
   const templateName = `${fnName}_facetTemplate`;
   lines.push(
-    ...buildFunction(templateName, buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows'), '', [
-      '__facetRows',
-      ...sharedDomainChannels.map(ch => sharedDomainVars[ch]),
-    ])
+    ...buildFunction(
+      templateName,
+      buildUnitOrLayerBody(templateSpec, ignoreUnsupported, '__facetRows', includeSourcePaths),
+      '',
+      ['__facetRows', ...sharedDomainChannels.map(ch => sharedDomainVars[ch])]
+    )
   );
 
   const body = [];
@@ -1540,7 +1577,7 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
 // child can itself be another composition, e.g. a repeat nested inside a
 // vconcat) a further grid of sub-panels. Returns the array of lines
 // defining (but not exporting) that function.
-function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
+function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '', includeSourcePaths = false) {
   const compositionKey = UNSUPPORTED_COMPOSITIONS.find(key => key in spec);
   // `repeat: {layer: [...]}` (as opposed to `repeat: {row/column: [...]}`,
   // or the flat-array form) repeats its one template spec as several
@@ -1563,7 +1600,7 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
       transform: spec.transform,
       layer: spec.repeat.layer.map(v => substituteRepeatPlaceholders(spec.spec, {layer: v})),
     };
-    return buildFunction(fnName, buildUnitOrLayerBody(layerSpec, ignoreUnsupported), prefix);
+    return buildFunction(fnName, buildUnitOrLayerBody(layerSpec, ignoreUnsupported, null, includeSourcePaths), prefix);
   }
   if (!compositionKey) {
     // A plain unit spec's `encoding.row`/`.column`/`.facet` is Vega-Lite's
@@ -1585,9 +1622,9 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
       delete templateSpec.data;
       delete templateSpec.transform;
       const facetRoot = {data: spec.data, transform: spec.transform, spec: templateSpec, resolve: spec.resolve};
-      return buildRuntimeFacetPanels(facetRoot, facetInfo, fnName, ignoreUnsupported, prefix);
+      return buildRuntimeFacetPanels(facetRoot, facetInfo, fnName, ignoreUnsupported, prefix, includeSourcePaths);
     }
-    return buildFunction(fnName, buildUnitOrLayerBody(spec, ignoreUnsupported), prefix);
+    return buildFunction(fnName, buildUnitOrLayerBody(spec, ignoreUnsupported, null, includeSourcePaths), prefix);
   }
 
   if (compositionKey === 'facet') {
@@ -1599,14 +1636,14 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
     // another composition) falls through to the generic per-composition
     // handling below instead of being misrendered as one.
     const templateIsPlain = !UNSUPPORTED_COMPOSITIONS.some(key => key in spec.spec);
-    if (facetInfo && templateIsPlain) return buildRuntimeFacetPanels(spec, facetInfo, fnName, ignoreUnsupported, prefix);
+    if (facetInfo && templateIsPlain) return buildRuntimeFacetPanels(spec, facetInfo, fnName, ignoreUnsupported, prefix, includeSourcePaths);
   }
 
   const {children, direction, note} = getCompositionChildren(spec, compositionKey);
   const lines = [];
   const childNames = children.map((_, i) => `${fnName}_p${i + 1}`);
   children.forEach((child, i) => {
-    lines.push(...buildPanelFunction(child, childNames[i], ignoreUnsupported));
+    lines.push(...buildPanelFunction(child, childNames[i], ignoreUnsupported, '', includeSourcePaths));
   });
 
   const flexStyle = direction === 'column' ? 'flex-direction: column;' : 'flex-direction: row;';
@@ -1678,8 +1715,19 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '') {
   return lines;
 }
 
+// `includeSourcePaths` (default `false`): when `true`, each generated
+// statement (or block of statements) is preceded by a `// from: <json
+// path>` comment naming the part of the *input* spec it was translated
+// from (e.g. `// from: mark, encoding.x, encoding.y`, `// from:
+// layer[0].transform`) -- useful for tracing generated code back to the
+// spec that produced it, at the cost of a noisier script. Paths are always
+// relative to the *view* being rendered (a unit or layer chart) -- nested
+// inside a facet/repeat/concat panel, they don't carry that outer
+// composition's own prefix, an accepted scoping limit given how much of
+// this file's own composition-building machinery that would otherwise
+// need threading through.
 export function specToCode(spec, options = {}) {
-  const {ignoreUnsupported = false} = options;
+  const {ignoreUnsupported = false, includeSourcePaths = false} = options;
   let root = {...spec};
   delete root.$schema;
   if (root.datasets) {
@@ -1703,7 +1751,7 @@ export function specToCode(spec, options = {}) {
     );
   }
 
-  const bodyLines = buildPanelFunction(root, 'chart', ignoreUnsupported, 'export default ');
+  const bodyLines = buildPanelFunction(root, 'chart', ignoreUnsupported, 'export default ', includeSourcePaths);
 
   // A shared-runtime helper (see runtime.js) is only referenced by name in
   // the generated body -- rather than thread a "which helpers were used"
@@ -1718,7 +1766,8 @@ export function specToCode(spec, options = {}) {
   // arguments shown here) after the source spec changes, rather than
   // hand-editing this output and losing that round-trip.
   const lines = [
-    `// Generated by vl2d3.vegaLiteToD3Code(spec, {ignoreUnsupported: ${ignoreUnsupported}})`,
+    `// Generated by vl2d3.vegaLiteToD3Code(spec, {ignoreUnsupported: ${ignoreUnsupported}, ` +
+      `includeSourcePaths: ${includeSourcePaths}})`,
     'import * as d3 from "d3";',
   ];
   if (neededRuntimeExports.length > 0) {
