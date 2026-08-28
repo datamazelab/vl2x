@@ -29,6 +29,7 @@ __pycache__
 # hand-written and stay tracked.
 /showcase/data/
 /showcase/renders/
+/showcase/renders_matplotlib/
 /showcase/thumbs/
 /showcase/thumbs_png/
 /showcase/examples/

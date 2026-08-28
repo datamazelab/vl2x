@@ -1,6 +1,6 @@
 # vl2x
 
-Four sibling code generators that translate [Vega-Lite](https://vega.github.io/vega-lite/)
+Five sibling code generators that translate [Vega-Lite](https://vega.github.io/vega-lite/)
 JSON specifications into runnable code for a target visualization API in
 another language/library. Each takes a parsed Vega-Lite spec and returns
 source code (not a live chart object) that, when run, reconstructs the
@@ -18,21 +18,26 @@ Note that these are attempts to directly transpile the vega-lite json. This may 
 | [`vl2vlapi/`](vl2vlapi) | [vega-lite-api](https://github.com/vega/vega-lite-api) | JavaScript |
 | [`vl2d3/`](vl2d3) | [D3](https://d3js.org/) | JavaScript |
 | [`vl2ggplot/`](vl2ggplot) | [ggplot2](https://ggplot2.tidyverse.org/) | R |
+| [`vl2matplotlib/`](vl2matplotlib) | [matplotlib](https://matplotlib.org/) | Python |
 
 `vl2altair` and `vl2vlapi` both target a library that already understands
 Vega-Lite's grammar (both compile down to a real Vega-Lite spec), so those
 two translations are largely mechanical and validate against ~99% of the
-same real-world corpus (below). `vl2d3` targets a lower-level toolkit with
-no grammar-of-graphics layer of its own, so it has to implement scale
-inference, mark drawing, and data aggregation itself — its scope is
-deliberately narrower, and its own `docs/ARCHITECTURE.md` explains why and
-what that boundary looks like in practice. `vl2ggplot` targets a *second,
-independent* grammar-of-graphics implementation (ggplot2) — close enough to
-Vega-Lite's own model that marks/aes/scales/facets map over directly, but
-different enough (its own aggregation stats, no built-in error-extent
-concept, R's atomic-vector-vs-list distinction) that it's real translation
-work rather than a calling-convention mapping; its coverage sits between its
-mechanical siblings and `vl2d3`.
+same real-world corpus (below). `vl2d3` and `vl2matplotlib` both target a
+lower-level toolkit with no grammar-of-graphics layer of its own, so each
+has to implement scale inference, mark drawing, and data aggregation
+itself — their scope is deliberately narrower, and each project's own
+`docs/ARCHITECTURE.md` explains why and what that boundary looks like in
+practice (pandas gives `vl2matplotlib` dplyr-grade aggregation for free,
+though, so its data-pipeline scope is broader than `vl2d3`'s own original
+launch scope even though the mark/scale/composition half stays just as
+hand-built). `vl2ggplot` targets a *second, independent*
+grammar-of-graphics implementation (ggplot2) — close enough to Vega-Lite's
+own model that marks/aes/scales/facets map over directly, but different
+enough (its own aggregation stats, no built-in error-extent concept, R's
+atomic-vector-vs-list distinction) that it's real translation work rather
+than a calling-convention mapping; its coverage sits between its mechanical
+siblings and `vl2d3`/`vl2matplotlib`.
 
 Each has its own README with install/usage instructions and a `docs/ARCHITECTURE.md`
 with design notes:
@@ -45,26 +50,30 @@ with design notes:
   (self-contained: its own `src/`, `test/`, `docs/`, `package.json`)
 - **[`vl2ggplot/README.md`](vl2ggplot/README.md)** · **[`vl2ggplot/docs/ARCHITECTURE.md`](vl2ggplot/docs/ARCHITECTURE.md)**
   (self-contained: its own `R/`, `tests/`, `docs/`, `DESCRIPTION`/`NAMESPACE`)
+- **[`vl2matplotlib/README.md`](vl2matplotlib/README.md)** · **[`vl2matplotlib/docs/ARCHITECTURE.md`](vl2matplotlib/docs/ARCHITECTURE.md)**
+  (self-contained: its own Python modules, `tests/`, `docs/`, no packaging
+  step — imported via `sys.path`/`PYTHONPATH` like `vl2altair`)
 
-All four were validated during development against the same 600+
+All five were validated during development against the same 600+
 real-world example specs bundled with the
 [vega-lite](https://github.com/vega/vega-lite) repo (`examples/specs/`) —
 see each project's `docs/ARCHITECTURE.md` for the validation methodology and
 current pass rate. `vl2altair`/`vl2vlapi` report a single pass rate;
-`vl2d3`/`vl2ggplot` report OK/documented-skip/failed separately, since a
-large fraction of the corpus legitimately uses features outside their scope
-(a deliberately narrow v1 for `vl2d3`; genuine gaps in ggplot2's own grammar
-relative to Vega-Lite's for `vl2ggplot`).
+`vl2d3`/`vl2ggplot`/`vl2matplotlib` report OK/documented-skip/failed
+separately, since a large fraction of the corpus legitimately uses features
+outside their scope (a deliberately narrow v1 for `vl2d3`/`vl2matplotlib`;
+genuine gaps in ggplot2's own grammar relative to Vega-Lite's for
+`vl2ggplot`).
 
 ## Showcase
 
 [`showcase/`](showcase) is a generated static site with one page per example
 spec in [`vega-lite-example-specs/`](vega-lite-example-specs) (all 633),
-showing the original chart next to the code and rendering each of the four
+showing the original chart next to the code and rendering each of the five
 translators produces — live for Altair/vega-lite-api/D3, a pre-rendered PNG
-for ggplot2. It's generated, not hand-written — nothing under `showcase/`
-should be hand-edited except `showcase/assets/` (plain static CSS/JS, never
-touched by the build).
+for ggplot2/matplotlib (neither can run in a browser). It's generated, not
+hand-written — nothing under `showcase/` should be hand-edited except
+`showcase/assets/` (plain static CSS/JS, never touched by the build).
 
 ### Building the showcase
 
@@ -78,11 +87,13 @@ python3 showcase_build/run_altair.py       # -> showcase/examples/<name>/altair.
 node showcase_build/run_vlapi.mjs          # -> showcase/examples/<name>/vlapi.js  + status_vlapi.json
 node showcase_build/run_d3.mjs             # -> showcase/examples/<name>/d3.js    + status_d3.json
 Rscript showcase_build/render_ggplot.R     # -> showcase/examples/<name>/ggplot.R + showcase/renders/<name>.png + status_ggplot.json
+python3 showcase_build/run_matplotlib.py   # -> showcase/examples/<name>/matplotlib.py + showcase/renders_matplotlib/<name>.png + status_matplotlib.json
 python3 showcase_build/build_site.py       # -> showcase/index.html + showcase/examples/<name>/index.html (reads all of the above + showcase/thumbs_png/)
 ```
 
-Requires: Python 3 with `jinja2` installed; Node; R with `vl2ggplot`
-installed (`R CMD INSTALL vl2ggplot`) plus `ggplot2`/`dplyr`/`patchwork`.
+Requires: Python 3 with `jinja2`/`pandas`/`numpy`/`matplotlib` installed;
+Node; R with `vl2ggplot` installed (`R CMD INSTALL vl2ggplot`) plus
+`ggplot2`/`dplyr`/`patchwork`.
 `showcase/data/` (a copy of [vega-datasets](https://github.com/vega/vega-datasets))
 and `showcase/thumbs_png/` (a copy of
 [`vega-lite-example-compiled/`](vega-lite-example-compiled)'s official

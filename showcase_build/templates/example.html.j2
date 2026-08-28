@@ -96,6 +96,22 @@
       </div>
     </div>
 
+    <div class="panel">
+      <div class="panel-head"><span class="title">matplotlib {{ "✅" if (matplotlib.ok and matplotlib.has_png) else "❌" }}</span><span class="lang">Python</span></div>
+      <div class="panel-body">
+        {% if matplotlib.ok and matplotlib.has_png %}
+        <div class="code-wrap"><pre><code class="language-python">{{ matplotlib.code }}</code></pre></div>
+        <div class="render-wrap"><img src="../../renders_matplotlib/{{ name }}.png" alt="matplotlib render of {{ title }}"></div>
+        <div class="render-note">Static PNG rendered ahead of time (matplotlib can't run in a browser either). Built with <code>ignore_unsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
+        {% elif matplotlib.ok %}
+        <div class="code-wrap"><pre><code class="language-python">{{ matplotlib.code }}</code></pre></div>
+        <div class="error-box">Translated, but executing the generated Python failed.</div>
+        {% else %}
+        <div class="error-box">{{ matplotlib.error }}</div>
+        {% endif %}
+      </div>
+    </div>
+
   </div>
 
   <div class="nav-arrows">
@@ -103,7 +119,7 @@
     {% if next_name %}<a href="../{{ next_name }}/index.html">{{ next_name }} →</a>{% else %}<span></span>{% endif %}
   </div>
 </main>
-<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2ggplot — Vega-Lite translation showcase</footer>
+<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2ggplot · vl2matplotlib — Vega-Lite translation showcase</footer>
 
 <script>
   const spec = {{ spec_json | safe }};

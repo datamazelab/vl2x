@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Vega-Lite → Altair / vega-lite-api / D3 / ggplot2 — showcase</title>
+<title>Vega-Lite → Altair / vega-lite-api / D3 / ggplot2 / matplotlib — showcase</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <header class="site-header">
   <a href="https://vega.github.io/vega-lite/" target="_blank" rel="noopener">Vega-Lite</a>
   <h1>Translation Showcase</h1>
-  <span class="sub">{{ total_count }} example specs · 4 target systems each</span>
+  <span class="sub">{{ total_count }} example specs · 5 target systems each</span>
   <a class="github-link" href="https://github.com/datamazelab/vl2x" target="_blank" rel="noopener">GitHub</a>
 </header>
 <main>
@@ -19,10 +19,11 @@
     <a href="https://vega.github.io/vega-lite/examples/" target="_blank" rel="noopener">Vega-Lite example gallery</a>
     ({{ gallery_count }} of these examples come straight from it, grouped the
     same way; the rest are additional test-corpus specs grouped below that).
-    Every spec is translated by four sibling code generators —
+    Every spec is translated by five sibling code generators —
     <strong>vl2altair</strong> (Python/Altair), <strong>vl2vlapi</strong>
-    (JavaScript/vega-lite-api), <strong>vl2d3</strong> (JavaScript/D3), and
-    <strong>vl2ggplot</strong> (R/ggplot2). Click a thumbnail to see the
+    (JavaScript/vega-lite-api), <strong>vl2d3</strong> (JavaScript/D3),
+    <strong>vl2ggplot</strong> (R/ggplot2), and <strong>vl2matplotlib</strong>
+    (Python/matplotlib). Click a thumbnail to see the
     generated code and rendered chart side by side for each.
     </p>
 <p class="intro">
@@ -38,9 +39,9 @@ The system automatically tries to determine if transpiling worked. However, in s
     <input type="search" id="search" placeholder="Search by name or description…">
     <select id="support-filter">
       <option value="all">All support levels</option>
-      <option value="all-ok">All 4 systems succeed</option>
+      <option value="all-ok">All 5 systems succeed</option>
       <option value="any-fail">At least 1 system fails/unsupported</option>
-      <option value="none-ok">All 4 systems fail/unsupported</option>
+      <option value="none-ok">All 5 systems fail/unsupported</option>
     </select>
   </div>
   <div class="stat-summary" id="stat-summary"></div>
@@ -62,7 +63,7 @@ The system automatically tries to determine if transpiling worked. However, in s
           {% for ex in sub.cards %}
           <a class="imagegroup" href="examples/{{ ex.name }}/index.html"
              data-name="{{ ex.name }}" data-desc="{{ ex.description }}"
-             data-status="{{ ex.altair_ok and 'ok' or 'fail' }},{{ ex.vlapi_ok and 'ok' or 'fail' }},{{ ex.d3_ok and 'ok' or 'fail' }},{{ ex.ggplot_ok and 'ok' or 'fail' }}">
+             data-status="{{ ex.altair_ok and 'ok' or 'fail' }},{{ ex.vlapi_ok and 'ok' or 'fail' }},{{ ex.d3_ok and 'ok' or 'fail' }},{{ ex.ggplot_ok and 'ok' or 'fail' }},{{ ex.matplotlib_ok and 'ok' or 'fail' }}">
             {% if ex.has_thumb %}
             <span class="thumb" style="background-image: url('thumbs_png/{{ ex.name }}.png')"></span>
             {% else %}
@@ -74,6 +75,7 @@ The system automatically tries to determine if transpiling worked. However, in s
               <span class="badge {{ ex.vlapi_ok and 'ok' or 'fail' }}">vlapi</span>
               <span class="badge {{ ex.d3_ok and 'ok' or 'fail' }}">D3</span>
               <span class="badge {{ ex.ggplot_ok and 'ok' or 'fail' }}">ggplot2</span>
+              <span class="badge {{ ex.matplotlib_ok and 'ok' or 'fail' }}">matplotlib</span>
             </span>
           </a>
           {% endfor %}
@@ -84,7 +86,7 @@ The system automatically tries to determine if transpiling worked. However, in s
     {% endfor %}
   </div>
 </main>
-<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2ggplot — Vega-Lite translation showcase</footer>
+<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2ggplot · vl2matplotlib — Vega-Lite translation showcase</footer>
 <script src="assets/site.js"></script>
 </body>
 </html>

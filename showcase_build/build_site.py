@@ -22,6 +22,7 @@ SPECS_DIR = REPO / "vega-lite-example-specs"
 SHOWCASE = REPO / "showcase"
 EXAMPLES_DIR = SHOWCASE / "examples"
 RENDERS_DIR = SHOWCASE / "renders"
+RENDERS_MATPLOTLIB_DIR = SHOWCASE / "renders_matplotlib"
 THUMBS_DIR = SHOWCASE / "thumbs_png"
 
 env = Environment(
@@ -53,6 +54,7 @@ def main():
     status_vlapi = load_status("status_vlapi.json")
     status_d3 = load_status("status_d3.json")
     status_ggplot = load_status("status_ggplot.json")
+    status_matplotlib = load_status("status_matplotlib.json")
 
     gallery_sections, gallery_titles = load_gallery_sections()
     gallery_names = set(gallery_titles.keys())
@@ -85,7 +87,9 @@ def main():
         vlapi_status = status_vlapi.get(name, {"ok": False, "error": "not run"})
         d3_status = status_d3.get(name, {"ok": False, "error": "not run"})
         ggplot_status = status_ggplot.get(name, {"ok": False, "error": "not run"})
+        matplotlib_status = status_matplotlib.get(name, {"ok": False, "error": "not run"})
         has_png = (RENDERS_DIR / f"{name}.png").exists()
+        has_matplotlib_png = (RENDERS_MATPLOTLIB_DIR / f"{name}.png").exists()
         has_thumb = (THUMBS_DIR / f"{name}.png").exists()
 
         ctx = dict(
@@ -112,6 +116,8 @@ def main():
                 "cachebust": hashlib.md5(read_code(example_dir, "d3.js").encode()).hexdigest()[:10]},
             ggplot={"ok": ggplot_status.get("ok", False), "error": ggplot_status.get("error", ""),
                     "code": read_code(example_dir, "ggplot.R"), "has_png": has_png},
+            matplotlib={"ok": matplotlib_status.get("ok", False), "error": matplotlib_status.get("error", ""),
+                        "code": read_code(example_dir, "matplotlib.py"), "has_png": has_matplotlib_png},
             prev_name=names[i - 1] if i > 0 else None,
             next_name=names[i + 1] if i < len(names) - 1 else None,
         )
@@ -131,6 +137,7 @@ def main():
             has_thumb=ex["has_thumb"],
             altair_ok=ex["altair"]["ok"], vlapi_ok=ex["vlapi"]["ok"], d3_ok=ex["d3"]["ok"],
             ggplot_ok=ex["ggplot"]["ok"] and ex["ggplot"]["has_png"],
+            matplotlib_ok=ex["matplotlib"]["ok"] and ex["matplotlib"]["has_png"],
         )
 
     # Mirror the official gallery's section > subsection > item structure for
@@ -171,8 +178,8 @@ def main():
     ))
 
     print(f"Built {len(examples)} example pages + index.html")
-    for sysname, key in [("altair", "altair"), ("vlapi", "vlapi"), ("d3", "d3"), ("ggplot2", "ggplot")]:
-        ok = sum(1 for ex in examples if (ex[key]["ok"] and (key != "ggplot" or ex[key]["has_png"])))
+    for sysname, key in [("altair", "altair"), ("vlapi", "vlapi"), ("d3", "d3"), ("ggplot2", "ggplot"), ("matplotlib", "matplotlib")]:
+        ok = sum(1 for ex in examples if (ex[key]["ok"] and (key not in ("ggplot", "matplotlib") or ex[key]["has_png"])))
         print(f"  {sysname}: {ok}/{len(examples)} ok")
 
 
