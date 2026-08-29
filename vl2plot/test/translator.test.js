@@ -553,3 +553,36 @@ test('top-level window transform computes a real rolling mean', async () => {
   // leaving the raw un-smoothed data instead).
   assert.equal((d.match(/L/g) || []).length, 9);
 });
+
+test('a top-level argmax aggregate transform + bracket-indexed field renders a correctly-selected bar', async () => {
+  const {document} = await renderSpec({
+    data: {values: [
+      {genre: 'Comedy', gross: 100, budget: 10}, {genre: 'Comedy', gross: 300, budget: 40},
+      {genre: 'Drama', gross: 50, budget: 5}, {genre: 'Drama', gross: 20, budget: 2},
+    ]},
+    transform: [{aggregate: [{op: 'argmax', field: 'gross', as: 'winner'}], groupby: ['genre']}],
+    mark: 'bar',
+    encoding: {x: {field: "winner['budget']", type: 'quantitative'}, y: {field: 'genre', type: 'nominal'}},
+  });
+  const rects = [...marksOf(document, 'rect')].sort((a, b) => Number(a.getAttribute('y')) - Number(b.getAttribute('y')));
+  const widths = rects.map(r => Math.round(Number(r.getAttribute('width'))));
+  // Comedy's own argmax-by-gross row has budget=40, Drama's has budget=5
+  // -- an 8:1 ratio; the un-fixed bug either threw (strict) or (best-
+  // effort) silently fell back to the *mean* of gross, an unrelated
+  // number, feeding a field name Plot has no way to resolve at all.
+  assert.ok(Math.abs(widths[0] / widths[1] - 8) < 0.1, `expected an ~8:1 ratio, got ${widths[0]}:${widths[1]}`);
+});
+
+test('an inline aggregate: {argmax: field} channel shorthand renders a correctly-selected bar', async () => {
+  const {document} = await renderSpec({
+    data: {values: [
+      {genre: 'Comedy', gross: 100, budget: 10}, {genre: 'Comedy', gross: 300, budget: 40},
+      {genre: 'Drama', gross: 50, budget: 5}, {genre: 'Drama', gross: 20, budget: 2},
+    ]},
+    mark: 'bar',
+    encoding: {x: {aggregate: {argmax: 'gross'}, field: 'budget', type: 'quantitative'}, y: {field: 'genre', type: 'nominal'}},
+  });
+  const rects = [...marksOf(document, 'rect')].sort((a, b) => Number(a.getAttribute('y')) - Number(b.getAttribute('y')));
+  const widths = rects.map(r => Math.round(Number(r.getAttribute('width'))));
+  assert.ok(Math.abs(widths[0] / widths[1] - 8) < 0.1, `expected an ~8:1 ratio, got ${widths[0]}:${widths[1]}`);
+});

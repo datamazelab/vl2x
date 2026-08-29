@@ -289,6 +289,35 @@ export function vlWindow(data, {window, groupby = [], sort = [], frame = null}) 
   return out;
 }
 
+// Vega-Lite's inline `aggregate: {"argmax": field}`/`{"argmin": field}`
+// encoding-channel shorthand: within each `groupby` partition, keeps only
+// the one row where `compareField` is greatest (`mode: "max"`) or least
+// (`mode: "min"`) -- every other aggregate-bearing channel on the same
+// mark then reads one of that winning row's own (already real) fields
+// directly (see `translator.js`'s own `planArgAggregate()`/
+// `stripResolvedAggregates()`, which strip the `aggregate` property back
+// off once this has run, since a single-row group's own aggregate of
+// anything is just that row's own value).
+export function vlArgAggregate(data, {compareField, mode, groupby = []}) {
+  const keyOf = groupby.length ? d => JSON.stringify(groupby.map(g => d[g])) : () => '';
+  const groups = new Map();
+  for (const d of data) {
+    const k = keyOf(d);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(d);
+  }
+  const better = mode === 'min' ? (a, b) => a < b : (a, b) => a > b;
+  const out = [];
+  for (const rows of groups.values()) {
+    let best = rows[0];
+    for (const r of rows) {
+      if (better(r[compareField], best[compareField])) best = r;
+    }
+    out.push(best);
+  }
+  return out;
+}
+
 export function vlStack(data, {field, groupby = [], sort = [], offset = 'zero', as}) {
   const [v1Field, v2Field] = Array.isArray(as) ? as : [as, `${as}2`];
   const keyOf = d => JSON.stringify(groupby.map(g => d[g]));

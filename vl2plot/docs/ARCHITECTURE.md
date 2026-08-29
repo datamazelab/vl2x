@@ -501,6 +501,71 @@ batch of real bugs and gaps, all fixed:
   overlaid on raw daily values) that previously rendered only the raw-
   value points, with the rolling-mean line silently absent (referencing a
   field the skipped transform never computed).
+## `argmin`/`argmax`: a row lookup, not a value reducer
+
+A user report that one spec (`bar_argmax_transform`) "doesn't work" led to
+finding the same underlying gap in two genuinely different places once
+checked against the rest of the corpus:
+
+- **The top-level `transform: [{"aggregate": [{"op": "argmax", ...}]}]`
+  form.** Unlike every other aggregate op (which reduces a group of rows to
+  a single *value*), `argmax`/`argmin` reduce to the whole matching *row* --
+  neither `aggops.js`'s `D3_OPS` table nor `plotReducer()` had an entry for
+  either, so under `ignoreUnsupported` this silently fell back to a `mean`
+  of the compared field instead (a real, different number, not an error) —
+  and the encoding channel referencing the result doesn't even read a
+  plain field to begin with: Vega-Lite's own convention for reading one of
+  the winning row's *other* fields is bracket-index syntax on the
+  aggregate's own output name, e.g. `argmax_US_Gross['Production
+  Budget']` — a string no accessor in this project could resolve as
+  anything but `undefined` regardless of what the aggregate itself
+  produced. Fixed with two pieces, both adapted from `vl2d3`'s own proven
+  solution to the identical problem: `D3_OPS.argmax`/`argmin` (a real
+  `rows.reduce(...)` row lookup, not a value reduction) in `aggops.js`,
+  and a generic `parseBracketFieldPath()`/`flattenBracketFields()` pass in
+  `translator.js` that flattens any bracket-indexed encoding field into a
+  real plain field (a `.map()` statement over the data) before any mark/
+  scale code ever sees the channel. Scoped to bracket-index segments only
+  (`['key']`/`[0]`) — a bare dot-path (`record.low`) is already handled by
+  `data.js`'s own `vlFlattenOneLevel()` at data-load time instead, so
+  parsing it here too would only be redundant.
+- **The *inline* `aggregate: {"argmax": sortField}` channel shorthand.**
+  A completely different, simpler shape found by checking every other
+  corpus spec using `argmax`/`argmin` at all (5 more, none of them using
+  the transform-array form above) — here the channel's own sibling
+  `field` property names which of the winning row's *existing* columns to
+  read directly, no bracket-index string or new field name involved at
+  all. Still unsupported by the same root gap: Plot's own `groupX`/`binX`
+  transforms have no "pick one whole row per group" reducer concept
+  either. Resolved by pre-materializing a real one-row-per-group array in
+  plain JS (`vlArgAggregate()`, `runtime.js`) *before* the mark ever runs,
+  rather than attempting to express it as a Plot transform at all —
+  mirroring the bracket-field fix's own "flatten before any mark/scale
+  code sees it" approach. One real corpus spec
+  (`layer_line_co2_concentration.vl.json`) combines this with a plain
+  string aggregate (`"aggregate": "max"`) on the *same* comparison field
+  in the *same* mark (labeling both endpoints of each decade's own curve)
+  — once the data is reduced to one row per group, every aggregate-
+  bearing channel on that mark already holds exactly its own reduced
+  value (an aggregate over a single-row group always equals that row's
+  own value), so `stripResolvedAggregates()` simplifies all of them to a
+  plain field read together, not just the `argmax`/`argmin` ones. This
+  assumes every aggregated channel on the mark shares the same underlying
+  reduction — true for every real corpus spec found, not a general
+  solution for an unrelated aggregate op mixed in on some other field.
+- **A `tooltip` array (multiple fields shown together in one tooltip) only
+  ever read its own first element.** Found while checking
+  `argmin_spaces.vl.json` (an `argmin` result referenced only inside a
+  3-field `tooltip` array) — this project's own tooltip handling has never
+  supported Vega-Lite's multi-field `tooltip: [...]` form at all, a
+  distinct, pre-existing gap unrelated to `argmin`/`argmax` specifically
+  (Plot's own single `title` channel takes one string per row, and no
+  multi-field composition into one tooltip string has been implemented
+  yet). Left as a known limitation rather than expanded into its own fix
+  here — the chart's own core visual encoding (in that spec, three points
+  positioned by `aggregate: "min"`) renders correctly regardless, since a
+  tooltip is supplementary hover text, not a positional/color channel.
+
 ## Validation methodology
 
 Like `vl2d3`, `vl2plot` targets a lower-level toolkit than `vl2altair`/
@@ -514,8 +579,8 @@ ways rather than a plain pass/fail:
   Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing (`test/validate-examples.js`, strict mode): **495/633
-OK, 138/633 skipped, 0/633 failed**.
+At the time of writing (`test/validate-examples.js`, strict mode): **498/633
+OK, 135/633 skipped, 0/633 failed**.
 
 A second, stricter harness (`test/validate-rendering.js`) runs the same
 corpus the way the showcase actually does — `{ignoreUnsupported: true}` —

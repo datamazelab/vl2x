@@ -158,10 +158,84 @@ function flattenBracketFields(encoding, dataVar) {
   return {statements, encoding: rewritten};
 }
 
+// Vega-Lite's own *inline* `aggregate: {"argmax": sortField}` / `{"argmin":
+// sortField}` channel shorthand -- distinct from (and much simpler than)
+// the bracket-index form above: rather than storing the whole winning row
+// under a new field, this shorthand's own sibling `field` property names
+// which of that winning row's *existing* columns to read directly, so no
+// rewriting of any field name is needed at all, only a real reduction of
+// the data itself. Plot's own group/bin transforms have no "pick one
+// whole row per group" reducer concept, so (mirroring `flattenBracketFields`
+// above) this is pre-materialized as a real one-row-per-group array in
+// plain JS via `vlArgAggregate()` (`runtime.js`) rather than attempted as
+// a Plot transform. Every real corpus spec using this shorthand only ever
+// compares by one shared field per mark (confirmed by inspection) even
+// across several output channels (e.g. both `y` and `text` reading two
+// different fields off the *same* argmin-selected row) -- detecting one
+// such channel is enough to resolve the whole mark's own plan; a second,
+// differently-compared one on the same mark isn't attempted (only the
+// first found is honored).
+function planArgAggregate(encoding) {
+  let compareField = null;
+  let mode = null;
+  for (const ch of Object.keys(encoding)) {
+    const agg = encoding[ch] && typeof encoding[ch] === 'object' ? encoding[ch].aggregate : null;
+    if (agg && typeof agg === 'object') {
+      if (typeof agg.argmax === 'string') {
+        compareField = agg.argmax;
+        mode = 'max';
+        break;
+      }
+      if (typeof agg.argmin === 'string') {
+        compareField = agg.argmin;
+        mode = 'min';
+        break;
+      }
+    }
+  }
+  if (!compareField) return null;
+  // Every other plain-field channel (no aggregate of its own) is an
+  // implicit groupby key, the same "every non-aggregate fielded channel"
+  // rule this project's own `prepare.js` already applies for a plain
+  // inline aggregate.
+  const groupby = [];
+  for (const ch of Object.keys(encoding)) {
+    const def = encoding[ch];
+    if (def && typeof def === 'object' && typeof def.field === 'string' && def.aggregate == null) {
+      groupby.push(def.field);
+    }
+  }
+  return {compareField, mode, groupby};
+}
+
+// Once the mark's own data has been reduced to one winning row per group,
+// every aggregate-bearing channel on it (the argmax/argmin-shorthand ones,
+// *and* a plain string aggregate like `"min"`/`"max"` sharing the same
+// comparison field, e.g. `layer_line_co2_concentration.vl.json`'s own `x:
+// {"aggregate": "max", "field": "scaled_date"}` alongside `y`'s own
+// `argmax` on that identical field) already holds exactly the reduced
+// value it asked for -- an aggregate over a single-row group always
+// equals that row's own value, so every one of them is simplified to a
+// plain field read. This assumes every aggregated channel on the mark
+// shares the *same* underlying reduction (true for every real corpus spec
+// found); a different, unrelated aggregate op on some other field
+// wouldn't be resolved correctly by this and isn't attempted.
+function stripResolvedAggregates(encoding) {
+  const rewritten = {...encoding};
+  for (const ch of Object.keys(encoding)) {
+    const def = encoding[ch];
+    if (def && typeof def === 'object' && def.aggregate != null) {
+      const {aggregate, ...rest} = def;
+      rewritten[ch] = rest;
+    }
+  }
+  return rewritten;
+}
+
 // Translates one unit view (a real `mark`, not a further composition):
 // returns `{statements, dataVar, markExpr, scaleOptions}`.
 function translateUnit(node, ctx, path) {
-  const dataVar = newVar(`${ctx.hint}Data`);
+  let dataVar = newVar(`${ctx.hint}Data`);
   const statements = [];
   const {statements: loadStmts} = renderDataLoad(node.data, dataVar, ctx.ignoreUnsupported);
   statements.push(...sourceComment(`${path}data`, ctx.includeSourcePaths), ...loadStmts);
@@ -176,8 +250,21 @@ function translateUnit(node, ctx, path) {
     }
   }
 
-  const {statements: bracketStmts, encoding} = flattenBracketFields(node.encoding || {}, dataVar);
+  let encoding = node.encoding || {};
+  const argPlan = planArgAggregate(encoding);
+  if (argPlan) {
+    const reducedVar = newVar(`${ctx.hint}Reduced`);
+    statements.push(
+      `let ${reducedVar} = vlArgAggregate(${dataVar}, {compareField: ${JSON.stringify(argPlan.compareField)}, ` +
+        `mode: ${JSON.stringify(argPlan.mode)}, groupby: ${JSON.stringify(argPlan.groupby)}});`
+    );
+    dataVar = reducedVar;
+    encoding = stripResolvedAggregates(encoding);
+  }
+
+  const {statements: bracketStmts, encoding: flattenedEncoding} = flattenBracketFields(encoding, dataVar);
   statements.push(...bracketStmts);
+  encoding = flattenedEncoding;
   const {statements: markStmts, markExpr} = renderMark(node.mark, encoding, dataVar, ctx.ignoreUnsupported);
   statements.push(...markStmts);
   if (markExpr) {
@@ -501,7 +588,9 @@ export function specToCode(spec, options = {}) {
 
   const bodyText = bodyLines.join('\n');
   const needsD3 = /\bd3\.\w+\(/.test(bodyText);
-  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity', 'VlArc', 'vlWindow'].filter(name => new RegExp(`\\b${name}\\(`).test(bodyText));
+  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity', 'VlArc', 'vlWindow', 'vlArgAggregate'].filter(name =>
+    new RegExp(`\\b${name}\\(`).test(bodyText)
+  );
 
   const header = [
     `// Generated by vl2plot.vegaLiteToPlotCode(spec, {ignoreUnsupported: ${ignoreUnsupported}, ` +

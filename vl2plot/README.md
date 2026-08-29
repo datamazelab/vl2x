@@ -162,11 +162,13 @@ without the flag. See `src/translator.js`'s module docstring and
 | Marks: `trail`, `errorbar`, `errorband`, `geoshape`, `image` | ❌ |
 | `x`/`y`/`x2`/`y2` (including a continuous bin-interval category axis, e.g. a log-scaled histogram, and a pre-computed `bin: {"binned": true}` interval) | ✅ |
 | `color` (categorical and continuous), `size`, `opacity`, `shape` | ✅ — Plot's own scale type inference handles both categorical and continuous color without a hand-rolled dual path; a legend shows by default for any of these, matching Vega-Lite's own convention (Plot itself has no such default) |
-| `detail` (→ Plot's own `z` channel), `order` (→ Plot's own `sort` mark option), `tooltip` (→ Plot's own `title` channel, a real native tooltip) | ✅ |
+| `detail` (→ Plot's own `z` channel), `order` (→ Plot's own `sort` mark option), a single-field `tooltip` (→ Plot's own `title` channel, a real native tooltip) | ✅ |
+| A multi-field `tooltip: [...]` array | ❌ — only the first field is used; the rest are silently dropped |
 | `sort: {"op": ..., "field": ..., "order": ...}` on a position channel | ✅ — when the sort spec's own `field` matches (or is absent, e.g. `"count"`) the channel already carrying the mark's own value; an unrelated third field isn't attempted |
 | A chart-level `title`/`subtitle` | ✅ — Plot's own matching top-level options |
 | A static `mark: {"color"/"opacity"/"size": ...}` property (as opposed to an `encoding` channel) | ✅ |
-| Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ — routed through `Plot.binX`/`Plot.groupX` (etc.) wrapper calls |
+| Inline `aggregate`/`bin`/`timeUnit` on an encoding channel, including the inline `aggregate: {"argmax"/"argmin": sortField}` shorthand | ✅ — routed through `Plot.binX`/`Plot.groupX` (etc.) wrapper calls; `argmax`/`argmin` instead pre-materialize a real one-row-per-group array in plain JS (`vlArgAggregate()`), since Plot's own transforms have no "pick one whole row per group" reducer concept |
+| Top-level `transform: [{"aggregate": [{"op": "argmax"/"argmin", ...}]}]` plus the bracket-indexed field it produces (`argmax_field['Other Field']`) | ✅ — a real row-lookup reducer, and a generic bracket-index field flattener (`translator.js`'s `flattenBracketFields()`) |
 | Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`), plus an explicit `stack` on a `text` label overlaid on one | ✅ — Plot's own native `offset: "normalize"/"center"` for bar/area; `text` stacks only when `stack` is set explicitly (no Vega-Lite convention auto-stacks a label) |
 | Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `stack`, `density`, `window` | ✅ — `stack`/`density`/`window` via a shared runtime helper (`src/runtime.js`), since none has a native Plot *data-array* transform equivalent (`density` is a real Gaussian-kernel KDE, `window` a real SQL-window-function-style computation, neither an approximation) |
 | Top-level `transform`: `joinaggregate`, `fold`, `pivot`, `lookup`, `flatten`, `sort`, `impute` | ❌ |
@@ -189,7 +191,7 @@ a plain pass/fail:
   not to implement yet. Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **495/633 OK, 138/633 skipped (documented
+At the time of writing: **498/633 OK, 135/633 skipped (documented
 boundaries above), 0/633 failed**. A second, stricter harness
 (`test/validate-rendering.js`) additionally inspects the *rendered SVG
 geometry* of every `--ignore-unsupported` run (not just whether
