@@ -586,3 +586,110 @@ test('an inline aggregate: {argmax: field} channel shorthand renders a correctly
   const widths = rects.map(r => Math.round(Number(r.getAttribute('width'))));
   assert.ok(Math.abs(widths[0] / widths[1] - 8) < 0.1, `expected an ~8:1 ratio, got ${widths[0]}:${widths[1]}`);
 });
+
+test('xOffset (a grouped/dodged bar) draws distinct side-by-side bars, not stacked ones', async () => {
+  const {document} = await renderSpec({
+    data: {values: [
+      {category: 'A', group: 'x', value: 1}, {category: 'A', group: 'y', value: 2},
+      {category: 'B', group: 'x', value: 3}, {category: 'B', group: 'y', value: 4},
+    ]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'category', type: 'nominal'},
+      y: {field: 'value', type: 'quantitative'},
+      xOffset: {field: 'group', type: 'nominal'},
+      color: {field: 'group', type: 'nominal'},
+    },
+  });
+  const rects = [...marksOf(document, 'rect')];
+  assert.equal(rects.length, 4);
+  // Grouped side by side means each category's own facet strip has two
+  // *different* local x positions -- the un-fixed bug rendered xOffset
+  // as if it didn't exist at all, so every bar in a category sat at the
+  // same position, visually overlapping/occluding like a (wrong) stack.
+  const byFacet = new Map();
+  for (const r of rects) {
+    const facet = r.closest('g[transform]')?.getAttribute('transform') ?? '';
+    if (!byFacet.has(facet)) byFacet.set(facet, new Set());
+    byFacet.get(facet).add(r.getAttribute('x'));
+  }
+  assert.equal(byFacet.size, 2, 'expected two facet strips (one per category)');
+  for (const xs of byFacet.values()) assert.equal(xs.size, 2, 'expected two distinct x positions within one category');
+});
+
+test('a datum-constant xOffset (e.g. from a repeat: {layer: [...]} expansion) still dodges', async () => {
+  const {container} = await renderSpec({
+    data: {values: [{genre: 'Comedy', a: 10, b: 20}, {genre: 'Drama', a: 30, b: 40}]},
+    layer: [
+      {mark: 'bar', encoding: {x: {field: 'genre', type: 'nominal'}, y: {field: 'a', type: 'quantitative'}, xOffset: {datum: 'a'}, color: {datum: 'a'}}},
+      {mark: 'bar', encoding: {x: {field: 'genre', type: 'nominal'}, y: {field: 'b', type: 'quantitative'}, xOffset: {datum: 'b'}, color: {datum: 'b'}}},
+    ],
+  });
+  const rects = [...container.querySelectorAll('rect')].filter(r => r.getAttribute('width') !== '100%');
+  const byFacet = new Map();
+  for (const r of rects) {
+    const facet = r.closest('g[transform]')?.getAttribute('transform') ?? '';
+    if (!byFacet.has(facet)) byFacet.set(facet, new Set());
+    byFacet.get(facet).add(r.getAttribute('x'));
+  }
+  for (const xs of byFacet.values()) assert.equal(xs.size, 2, 'expected the two layers to sit at two distinct positions within one category');
+});
+
+test('a trail mark renders a real variable-width ribbon, not a constant-width line', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{x: 1, y: 10, size: 2}, {x: 2, y: 20, size: 20}, {x: 3, y: 15, size: 2}]},
+    mark: 'trail',
+    encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}, size: {field: 'size', type: 'quantitative'}},
+  });
+  const [path] = marksOf(document, 'path');
+  assert.ok(path);
+  const d = path.getAttribute('d');
+  // A real ribbon polygon is `M...L...L...Z` with 2*n points (one side
+  // out, the other back) -- not a plain n-point line, and its own width
+  // at the high-size midpoint should be visibly larger than at either
+  // low-size end (checked via the polygon's own vertex spread, not a
+  // fixed stroke-width that never varies at all).
+  const coords = [...d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g)].map(m => [Number(m[1]), Number(m[2])]);
+  assert.equal(coords.length, 6, `expected a 6-vertex ribbon (2 sides x 3 points), got ${coords.length}`);
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const widthAt = i => dist(coords[i], coords[coords.length - 1 - i]);
+  assert.ok(widthAt(1) > widthAt(0) * 1.5, 'expected the middle (high-size) point to be visibly wider than the low-size ends');
+});
+
+test('a row facet with an explicit sort array orders its panels accordingly, not alphabetically', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{cat: 'b', v: 1}, {cat: 'a', v: 2}, {cat: 'c', v: 3}]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'v', type: 'quantitative'},
+      row: {field: 'cat', type: 'nominal', sort: ['c', 'a', 'b']},
+    },
+  });
+  // Plot's own default ordinal-domain inference sorts ascending
+  // ("a","b","c"); the explicit sort array asks for a different order
+  // ("c","a","b"), which must come through as a real `fy: {domain}`
+  // override, not get silently dropped.
+  const labels = [...document.querySelectorAll('text')]
+    .map(t => t.textContent)
+    .filter(t => ['a', 'b', 'c'].includes(t));
+  assert.deepEqual(labels, ['c', 'a', 'b']);
+});
+
+test('hconcat children with no explicit width fall back to a small default, not Plot\'s own 640px standalone default', async () => {
+  // Two 640px-wide panels side by side in a `flex-wrap: wrap` row would
+  // each be wider than most containers, so every panel lands alone on
+  // its own line regardless of the wrapper's own `flexDirection: row` --
+  // an hconcat that visually renders as if it were vconcat instead. A
+  // small per-panel default (mirroring vl2d3's own identical fix) keeps
+  // both panels within a typical container's width so they actually sit
+  // side by side.
+  const {container} = await renderSpec({
+    hconcat: [
+      {data: {values: [{a: 1, b: 2}]}, mark: 'point', encoding: {x: {field: 'a', type: 'quantitative'}, y: {field: 'b', type: 'quantitative'}}},
+      {data: {values: [{a: 1, b: 2}]}, mark: 'bar', encoding: {x: {field: 'a', type: 'nominal'}, y: {field: 'b', type: 'quantitative'}}},
+    ],
+  }, {ignoreUnsupported: true});
+  const widths = [...container.querySelectorAll('svg')].map(s => Number(s.getAttribute('width')));
+  assert.equal(widths.length, 2);
+  for (const w of widths) assert.ok(w < 640, `expected a small default width, got ${w}`);
+});

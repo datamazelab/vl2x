@@ -72,6 +72,81 @@ export class VlArc extends Plot.Mark {
   }
 }
 
+// The line connecting a `trail` mark's own row-ordered points at *variable
+// width* (its own `size` channel, one line-thickness value per point) --
+// Plot has no built-in mark like this at all (a plain SVG `<path
+// stroke-width>` is a single constant for the whole path, no way to vary
+// it along the length), so `VlTrail` builds the actual tapered ribbon
+// shape directly: a closed polygon offsetting each point perpendicular to
+// its own local tangent direction by that point's own half-width, one
+// filled path per color group (Plot's own `x`/`y`/`r` (size) scales
+// already resolve `values.x`/`values.y`/`values.size` to real pixel
+// coordinates/radii by the time `render()` sees them, the same way
+// `VlArc` above found for its own `theta`/`fill`).
+function trailRibbonPath(pts) {
+  const n = pts.length;
+  if (n === 0) return '';
+  if (n === 1) {
+    const {x, y, r} = pts[0];
+    return `M${x - r},${y}a${r},${r} 0 1,0 ${2 * r},0a${r},${r} 0 1,0 ${-2 * r},0Z`;
+  }
+  const left = [];
+  const right = [];
+  for (let i = 0; i < n; i++) {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(n - 1, i + 1)];
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const len = Math.hypot(dx, dy) || 1;
+    // Perpendicular to the local tangent (a central-difference estimate,
+    // not a true mitered join -- a good enough approximation for the
+    // gentle curvature a real trail chart's own data ever has).
+    const px = -dy / len;
+    const py = dx / len;
+    const r = pts[i].r;
+    left.push([pts[i].x + px * r, pts[i].y + py * r]);
+    right.push([pts[i].x - px * r, pts[i].y - py * r]);
+  }
+  const commands = [`M${left[0][0]},${left[0][1]}`];
+  for (const [x, y] of left.slice(1)) commands.push(`L${x},${y}`);
+  for (const [x, y] of right.slice().reverse()) commands.push(`L${x},${y}`);
+  commands.push('Z');
+  return commands.join('');
+}
+
+export class VlTrail extends Plot.Mark {
+  constructor(data, options = {}) {
+    const {x, y, size, stroke, title, defaultSize = 1.5} = options;
+    const channels = {x: {value: x, scale: 'x'}, y: {value: y, scale: 'y'}};
+    if (size != null) channels.size = {value: size, scale: 'r'};
+    if (stroke != null) channels.stroke = {value: stroke, scale: 'color'};
+    if (title != null) channels.title = {value: title, optional: true};
+    super(data, channels, options, {ariaLabel: 'trail'});
+    this.defaultSize = defaultSize;
+  }
+  render(index, scales, values, dimensions, context) {
+    const groups = new Map();
+    for (const i of index) {
+      const key = values.stroke ? values.stroke[i] : '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(i);
+    }
+    const g = d3.select(context.document.createElementNS('http://www.w3.org/2000/svg', 'g'));
+    for (const idxs of groups.values()) {
+      // Row order alone isn't reliable (matches `line`'s own "sort by the
+      // domain field" convention elsewhere) -- pixel-x already reflects
+      // that domain order faithfully for any monotonic (quantitative or
+      // temporal) x-scale, without needing the raw field value at all.
+      idxs.sort((a, b) => values.x[a] - values.x[b]);
+      const pts = idxs.map(i => ({x: values.x[i], y: values.y[i], r: values.size ? values.size[i] : this.defaultSize}));
+      const fill = values.stroke ? values.stroke[idxs[0]] : 'currentColor';
+      const path = g.append('path').attr('d', trailRibbonPath(pts)).attr('fill', fill);
+      if (values.title) path.append('title').text(values.title[idxs[0]]);
+    }
+    return g.node();
+  }
+}
+
 // Vega-Lite's *explicit* stack transform: given a value `field` and a
 // `groupby` field list, computes a cumulative running sum of `field`
 // within each group (ordered by `sort`, a list of `{field, order}`),

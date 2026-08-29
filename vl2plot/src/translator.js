@@ -90,6 +90,18 @@ const SCALE_CHANNEL_MAP = {x: 'x', y: 'y', color: 'color', fill: 'color', stroke
 // instead.
 const SVG_PATH_RE = /^[Mm][\d\-.\s]/;
 
+function isRealChannel(def) {
+  return def && typeof def === 'object' && (typeof def.field === 'string' || 'value' in def || 'datum' in def);
+}
+
+// A genuine `xOffset`/`yOffset` (a "dodged"/grouped position) means the
+// base category channel (`x` for `xOffset`) has been repurposed as
+// Plot's own `fx` (facet-x) instead -- see `marks.js`'s own
+// `catChannelPairs()`, which builds the matching `fx`+`x` mark channel
+// pair this needs to line up with (Plot's own documented recipe for a
+// grouped bar chart, confirmed empirically).
+const DODGE_OFFSET_TO_FACET = {xOffset: {facet: 'fx', base: 'x'}, yOffset: {facet: 'fy', base: 'y'}};
+
 function collectScaleOptions(encoding, markType, ignoreUnsupported) {
   const out = {};
   for (const [ch, scaleCh] of Object.entries(SCALE_CHANNEL_MAP)) {
@@ -101,6 +113,22 @@ function collectScaleOptions(encoding, markType, ignoreUnsupported) {
     const opts = buildScaleOptions(def, {channel: scaleCh, markType, ignoreUnsupported});
     if (opts) out[scaleCh] = {...(out[scaleCh] || {}), ...opts};
   }
+
+  for (const [offsetCh, {facet, base}] of Object.entries(DODGE_OFFSET_TO_FACET)) {
+    if (!isRealChannel(encoding[offsetCh])) continue;
+    // `padding: 0.1` (a small gap between groups, not between every bar
+    // within one) keeps adjacent groups reading as one combined axis
+    // rather than visually separate facet panels; the repurposed
+    // within-facet position channel gets its own axis hidden entirely --
+    // Vega-Lite's own grouped bar shows no separate tick per sub-
+    // category (its own color legend already identifies it), and
+    // whatever scale options the loop above already derived from
+    // `encoding[base]` (the *original* category channel) no longer
+    // apply to it now that it positions by the offset channel instead.
+    out[facet] = {padding: 0.1, ...(buildScaleOptions(encoding[base], {channel: facet, markType, ignoreUnsupported}) || {})};
+    out[base] = {axis: null};
+  }
+
   return out;
 }
 
@@ -356,6 +384,26 @@ function translateFacet(node, ctx, path) {
   const colField = facetDef.column && facetDef.column.field;
   const plainField = !rowField && !colField ? facetDef.field : null;
 
+  // `sort` (and any other scale-shaped override) on a `row`/`column`/plain
+  // facet field def -- e.g. an explicit `sort: [...]` array requesting a
+  // specific panel order other than Plot's own default ascending-natural
+  // order for an inferred ordinal domain. Plot's facet panels are governed
+  // by real `fx`/`fy` scales, configurable the identical way any other
+  // scale is (`buildScaleOptions()` already turns `sort` into a `domain`
+  // override), so this reuses that same helper rather than a bespoke path.
+  const facetScaleOptions = {};
+  if (colField) {
+    const opts = buildScaleOptions(facetDef.column, {channel: 'fx', ignoreUnsupported: ctx.ignoreUnsupported});
+    if (opts) facetScaleOptions.fx = opts;
+  } else if (plainField) {
+    const opts = buildScaleOptions(facetDef, {channel: 'fx', ignoreUnsupported: ctx.ignoreUnsupported});
+    if (opts) facetScaleOptions.fx = opts;
+  }
+  if (rowField) {
+    const opts = buildScaleOptions(facetDef.row, {channel: 'fy', ignoreUnsupported: ctx.ignoreUnsupported});
+    if (opts) facetScaleOptions.fy = opts;
+  }
+
   const template = {...node.spec};
   const merged = mergeDown(template, {data: node.data, transform: node.transform});
   const size = panelSize(node.spec);
@@ -397,7 +445,8 @@ function translateFacet(node, ctx, path) {
 
   const unit = translateUnit(merged, ctx, `${path}spec.`);
   const facet = {dataVar: unit.dataVar, x: colField || plainField, y: rowField};
-  const plotSrc = buildPlotCallSource(unit.markExpr ? [unit.markExpr] : [], unit.scaleOptions, size, facet, 1);
+  const scaleOptions = {...unit.scaleOptions, ...facetScaleOptions};
+  const plotSrc = buildPlotCallSource(unit.markExpr ? [unit.markExpr] : [], scaleOptions, size, facet, 1);
   return {statements: unit.statements, plotSrc};
 }
 
@@ -424,6 +473,24 @@ function translateMulti(node, ctx, key, path) {
 
   children.forEach((child, i) => {
     const merged = mergeDown(child, {data: node.data, transform: node.transform});
+    // Absent an explicit `width`/`height`, a plain unit/layer child would
+    // otherwise fall through to Plot's own bare default (640x~400,
+    // sized for a single standalone chart) -- with N of those side by
+    // side in a `flex-wrap: wrap` row, each individual panel is already
+    // wider than most containers, so every panel ends up alone on its
+    // own line regardless of the `flexDirection: row` set above: an
+    // hconcat visually renders as if it were stacked vertically, not a
+    // translation bug in the flex direction itself but an oversized
+    // per-child default fighting it. Mirrors `vl2d3`'s own identical
+    // fix for the same composition (a smaller, closer-to-Vega-Lite's-
+    // own-default panel size) -- skipped for a child that's itself a
+    // further composition (its own nested facet/concat/etc. sizing is
+    // handled by that path instead, not this one).
+    const isNestedComposition = ['facet', 'hconcat', 'vconcat', 'concat', 'repeat'].some(k => k in merged);
+    if (!isNestedComposition) {
+      if (typeof merged.width !== 'number') merged.width = 200;
+      if (typeof merged.height !== 'number') merged.height = 200;
+    }
     const childPath = `${path}${key}[${i}].`;
     const childCtx = {...ctx, hint: `${ctx.hint}${i + 1}`};
     const {statements: childStmts, plotSrc} = translateNode(merged, childCtx, childPath);
@@ -588,7 +655,7 @@ export function specToCode(spec, options = {}) {
 
   const bodyText = bodyLines.join('\n');
   const needsD3 = /\bd3\.\w+\(/.test(bodyText);
-  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity', 'VlArc', 'vlWindow', 'vlArgAggregate'].filter(name =>
+  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity', 'VlArc', 'VlTrail', 'vlWindow', 'vlArgAggregate'].filter(name =>
     new RegExp(`\\b${name}\\(`).test(bodyText)
   );
 

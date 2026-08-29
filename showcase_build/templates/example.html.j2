@@ -201,12 +201,34 @@
   // the whole comparison over to CSS alone (see style.css) -- every tool's
   // own tab panel becomes visible at once, laid out in one grid alongside
   // the source panel, with all code/notes hidden so only the renders show.
+  //
+  // The chosen view is persisted across prev/next navigation via a
+  // `?view=gallery` query param: read on load to restore state, and
+  // re-written onto the prev/next nav-arrow links live (both here and
+  // whenever the view toggle itself is clicked) so clicking through
+  // examples keeps gallery mode instead of always resetting back to
+  // "compare" on every new page.
   var viewButtons = document.querySelectorAll('.view-btn');
+  var navArrowLinks = document.querySelectorAll('.nav-arrows a');
+  function applyView(isGallery) {
+    viewButtons.forEach(function (b) { b.classList.toggle('active', (b.dataset.view === 'gallery') === isGallery); });
+    document.body.classList.toggle('gallery-mode', isGallery);
+    navArrowLinks.forEach(function (a) {
+      var url = new URL(a.href, location.href);
+      if (isGallery) url.searchParams.set('view', 'gallery');
+      else url.searchParams.delete('view');
+      a.href = url.toString();
+    });
+  }
+  applyView(new URLSearchParams(location.search).get('view') === 'gallery');
   viewButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
-      viewButtons.forEach(function (b) { b.classList.remove('active'); });
-      btn.classList.add('active');
-      document.body.classList.toggle('gallery-mode', btn.dataset.view === 'gallery');
+      var isGallery = btn.dataset.view === 'gallery';
+      applyView(isGallery);
+      var url = new URL(location.href);
+      if (isGallery) url.searchParams.set('view', 'gallery');
+      else url.searchParams.delete('view');
+      history.replaceState(null, '', url);
     });
   });
 

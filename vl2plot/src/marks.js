@@ -20,6 +20,39 @@ function val(def) {
   return v === null ? undefined : v;
 }
 
+function isRealChannel(def) {
+  return def && typeof def === 'object' && (typeof def.field === 'string' || 'value' in def || 'datum' in def);
+}
+
+// Vega-Lite's `xOffset`/`yOffset` (a "dodged"/grouped position -- a
+// grouped bar chart's own sub-category, most commonly) has no native Plot
+// position concept of its own. Plot's own documented recipe for a
+// grouped bar chart repurposes its faceting system for exactly this
+// instead (confirmed empirically): the outer category channel becomes
+// `fx`/`fy` (one facet "strip" per category value, with near-zero padding
+// so adjacent groups read as one combined axis rather than visually
+// separate panels -- see `translator.js`'s own `collectScaleOptions()`,
+// which adds that padding and hides the inner axis whenever it sees a
+// real `xOffset`/`yOffset`), and the offset channel's own value becomes
+// the real position *within* that facet strip. The offset channel is
+// itself commonly a `datum` constant rather than a `field` (e.g.
+// `bar_grouped_repeated.vl.json`'s own `repeat`-substituted layers, each
+// drawing at its own fixed offset, side by side with its sibling layer's
+// bars at a different one) -- `isRealChannel()` accepts either shape.
+// Returns `[[catKey, catValue], subPair?]`, ready to splice in exactly
+// where a plain `[catCh, val(enc[catCh])]` pair used to go
+// unconditionally -- the second entry is present only when genuinely
+// dodged.
+function catChannelPairs(enc, catCh) {
+  const offsetCh = `${catCh}Offset`;
+  if (!isRealChannel(enc[offsetCh])) return [[catCh, val(enc[catCh])]];
+  const facetCh = catCh === 'x' ? 'fx' : 'fy';
+  return [
+    [facetCh, val(enc[catCh])],
+    [catCh, val(enc[offsetCh])],
+  ];
+}
+
 // Assembles `{key: valueCode, ...}` pairs (skipping any `undefined` value)
 // into Plot options-object JS source.
 function objectSource(pairs, indent = 2) {
@@ -168,8 +201,8 @@ function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
   const markType = markProps.type;
   const shapeDef = encoding.shape;
   const pairs = [
-    ['x', val(enc.x)],
-    ['y', val(enc.y)],
+    ...catChannelPairs(enc, 'x'),
+    ...catChannelPairs(enc, 'y'),
     ...commonChannels(enc, markType, markProps),
     ['r', val(enc.size)],
     ['symbol', val(shapeDef)],
@@ -201,7 +234,7 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
         ...commonChannels(enc, 'bar', markProps),
       ]
     : [
-        [catCh, val(enc[catCh])],
+        ...catChannelPairs(enc, catCh),
         [valueCh, val(enc[valueCh])],
         [valueCompanionCh, val(enc[valueCompanionCh])],
         ['sort', sortMarkOption(enc, catCh, valueCh)],
@@ -287,7 +320,7 @@ function renderTick(encoding, markProps, dataVar, ignoreUnsupported) {
   const fn = valueCh === 'x' ? 'tickX' : 'tickY';
   const pairs = [
     [valueCh, val(enc[valueCh])],
-    [catCh, val(enc[catCh])],
+    ...catChannelPairs(enc, catCh),
     ...commonChannels(enc, 'tick', markProps),
   ];
   const transformPlan = planTransform(enc, ignoreUnsupported);
@@ -352,7 +385,7 @@ function renderBoxplot(encoding, markProps, dataVar, ignoreUnsupported) {
   const fn = valueCh === 'x' ? 'boxX' : 'boxY';
   const pairs = [
     [valueCh, val(enc[valueCh])],
-    [catCh, val(enc[catCh])],
+    ...catChannelPairs(enc, catCh),
     ...commonChannels(enc, 'boxplot', markProps),
   ];
   const optionsSrc = objectSource(pairs);
@@ -409,6 +442,31 @@ function renderArc(encoding, markProps, dataVar, ignoreUnsupported) {
   return {statements: [...statements, ...orderStatements], markExpr: `new VlArc(${dataVar}, ${optionsSrc})`};
 }
 
+// Plot has no built-in mark with a *variable*-width line at all (an SVG
+// `<path stroke-width>` is one constant for the whole path) -- `VlTrail`
+// (`runtime.js`) is a real one, building the actual tapered-ribbon polygon
+// directly rather than approximating it with a constant-width line.
+function renderTrail(encoding, markProps, dataVar, ignoreUnsupported) {
+  if (!hasField(encoding.x) || !hasField(encoding.y)) {
+    if (ignoreUnsupported) {
+      return {statements: [`// vl2plot: unsupported trail mark without both x and y field encodings, skipped (--ignore-unsupported)`], markExpr: null};
+    }
+    throw new Error('"trail" mark requires both x and y field encodings');
+  }
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const colorDef = enc.color || enc.stroke;
+  const tooltipDef = Array.isArray(enc.tooltip) ? enc.tooltip[0] : enc.tooltip;
+  const pairs = [
+    ['x', val(enc.x)],
+    ['y', val(enc.y)],
+    ['size', val(enc.size)],
+    colorDef ? ['stroke', val(colorDef)] : null,
+    tooltipDef ? ['title', val(tooltipDef)] : null,
+  ].filter(Boolean);
+  const optionsSrc = objectSource(pairs);
+  return {statements, markExpr: `new VlTrail(${dataVar}, ${optionsSrc})`};
+}
+
 const RENDERERS = {
   point: renderDot,
   circle: renderDot,
@@ -422,6 +480,7 @@ const RENDERERS = {
   rect: renderRect,
   boxplot: renderBoxplot,
   arc: renderArc,
+  trail: renderTrail,
 };
 
 export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false) {

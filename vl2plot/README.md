@@ -153,16 +153,17 @@ without the flag. See `src/translator.js`'s module docstring and
 |---|---|
 | Single unit view (`mark` + `encoding`) | ✅ |
 | `layer` (including nested layer-of-layers) | ✅ — one shared `Plot.plot()`, one `marks` array |
-| `hconcat`, `vconcat`, `concat` | ✅ — independent `Plot.plot()` calls in a flex/grid wrapper (Plot has no native multi-plot layout) |
-| `facet` (single-dimension, plain-unit template), and `row`/`column` as plain *encoding* channels (a more common-in-practice alternative spelling) | ✅ — Plot's own native `facet: {data, x, y}` option, no hand-built grid |
+| `hconcat`, `vconcat`, `concat` | ✅ — independent `Plot.plot()` calls in a flex/grid wrapper (Plot has no native multi-plot layout); a child with no explicit `width`/`height` of its own defaults to a small 200x200 size rather than Plot's own much larger standalone default, so panels actually sit side by side instead of each one alone wrapping onto its own line |
+| `facet` (single-dimension, plain-unit template), and `row`/`column` as plain *encoding* channels (a more common-in-practice alternative spelling), including an explicit `sort: [...]` panel order | ✅ — Plot's own native `facet: {data, x, y}` option, no hand-built grid; a facet field's own `sort` becomes a real `fx`/`fy` scale `domain` override |
 | `facet` (nested facet-within-facet, or faceting a layered template) | ❌ |
 | `repeat`: `{layer: [...]}`, `{row: [...]}`/`{column: [...]}`, and the bare array shorthand (with a sibling `columns: N`) | ✅ — each expands into the equivalent ordinary `layer`/`vconcat`/`concat` composition (reusing all of that composition's own logic) after substituting every `{"repeat": key}` token |
 | `repeat`: `row` *and* `column` together (a 2D grid, e.g. a scatterplot matrix) | ❌ |
-| Marks: `point`/`circle`/`square`, `bar`, `line`, `area`, `rule`, `tick`, `text`, `rect`/`cell`, `boxplot`, `arc` | ✅ — `arc` via a custom Plot `Mark` subclass built on `d3.pie()`/`d3.arc()` (Plot has no native arc/pie mark at all), covering a plain quantitative `theta` + `color`; a non-quantitative `theta` or a per-row `radius` channel aren't attempted |
-| Marks: `trail`, `errorbar`, `errorband`, `geoshape`, `image` | ❌ |
+| Marks: `point`/`circle`/`square`, `bar`, `line`, `area`, `rule`, `tick`, `text`, `rect`/`cell`, `boxplot`, `arc`, `trail` | ✅ — `arc` via a custom Plot `Mark` subclass built on `d3.pie()`/`d3.arc()` (Plot has no native arc/pie mark at all), covering a plain quantitative `theta` + `color`; a non-quantitative `theta` or a per-row `radius` channel aren't attempted. `trail` via a custom Plot `Mark` subclass rendering a real tapered-ribbon polygon (Plot has no native variable-width line mark either) |
+| Marks: `errorbar`, `errorband`, `geoshape`, `image` | ❌ |
 | `x`/`y`/`x2`/`y2` (including a continuous bin-interval category axis, e.g. a log-scaled histogram, and a pre-computed `bin: {"binned": true}` interval) | ✅ |
 | `color` (categorical and continuous), `size`, `opacity`, `shape` | ✅ — Plot's own scale type inference handles both categorical and continuous color without a hand-rolled dual path; a legend shows by default for any of these, matching Vega-Lite's own convention (Plot itself has no such default) |
 | `detail` (→ Plot's own `z` channel), `order` (→ Plot's own `sort` mark option), a single-field `tooltip` (→ Plot's own `title` channel, a real native tooltip) | ✅ |
+| `xOffset`/`yOffset` (a grouped/dodged bar's own sub-category) on `bar`, `point`/`circle`/`square`, `tick`, `boxplot` | ✅ — the category channel becomes Plot's own `fx`/`fy` (facet), the offset channel becomes the real position within it (Plot's own documented recipe for a grouped bar chart — it has no native "sub-band within a band" concept of its own) |
 | A multi-field `tooltip: [...]` array | ❌ — only the first field is used; the rest are silently dropped |
 | `sort: {"op": ..., "field": ..., "order": ...}` on a position channel | ✅ — when the sort spec's own `field` matches (or is absent, e.g. `"count"`) the channel already carrying the mark's own value; an unrelated third field isn't attempted |
 | A chart-level `title`/`subtitle` | ✅ — Plot's own matching top-level options |
@@ -191,12 +192,12 @@ a plain pass/fail:
   not to implement yet. Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **498/633 OK, 135/633 skipped (documented
+At the time of writing: **499/633 OK, 134/633 skipped (documented
 boundaries above), 0/633 failed**. A second, stricter harness
 (`test/validate-rendering.js`) additionally inspects the *rendered SVG
 geometry* of every `--ignore-unsupported` run (not just whether
-translation+execution threw): **589/633 render with real, finite-geometry
-shapes** (0/633 have `NaN`-positioned geometry, 40/633 execute but draw
+translation+execution threw): **590/633 render with real, finite-geometry
+shapes** (0/633 have `NaN`-positioned geometry, 39/633 execute but draw
 nothing — almost entirely the documented mark/composition gaps above under
 best-effort mode — 4/633 fail outright, each a narrow, out-of-scope
 combination: live-selection filter/lookup params, TopoJSON/GeoJSON

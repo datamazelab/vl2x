@@ -566,6 +566,192 @@ checked against the rest of the corpus:
   positioned by `aggregate: "min"`) renders correctly regardless, since a
   tooltip is supplementary hover text, not a positional/color channel.
 
+## `xOffset`/`yOffset`: grouped/dodged bars had no position of their own at all
+
+A user report that two grouped-bar specs rendered "stacked instead of
+grouped" led to discovering a much bigger, previously invisible gap:
+`xOffset`/`yOffset` (Vega-Lite's own channel for a dodged/grouped
+position — most commonly a grouped bar chart's own sub-category) was
+never rendered as a real Plot channel *at all*. `stack.js` already knew
+to skip its own auto-stacking when one was present (dodging and stacking
+are mutually exclusive for the same color-grouped mark), but nothing
+ever gave the offset channel's own value anywhere to go — every bar in
+the same category sat at the exact same position, visually overlapping
+(reading as a stack, since one bar occludes the next) even though the
+values themselves were never summed. 36 corpus specs reference
+`xOffset`/`yOffset` in some form; checking every one individually (not
+just the two originally reported) found this affected every single mark
+type capable of using it: `bar`, `point`/`circle`/`square`, `tick`, and
+`boxplot`.
+
+Plot has no native "sub-band within a band" position concept of its own
+— its own documented recipe for a grouped bar chart (confirmed
+empirically) repurposes its *faceting* system instead: the outer
+category channel becomes `fx`/`fy` (one facet "strip" per category
+value, with small padding so adjacent groups read as one combined axis
+rather than visually separate panels) and the offset channel's own value
+becomes the real position *within* that facet strip. `marks.js`'s new
+`catChannelPairs()` builds this `fx`+`x` (or `fy`+`y`) pair wherever a
+plain `[catCh, val(enc[catCh])]` pair used to go unconditionally, applied
+consistently across every dodge-capable mark's own renderer;
+`translator.js`'s `collectScaleOptions()` adds the matching top-level
+`fx`/`fy` scale options (carried over from the original category
+channel's own scale settings) and hides the now-repurposed position
+channel's own axis (Vega-Lite's own grouped bar shows no separate tick
+per sub-category — a color legend already identifies it).
+
+The offset channel is itself commonly a `datum` constant rather than a
+`field` — e.g. `bar_grouped_repeated.vl.json`'s own `repeat`-substituted
+layers, each drawing at its own fixed offset, side by side with its
+sibling layer's bars at a different one (confirmed this composes
+correctly with the `repeat: {layer: [...]}` expansion from the
+correctness pass above: each layer's own `collectScaleOptions()` call
+computes the *same* `fx` options, derived from the shared, inherited `x`
+channel, so they merge cleanly across layers the same way any other
+per-layer scale option already does). `catChannelPairs()`'s own
+`isRealChannel()` check accepts either shape.
+
+Verifying this properly took more than the usual "does it render, does
+it throw" checks: a d3.rollup-based JS reduction, an `Unsupported: ...`
+skip, and a genuinely correct dodge all "execute without error" and
+"draw non-zero shapes" identically, so neither of this project's own two
+corpus harnesses could distinguish a real fix from the original silent
+bug (both report the exact same OK/skip/fail counts before and after).
+Confirming this actually worked meant rendering every one of the 36
+corpus specs and checking, *within each individual facet strip*
+specifically (not globally across the whole SVG, where multiple facets
+legitimately reusing the same small set of relative sub-positions would
+otherwise look suspicious), that sibling bars/marks sharing one category
+actually sit at distinct positions rather than one shared one. One
+example (`bar_grouped_thin.vl.json`, 551 tiny facets in a 500px-wide
+chart, one xOffset-based sub-bar per movie title within each director's
+own strip) is inherently too dense to distinguish visually at that
+width — a genuine "too much data for the given width" problem the real
+Vega-Lite renderer has too, not a translation defect — confirmed correct
+regardless by isolating one prolific director's own subset of rows and
+checking their own bars landed at 23 different positions, matching 23
+distinct movie titles.
+
+## `trail`: a variable-width line, which neither Plot nor D3 has natively
+
+Vega-Lite's `trail` mark draws a line whose stroke thickness varies per
+point according to a `size` channel (`trail_color.vl.json`: stock price
+over time, one trail per symbol, line width keyed to price). Plot has no
+native mark for this — every one of Plot's own line-ish marks (`line`,
+`lineY`, `link`) draws a single-width stroke; there is no `strokeWidth`
+channel that varies continuously along a path the way SVG itself has no
+notion of a "tapered stroke" either. So this was a hard "no mark exists for
+this at all" gap, the same category as `arc`/pie (see above), not a
+mistranslation.
+
+The fix, `VlTrail` in `runtime.js`, is a second custom `Plot.Mark`
+subclass alongside `VlArc`, but instead of delegating to a d3 shape
+generator (`d3.arc()`), it computes the ribbon geometry by hand: for each
+point on the line, estimate a local tangent direction from its neighbors
+(a central difference — `next.{x,y} - prev.{x,y}`, with the first/last
+point clamped to a one-sided difference), rotate that tangent 90° to get
+the perpendicular unit normal, and offset the point by that normal in each
+direction by the point's own half-width (`size`/2, already resolved to a
+real pixel radius by Plot's own `r`-scale — see the resolved-channel-value
+note under the `arc` section above, which applies identically here: a
+channel declared `{value, scale: 'r'}` arrives in `render()` as a real
+pixel value, not a raw domain value, so no second scale application is
+needed or correct). The two offset sequences (one "left" side walking the
+points forward, one "right" side walking them backward) are concatenated
+into a single closed SVG path (`M...L...L...Z`) — a real filled polygon
+whose width visibly narrows and widens along its own length, not a stroked
+line with a uniform width.
+
+One correctness detail: **the ribbon polygon has to be built by grouping
+points into their own line group first (by `stroke`/color) and sorting
+each group along `x` before computing tangents** — Plot hands `render()`
+the full `index` array in the mark's own (arbitrary) row order, and a
+tangent computed between two rows from *different* symbols, or between two
+out-of-order timestamps of the same symbol, produces a self-intersecting
+mess rather than a clean ribbon. This mirrors a general pattern worth
+remembering for any future custom multi-point Mark: Plot's per-channel
+`values.x[i]`/`values.y[i]` arrays are only really an ordered "path" if you
+sort them yourself; nothing about the Mark API guarantees row order
+corresponds to any meaningful drawing order.
+
+Verified by hand-computing the raw SVG path's own vertex coordinates for
+`trail_color.vl.json` (inline synthetic data substituted for
+`stocks.csv`): the perpendicular offset distance at each of one symbol's
+three points came out proportional to that point's own `price` value
+(≈4.86px at price 10, ≈6.9px at price 20, ≈6.07px at price 15) — a real
+variable width, not a fixed one. Confirmed further via a translator unit
+test (`'a trail mark renders a real variable-width ribbon, not a
+constant-width line'`) that inspects the generated path's own 6 vertices
+(2 sides × 3 points) and checks the middle (high-size) point's own width
+is visibly larger than either low-size end's.
+
+D3's own trail rendering (a separate tool, `vl2d3`) still draws a
+fixed-width line — the user's report that "line thickness is fixed in d3
+(should be variable)" is a real bug, but in `vl2d3`, not `vl2plot`; out of
+this project's own scope.
+
+## A facet's own `sort` was silently dropped
+
+`translateFacet()` built Plot's own `facet: {data, x, y}` option purely
+from the `row`/`column` field *names* (`trellis_area_sort_array.vl.json`:
+`row: {field: "symbol", sort: ["MSFT", "AAPL", "IBM", "AMZN"]}`) — it never
+looked at anything else on that facet field def, including its own `sort`.
+Plot's facet panels are governed by real scales of their own (`fx`/`fy`,
+configurable identically to any other Plot scale), and Plot's own default
+ordinal-domain inference for those scales is ascending natural order (so a
+`symbol` facet came out `AAPL, AMZN, IBM, MSFT` — alphabetical — regardless
+of the spec's own requested `MSFT, AAPL, IBM, AMZN` order). This is a
+silent-correctness bug in the same family documented above: it neither
+throws nor renders empty, so neither validation harness's own OK/skip/fail
+counts moved from fixing it — confirmed instead by rendering the spec both
+before and after the fix and reading off the actual `<text>` facet-strip
+labels in DOM order.
+
+The fix reuses `buildScaleOptions()` — already the one place that turns an
+encoding channel's own `sort: [...]` into a Plot `domain: [...]` override
+for its own `x`/`y`/`color` scale — and calls it a second time on
+`facetDef.row`/`facetDef.column` (or `facetDef` itself, for the
+single-field wrapped-facet-operator shape with no `row`/`column` split),
+targeting Plot's `fy`/`fx` scale channels instead. The resulting
+`{fx: {...}}`/`{fy: {...}}` fragment is merged into the same
+`scaleOptions` object already passed to `buildPlotCallSource()`, so any
+other scale-shaped override on a facet field def (a reversed sort order,
+an explicit domain, a suppressed axis) now threads through the identical
+path any other channel's scale options already use — not just the one
+`sort` case that prompted the fix.
+
+## `hconcat`: side-by-side panels rendering as if stacked
+
+`hconcat_weather.vl.json`'s two panels (a bar chart, a binned scatterplot,
+neither with its own `width`/`height`) came out looking vertically
+stacked despite `translateMulti()`'s own wrapper already being built
+correctly (`flexDirection: 'row'`, matching `hconcat`'s "col" direction).
+The wrapper itself wasn't the bug: each *child* `Plot.plot({...})` call had
+no `width`/`height` override at all, so each one fell through to Plot's
+own bare default sizing (640px wide, sized for a single standalone chart
+filling its own container). Two 640px-wide flex items plus a gap is wider
+than almost any real container the showcase (or any embedding page) gives
+a two-up composition; with `flexWrap: 'wrap'` already set (so a `concat`
+with a real `columns` count still wraps predictably), each panel — already
+wider than the container on its own — ends up alone on its own line. The
+net visual effect is indistinguishable from a `vconcat`, even though
+`flexDirection: row` was correct the whole time. Neither validation
+harness's own counts moved (a silently-oversized-but-still-real render,
+the same category as the facet-sort and grouped-bar bugs above);
+confirmed instead by inspecting the actual rendered `<svg>` elements'
+`width` attributes directly.
+
+The fix, in `translateMulti()`: any child of an `hconcat`/`vconcat`/
+`concat` composition that doesn't specify its own `width`/`height` AND
+isn't itself a further composition (a nested `facet`/`hconcat`/`vconcat`/
+`concat`/`repeat`, whose own sizing is handled by that path instead) now
+gets an explicit `width: 200, height: 200` default before translation —
+mirroring `vl2d3`'s own identical fix for the identical bug (a smaller,
+closer-to-Vega-Lite's-own-default-view-size default for a composed panel,
+as opposed to a standalone chart's much larger default). This is
+purely a default-value fix, not a new code path: a child spec with its own
+explicit `width`/`height` is left untouched.
+
 ## Validation methodology
 
 Like `vl2d3`, `vl2plot` targets a lower-level toolkit than `vl2altair`/
@@ -579,8 +765,8 @@ ways rather than a plain pass/fail:
   Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing (`test/validate-examples.js`, strict mode): **498/633
-OK, 135/633 skipped, 0/633 failed**.
+At the time of writing (`test/validate-examples.js`, strict mode): **499/633
+OK, 134/633 skipped, 0/633 failed**.
 
 A second, stricter harness (`test/validate-rendering.js`) runs the same
 corpus the way the showcase actually does — `{ignoreUnsupported: true}` —
@@ -591,8 +777,8 @@ elements, not a crash) — though it took a real showcase-image review, not
 this harness alone, to catch the *other* silent-correctness bugs the
 section above describes (a group transform that renders a plausible-looking
 but numerically wrong result, or one broken mark that still leaves a
-plausible chart, doesn't always look empty): **589/633 render with real,
-finite-geometry shapes**, 0/633 have `NaN`-positioned geometry, 40/633
+plausible chart, doesn't always look empty): **590/633 render with real,
+finite-geometry shapes**, 0/633 have `NaN`-positioned geometry, 39/633
 execute but draw nothing (almost entirely the documented mark/composition
 gaps under best-effort mode — e.g. an unsupported mark type is simply
 omitted from `marks: [...]`, leaving valid-but-empty output), and 4/633
