@@ -59,7 +59,14 @@ export class VlArc extends Plot.Mark {
       .data(arcs)
       .join('path')
       .attr('d', arcGen)
-      .attr('fill', values.fill ? d => scales.color(values.fill[d.data]) : '#4269d1');
+      // `values.fill` is already resolved to final color strings by Plot's
+      // own channel machinery (a `{scale: "color"}` channel's own values
+      // array holds post-scale output, not raw domain values) -- applying
+      // `scales.color(...)` again here would look up an already-a-color
+      // string as if it were a domain value, silently resolving to
+      // nothing (confirmed empirically: every wedge rendered with no fill
+      // at all, not a crash).
+      .attr('fill', values.fill ? d => values.fill[d.data] : '#4269d1');
     if (values.title) paths.append('title').text(d => values.title[d.data]);
     return g.node();
   }
@@ -163,6 +170,121 @@ export function vlDensity(data, {field, groupby = [], extent = null, bandwidth =
       groupAssigns[g] = keyVals[i];
     });
     for (const p of kdeOneGroup(rows, opts)) out.push({...p, ...groupAssigns});
+  }
+  return out;
+}
+
+// Vega-Lite's `window` transform: SQL-window-function-style per-row
+// derived fields, computed within `groupby` partitions ordered by `sort`.
+// Self-contained (unlike `vl2d3`'s own equivalent, adapted from here,
+// which builds on `d3.group`/`d3.sum`/etc. -- Plot's own dependency on
+// `d3` already covers this project's needs elsewhere, but this doesn't
+// need it at all). Supports:
+//   - `row_number`/`rank`/`dense_rank` (purely positional, based on
+//     partition order) and `lag`/`lead` (an earlier/later row's own
+//     value, `param` rows away, defaulting to 1).
+//   - `sum`/`mean`/`average`/`count`/`min`/`max`/`median`/`distinct` (a
+//     `frame`-bounded aggregate: omitted/`[null, null]` -- Vega-Lite's own
+//     default -- is a whole-partition aggregate broadcast to every row;
+//     `[null, 0]` is a running/cumulative aggregate from the partition's
+//     start through the current row; any other numeric bound is a genuine
+//     sliding window `frame[0]` rows before to `frame[1]` rows after the
+//     current one).
+// Percentile/selection ops with no simple direct equivalent
+// (percent_rank, cume_dist, ntile, first_value/last_value/nth_value)
+// aren't supported.
+function windowFrameSlice(rows, i, frame) {
+  const n = rows.length;
+  const wholePartition = !frame || (frame[0] == null && frame[1] == null);
+  if (wholePartition) return rows;
+  const cumulative = frame[0] == null && frame[1] === 0;
+  if (cumulative) return rows.slice(0, i + 1);
+  const lo = frame[0] == null ? 0 : Math.max(0, i + frame[0]);
+  const hi = frame[1] == null ? n : Math.min(n, i + frame[1] + 1);
+  return rows.slice(lo, hi);
+}
+
+function windowAggregate(op, field, rows, i, frame) {
+  const slice = windowFrameSlice(rows, i, frame);
+  if (op === 'count') return slice.length;
+  if (op === 'distinct') return new Set(slice.map(r => r[field])).size;
+  const values = slice.map(r => r[field]).filter(v => v != null && !Number.isNaN(v));
+  if (!values.length) return null;
+  if (op === 'sum') return values.reduce((a, b) => a + b, 0);
+  if (op === 'mean' || op === 'average') return values.reduce((a, b) => a + b, 0) / values.length;
+  if (op === 'min') return Math.min(...values);
+  if (op === 'max') return Math.max(...values);
+  if (op === 'median') {
+    const sorted = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return null;
+}
+
+export function vlWindow(data, {window, groupby = [], sort = [], frame = null}) {
+  const keyOf = groupby.length ? d => JSON.stringify(groupby.map(g => d[g])) : () => '';
+  const groups = new Map();
+  for (const d of data) {
+    const k = keyOf(d);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(d);
+  }
+  const cmp = sort.length
+    ? (a, b) => {
+        for (const {field, order} of sort) {
+          const av = a[field];
+          const bv = b[field];
+          if (av < bv) return order === 'descending' ? 1 : -1;
+          if (av > bv) return order === 'descending' ? -1 : 1;
+        }
+        return 0;
+      }
+    : null;
+  const needsTies = window.some(w => w.op === 'rank' || w.op === 'dense_rank');
+
+  const out = [];
+  for (let rows of groups.values()) {
+    if (cmp) rows = rows.slice().sort(cmp);
+    const n = rows.length;
+    let tieIds = null;
+    if (needsTies) {
+      if (cmp) {
+        // SQL RANK()/DENSE_RANK() semantics: a new "tie group" starts
+        // wherever consecutive sorted rows differ under `cmp`; dense_rank
+        // is that group's 1-based ordinal, rank is the 1-based position
+        // of that group's *first* row (so tied rows share a rank, and the
+        // next distinct value's rank skips past however many rows tied).
+        let tieGroup = 0;
+        tieIds = rows.map((d, i) => {
+          if (i > 0 && cmp(rows[i - 1], d) !== 0) tieGroup++;
+          return tieGroup;
+        });
+      } else {
+        // No `sort` given at all -- Vega-Lite's own window transform then
+        // ranks rows in their existing (partition) order, each one
+        // strictly after the last, never tied with a sibling.
+        tieIds = rows.map((d, i) => i);
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      const assigns = {};
+      for (const w of window) {
+        let value;
+        if (w.op === 'row_number') value = i + 1;
+        else if (w.op === 'rank') value = tieIds.indexOf(tieIds[i]) + 1;
+        else if (w.op === 'dense_rank') value = tieIds[i] + 1;
+        else if (w.op === 'lag' || w.op === 'lead') {
+          const param = w.param != null ? w.param : 1;
+          const offset = w.op === 'lag' ? i - param : i + param;
+          value = rows[offset] ? rows[offset][w.field] : null;
+        } else {
+          value = windowAggregate(w.op, w.field, rows, i, frame);
+        }
+        assigns[w.as] = value;
+      }
+      out.push({...rows[i], ...assigns});
+    }
   }
   return out;
 }

@@ -314,9 +314,95 @@ function translateMulti(node, ctx, key, path) {
 // `{statements, wrapperVar}` for a multi-plot (concat-family) one. Callers
 // that always expect a single node (facet's own template, a layer child)
 // check which shape they got back.
+// Vega-Lite lets `row`/`column` appear as plain *encoding* channels on any
+// unit or layer view (shared across every layer, for the layer case) --
+// an alternative, more common-in-practice spelling of faceting to the
+// explicit `facet: {...}, spec: {...}` composition `translateFacet()`
+// already handles. Left unrecognized (as `row`/`column` aren't real mark
+// channels at all), the field was silently dropped entirely: every row's
+// own bars/points all drew *layered* on one shared set of axes instead of
+// split into separate panels -- confirmed as the root cause behind a real
+// corpus spec (`trellis_bar`) rendering as an overlaid mess instead of a
+// trellis. Normalizes into the exact node shape `translateFacet()` itself
+// expects, so this reuses all of its own logic (including its
+// `ignoreUnsupported` fallbacks for a layered template) rather than
+// duplicating any of it.
+function extractEncodingFacet(node) {
+  const encoding = node.encoding;
+  if (!encoding || typeof encoding !== 'object') return null;
+  const {row, column, ...restEncoding} = encoding;
+  if (!row && !column) return null;
+  const facetDef = {};
+  if (row) facetDef.row = row;
+  if (column) facetDef.column = column;
+  const {data, transform, ...specRest} = node;
+  return {facet: facetDef, data, transform, spec: {...specRest, encoding: restEncoding}};
+}
+
+// Replaces every `{"repeat": repeatKey}` token (Vega-Lite's own repeated-
+// field placeholder, appearing wherever a `field`/`datum` value would
+// otherwise go) found anywhere in `node` with the literal `value` for
+// this one repetition -- a plain recursive structural walk, since the
+// token can appear at any depth (an `encoding` channel's own `field`, a
+// `color`'s own `datum`, ...).
+function substituteRepeatToken(node, repeatKey, value) {
+  if (Array.isArray(node)) return node.map(n => substituteRepeatToken(n, repeatKey, value));
+  if (node && typeof node === 'object') {
+    if (typeof node.repeat === 'string' && node.repeat === repeatKey && Object.keys(node).length === 1) {
+      return value;
+    }
+    const out = {};
+    for (const [k, v] of Object.entries(node)) out[k] = substituteRepeatToken(v, repeatKey, value);
+    return out;
+  }
+  return node;
+}
+
+// Vega-Lite's `repeat` composition, expanded into the equivalent ordinary
+// composition it already boils down to for each of its own three shapes:
+// `repeat: {layer: [...]}` (repeat *as layers* sharing one panel) becomes
+// a plain `layer: [...]`; `repeat: {row: [...]}` / a bare array shorthand
+// `repeat: [...]` (Vega-Lite's own default meaning for the array form,
+// equivalent to `column`) becomes `vconcat`/`hconcat`. Returns `null` for
+// the one shape not attempted -- `row` *and* `column` together (a genuine
+// 2D grid, e.g. a scatterplot matrix -- each cell would need its own
+// *pair* of substituted fields, not just one substitution pass). Reuses
+// every one of `translateFacet()`/`translateMulti()`'s own existing
+// logic (merge-down, per-child `ignoreUnsupported` fallbacks, ...)
+// entirely by construction, rather than duplicating any of it.
+function expandRepeat(node) {
+  const repeatDef = node.repeat;
+  const {data, transform, spec, columns} = node;
+  if (Array.isArray(repeatDef)) {
+    // The bare-array shorthand's own substitution token is spelled
+    // `{"repeat": "repeat"}` (not `{"repeat": "column"}`) -- and, unlike
+    // the `row`/`column` object forms (whose own grid shape is already
+    // implied by having two separate axes), commonly pairs with a
+    // sibling top-level `columns: N` wrapping it into a real grid rather
+    // than one long row -- `concat` (not `hconcat`) is `translateMulti()`'s
+    // own "honor `columns`, wrap into a grid" composition kind.
+    return {data, transform, columns, concat: repeatDef.map(value => substituteRepeatToken(spec, 'repeat', value))};
+  }
+  if (!repeatDef || typeof repeatDef !== 'object') return null;
+  if (Array.isArray(repeatDef.layer)) {
+    return {data, transform, layer: repeatDef.layer.map(value => substituteRepeatToken(spec, 'layer', value))};
+  }
+  if (Array.isArray(repeatDef.row) && !Array.isArray(repeatDef.column)) {
+    return {data, transform, vconcat: repeatDef.row.map(value => substituteRepeatToken(spec, 'row', value))};
+  }
+  if (Array.isArray(repeatDef.column) && !Array.isArray(repeatDef.row)) {
+    return {data, transform, hconcat: repeatDef.column.map(value => substituteRepeatToken(spec, 'column', value))};
+  }
+  return null;
+}
+
 function translateNode(node, ctx, path) {
   if ('facet' in node) {
     return translateFacet(node, ctx, path);
+  }
+  const encodingFacet = extractEncodingFacet(node);
+  if (encodingFacet) {
+    return translateFacet(encodingFacet, ctx, path);
   }
   if ('hconcat' in node || 'vconcat' in node || 'concat' in node) {
     const key = 'hconcat' in node ? 'hconcat' : 'vconcat' in node ? 'vconcat' : 'concat';
@@ -324,6 +410,12 @@ function translateNode(node, ctx, path) {
     return {statements: [...statements], plotSrc: wrapperVar, isWrapper: true};
   }
   if ('repeat' in node) {
+    const expanded = expandRepeat(node);
+    if (expanded) return translateNode(expanded, ctx, path);
+    // The one repeat shape not expanded above: `row` *and* `column`
+    // together (a genuine 2D grid, e.g. a scatterplot matrix -- each cell
+    // needs its own *pair* of substituted fields, a real nested-loop
+    // shape `expandRepeat()` doesn't attempt).
     if (ctx.ignoreUnsupported) {
       // Rendering the template unsubstituted (rather than a clean skip) was
       // tried first, but is worse than doing nothing: the repeated channel
@@ -335,11 +427,11 @@ function translateNode(node, ctx, path) {
       // degrading gracefully. An explicitly empty panel is honest about
       // the gap and never crashes.
       return {
-        statements: [`// vl2plot: 'repeat' composition is not yet supported, rendering an empty panel (--ignore-unsupported)`],
+        statements: [`// vl2plot: a 2D (row+column) 'repeat' is not yet supported, rendering an empty panel (--ignore-unsupported)`],
         plotSrc: `Plot.plot({document: container.ownerDocument, marks: []})`,
       };
     }
-    throw new Error("Unsupported top-level composition: 'repeat' is not yet supported by vl2plot");
+    throw new Error("Unsupported: a 2D (row and column together) 'repeat' is not yet supported by vl2plot");
   }
   return translateStandalone(node, ctx, path);
 }
@@ -370,7 +462,7 @@ export function specToCode(spec, options = {}) {
 
   const bodyText = bodyLines.join('\n');
   const needsD3 = /\bd3\.\w+\(/.test(bodyText);
-  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity'].filter(name => new RegExp(`\\b${name}\\(`).test(bodyText));
+  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity', 'VlArc', 'vlWindow'].filter(name => new RegExp(`\\b${name}\\(`).test(bodyText));
 
   const header = [
     `// Generated by vl2plot.vegaLiteToPlotCode(spec, {ignoreUnsupported: ${ignoreUnsupported}, ` +

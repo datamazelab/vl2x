@@ -4,9 +4,12 @@ import {renderSpec} from './helpers.js';
 import {vegaLiteToPlotCode} from '../src/index.js';
 
 // Axis chrome (tick marks, the axis label) also renders <path>/<text>
-// elements grouped under a `<g aria-label="...axis...">`, so mark-drawn
-// shapes must be queried excluding those.
-const marksOf = (document, selector) => [...document.querySelectorAll(selector)].filter(el => !el.closest('[aria-label*="axis"]'));
+// elements grouped under a `<g aria-label="...axis...">`, and a legend's
+// own swatches render <rect>/<svg> too (a content-hashed class name like
+// `plot-d6a7b5-swatch`, so matched by a partial selector) -- mark-drawn
+// shapes must be queried excluding both.
+const marksOf = (document, selector) =>
+  [...document.querySelectorAll(selector)].filter(el => !el.closest('[aria-label*="axis"]') && !el.closest('[class*="swatch"]'));
 
 test('bar chart: nominal x, quantitative y', async () => {
   const {document} = await renderSpec({
@@ -14,7 +17,7 @@ test('bar chart: nominal x, quantitative y', async () => {
     mark: 'bar',
     encoding: {x: {field: 'a', type: 'nominal'}, y: {field: 'b', type: 'quantitative'}},
   });
-  assert.equal(document.querySelectorAll('rect').length, 3);
+  assert.equal(marksOf(document, 'rect').length, 3);
 });
 
 test('bar chart: inline count aggregate', async () => {
@@ -23,7 +26,7 @@ test('bar chart: inline count aggregate', async () => {
     mark: 'bar',
     encoding: {x: {field: 'cat', type: 'nominal'}, y: {aggregate: 'count', type: 'quantitative'}},
   });
-  const rects = [...document.querySelectorAll('rect')];
+  const rects = [...marksOf(document, 'rect')];
   assert.equal(rects.length, 2);
   const heights = rects.map(r => Number(r.getAttribute('height'))).sort((a, b) => a - b);
   assert.ok(heights[1] > heights[0]);
@@ -35,7 +38,7 @@ test('bar chart: inline mean aggregate grouped by one field', async () => {
     mark: 'bar',
     encoding: {x: {field: 'g', type: 'nominal'}, y: {field: 'v', aggregate: 'mean', type: 'quantitative'}},
   });
-  assert.equal(document.querySelectorAll('rect').length, 2);
+  assert.equal(marksOf(document, 'rect').length, 2);
 });
 
 test('histogram: bin + count', async () => {
@@ -45,7 +48,7 @@ test('histogram: bin + count', async () => {
     mark: 'bar',
     encoding: {x: {field: 'x', bin: true, type: 'quantitative'}, y: {aggregate: 'count', type: 'quantitative'}},
   });
-  assert.ok(document.querySelectorAll('rect').length > 1);
+  assert.ok(marksOf(document, 'rect').length > 1);
 });
 
 test('scatter plot with color', async () => {
@@ -94,7 +97,7 @@ test('layered bar + rule (mean line)', async () => {
       {mark: 'rule', encoding: {y: {aggregate: 'mean', field: 'b', type: 'quantitative'}}},
     ],
   });
-  assert.equal(document.querySelectorAll('rect').length, 2);
+  assert.equal(marksOf(document, 'rect').length, 2);
   assert.ok(document.querySelectorAll('line').length > 0);
 });
 
@@ -114,7 +117,7 @@ test('facet: native Plot facet, one panel per distinct field value', async () =>
     facet: {field: 'g', type: 'nominal'},
     spec: {mark: 'bar', encoding: {x: {field: 'a', type: 'nominal'}, y: {field: 'b', type: 'quantitative'}}},
   });
-  assert.equal(document.querySelectorAll('rect').length, 2);
+  assert.equal(marksOf(document, 'rect').length, 2);
 });
 
 test('boxplot', async () => {
@@ -123,7 +126,7 @@ test('boxplot', async () => {
     mark: 'boxplot',
     encoding: {x: {field: 'g', type: 'nominal'}, y: {field: 'v', type: 'quantitative'}},
   });
-  assert.ok(document.querySelectorAll('rect').length > 0);
+  assert.ok(marksOf(document, 'rect').length > 0);
 });
 
 test('detail (z) channel groups lines without a visual encoding', async () => {
@@ -145,7 +148,7 @@ test('stack: normalize offset produces full-height stacked bars', async () => {
       color: {field: 'c', type: 'nominal'},
     },
   });
-  const rects = [...document.querySelectorAll('rect')].filter(r => r.getAttribute('height'));
+  const rects = [...marksOf(document, 'rect')].filter(r => r.getAttribute('height'));
   const byX = new Map();
   for (const r of rects) {
     const x = r.getAttribute('x');
@@ -165,7 +168,7 @@ test('custom color range overrides the default categorical scheme', async () => 
       color: {field: 'g', type: 'nominal', scale: {range: ['#ff0000', '#00ff00']}},
     },
   });
-  const fills = [...document.querySelectorAll('rect')].map(r => r.getAttribute('fill'));
+  const fills = [...marksOf(document, 'rect')].map(r => r.getAttribute('fill'));
   assert.ok(fills.includes('#ff0000') || fills.includes('rgb(255, 0, 0)'));
 });
 
@@ -179,7 +182,7 @@ test('legacy category20 scheme falls back to a literal 20-color range instead of
       color: {field: 'g', type: 'nominal', scale: {scheme: 'category20b'}},
     },
   });
-  assert.equal(document.querySelectorAll('rect').length, 3);
+  assert.equal(marksOf(document, 'rect').length, 3);
 });
 
 test('top-level aggregate transform', async () => {
@@ -189,7 +192,7 @@ test('top-level aggregate transform', async () => {
     mark: 'bar',
     encoding: {x: {field: 'g', type: 'nominal'}, y: {field: 'mv', type: 'quantitative'}},
   });
-  assert.equal(document.querySelectorAll('rect').length, 2);
+  assert.equal(marksOf(document, 'rect').length, 2);
 });
 
 test('filter + calculate transform', async () => {
@@ -218,16 +221,13 @@ test('a bar with a companion x2 (interval bin) renders x1/x2, not an ordinal ban
 
 test('unsupported mark type throws a clear "Unsupported: ..." error by default', () => {
   assert.throws(
-    () => vegaLiteToPlotCode({data: {values: [{a: 1}]}, mark: 'arc', encoding: {theta: {field: 'a', type: 'quantitative'}}}),
-    /Unsupported mark type: "arc"/
+    () => vegaLiteToPlotCode({data: {values: [{a: 1}]}, mark: 'geoshape', encoding: {}}),
+    /Unsupported mark type: "geoshape"/
   );
 });
 
 test('unsupported mark type is skipped, not thrown, under ignoreUnsupported', () => {
-  const code = vegaLiteToPlotCode(
-    {data: {values: [{a: 1}]}, mark: 'arc', encoding: {theta: {field: 'a', type: 'quantitative'}}},
-    {ignoreUnsupported: true}
-  );
+  const code = vegaLiteToPlotCode({data: {values: [{a: 1}]}, mark: 'geoshape', encoding: {}}, {ignoreUnsupported: true});
   assert.match(code, /unsupported mark type/);
 });
 
@@ -271,7 +271,7 @@ test('1-dimensional aggregate (no other channel) collapses to one correctly-summ
     mark: 'bar',
     encoding: {x: {aggregate: 'sum', field: 'people', type: 'quantitative', scale: {domain: [0, 1000]}}},
   });
-  const rects = document.querySelectorAll('rect');
+  const rects = marksOf(document, 'rect');
   assert.equal(rects.length, 1);
   // A fixed [0, 1000] domain makes the sum (60) directly checkable from
   // pixel width -- an un-summed render (one bar per row, wrongly scaled)
@@ -297,7 +297,7 @@ test('a reference rule (1D aggregate, no x) draws a real, correctly-valued line'
   });
   const [line] = marksOf(document, 'line');
   assert.ok(line);
-  const rectYs = [...document.querySelectorAll('rect')].map(r => Number(r.getAttribute('y')));
+  const rectYs = [...marksOf(document, 'rect')].map(r => Number(r.getAttribute('y')));
   const lineY = Number(line.getAttribute('y1'));
   // mean(28, 56) = 42 -- exactly halfway between the two bars' own heights,
   // so the rule's own y should land between the two rects' own y values.
@@ -310,7 +310,7 @@ test('bin with no companion channel defaults to a vertical histogram', async () 
     mark: 'bar',
     encoding: {x: {field: 'v', bin: true, type: 'quantitative'}},
   });
-  const rects = [...document.querySelectorAll('rect')];
+  const rects = [...marksOf(document, 'rect')];
   assert.ok(rects.length > 1);
   // Vertical: bars differ in x (bin edges), not in y.
   const xs = new Set(rects.map(r => r.getAttribute('x')));
@@ -327,7 +327,7 @@ test('opacity alongside an aggregate on a different channel does not break group
       opacity: {field: 'people', type: 'quantitative'},
     },
   });
-  const rects = [...document.querySelectorAll('rect')];
+  const rects = [...marksOf(document, 'rect')];
   assert.equal(rects.length, 2);
   const heights = rects.map(r => Number(r.getAttribute('height'))).sort((a, b) => a - b);
   // age=10 sums to 150, age=20 sums to 200 -- correctly summed heights
@@ -362,7 +362,7 @@ test('a text label with its own aggregate + explicit stack matches the bar it la
       },
     ],
   });
-  const rects = [...document.querySelectorAll('rect')];
+  const rects = [...marksOf(document, 'rect')];
   assert.equal(rects.length, 4);
   // Every bar for one y-position (age) should sum to the full normalized
   // width -- if the label's own un-stacked values leaked into the shared
@@ -390,7 +390,7 @@ test('bin: {binned: true} with an explicit x2 companion renders the pre-computed
       y: {field: 'count', type: 'quantitative'},
     },
   });
-  assert.equal(document.querySelectorAll('rect').length, 2);
+  assert.equal(marksOf(document, 'rect').length, 2);
 });
 
 test('inline values as an object needs format.property (a dotted path) to extract the row array', async () => {
@@ -429,8 +429,105 @@ test('top-level stack transform computes correctly-proportioned segments', async
       color: {field: 'gender', type: 'nominal'},
     },
   });
-  const rects = [...document.querySelectorAll('rect')];
+  const rects = [...marksOf(document, 'rect')];
   assert.equal(rects.length, 2);
   const totalHeight = rects.reduce((s, r) => s + Number(r.getAttribute('height')), 0);
   assert.ok(totalHeight > 300, `expected the two segments to sum to a near-full-height stack, got ${totalHeight}`);
+});
+
+test('a field-encoded color channel shows a legend by default, matching Vega-Lite', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{x: 1, y: 2, c: 'A'}, {x: 2, y: 3, c: 'B'}]},
+    mark: 'point',
+    encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}, color: {field: 'c', type: 'nominal'}},
+  });
+  assert.ok(document.querySelector('[class*="swatch"]'), 'expected a legend swatch to be present by default');
+});
+
+test('an explicit legend: null suppresses the default legend', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{x: 1, y: 2, c: 'A'}, {x: 2, y: 3, c: 'B'}]},
+    mark: 'point',
+    encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}, color: {field: 'c', type: 'nominal', legend: null}},
+  });
+  assert.equal(document.querySelector('[class*="swatch"]'), null);
+});
+
+test('a chart-level title renders as Plot\'s own native title option', async () => {
+  const {document} = await renderSpec({
+    title: 'A Simple Bar Chart',
+    data: {values: [{a: 'A', b: 1}]},
+    mark: 'bar',
+    encoding: {x: {field: 'a', type: 'nominal'}, y: {field: 'b', type: 'quantitative'}},
+  });
+  assert.ok(document.body.textContent.includes('A Simple Bar Chart'));
+});
+
+test('sort: {op, order} on a bar\'s category axis reorders it by the mark\'s own value', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{cyl: 4, n: 3}, {cyl: 6, n: 6}, {cyl: 8, n: 2}, {cyl: 5, n: 1}]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'cyl', type: 'ordinal', sort: {op: 'sum', field: 'n', order: 'descending'}},
+      y: {field: 'n', type: 'quantitative'},
+    },
+  });
+  const rects = [...marksOf(document, 'rect')].sort((a, b) => Number(a.getAttribute('x')) - Number(b.getAttribute('x')));
+  const heights = rects.map(r => Math.round(Number(r.getAttribute('height'))));
+  const sorted = [...heights].sort((a, b) => b - a);
+  assert.deepEqual(heights, sorted, `expected bars left-to-right in descending height order, got ${heights}`);
+});
+
+test('an arc mark draws real pie wedges with a legend', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{category: 'a', value: 30}, {category: 'b', value: 70}]},
+    mark: 'arc',
+    encoding: {theta: {field: 'value', type: 'quantitative'}, color: {field: 'category', type: 'nominal'}},
+  });
+  const paths = [...document.querySelectorAll('path')].filter(p => /^M/.test(p.getAttribute('d') || ''));
+  assert.equal(paths.length, 2);
+  // Each wedge's own `fill` must be a real resolved color, not `values.
+  // fill` re-run back through the color scale a second time (a real bug:
+  // Plot's own channel `values` are already post-scale output, so doing
+  // that looked up an already-a-color string as a domain value and
+  // silently produced no fill at all).
+  const fills = new Set(paths.map(p => p.getAttribute('fill')));
+  assert.equal(fills.size, 2);
+  for (const f of fills) assert.ok(f && /^#|^rgb/.test(f), `expected a real color, got ${f}`);
+  assert.ok(document.querySelector('[class*="swatch"]'));
+});
+
+test('a static mark.color/size (no encoding channel) still styles the line', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{x: 1, y: 1}, {x: 2, y: 2}]},
+    mark: {type: 'line', color: 'red', size: 3},
+    encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}},
+  });
+  const [path] = marksOf(document, 'path');
+  assert.ok(path);
+  // A constant (non-field) channel value is hoisted by Plot onto the
+  // mark's own wrapping `<g>` as a shared SVG presentation attribute
+  // (inherited by every path in the group), not repeated per-path.
+  const g = path.closest('g');
+  assert.equal(g.getAttribute('stroke'), 'red');
+  assert.equal(g.getAttribute('stroke-width'), '3');
+});
+
+test('top-level window transform computes a real rolling mean', async () => {
+  const {document} = await renderSpec({
+    data: {values: Array.from({length: 10}, (_, i) => ({x: i, y: i % 2 === 0 ? 100 : 0}))},
+    transform: [{window: [{op: 'mean', field: 'y', as: 'rolling'}], frame: [-1, 1]}],
+    mark: 'line',
+    encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'rolling', type: 'quantitative'}},
+  });
+  const [path] = marksOf(document, 'path');
+  assert.ok(path);
+  const d = path.getAttribute('d');
+  assert.ok(!d.includes('NaN'));
+  // A 3-wide rolling mean of alternating 100/0 should smooth to ~50,
+  // nowhere near the raw 0/100 extremes -- distinguishes a real
+  // computation from the un-fixed bug (the field simply not existing,
+  // producing NaN positions, or the transform being silently skipped and
+  // leaving the raw un-smoothed data instead).
+  assert.equal((d.match(/L/g) || []).length, 9);
 });

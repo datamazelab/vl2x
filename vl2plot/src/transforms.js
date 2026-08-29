@@ -6,14 +6,22 @@
 // explicit (an aggregate transform always lists its own `groupby` fields),
 // so they need no channel-inference logic, just a direct translation.
 //
-// v1 scope: filter, calculate, aggregate, bin, timeUnit, stack, density.
-// Anything else throws a clear "unsupported" error naming the transform,
-// unless `ignoreUnsupported` is set, in which case the step is skipped
-// entirely.
+// v1 scope: filter, calculate, aggregate, bin, timeUnit, stack, density,
+// window. Anything else throws a clear "unsupported" error naming the
+// transform, unless `ignoreUnsupported` is set, in which case the step is
+// skipped entirely.
 
 import {filterToExpr, translateExpr} from './expr.js';
 import {isSupportedD3AggregateOp, aggregateExpr} from './aggops.js';
 import {isSupportedTimeUnit, timeUnitExpr} from './timeunit.js';
+
+// Mirrors `vlWindow()`'s own supported-op set (see `runtime.js`) --
+// percentile/selection ops with no simple direct equivalent (percent_rank,
+// cume_dist, ntile, first_value/last_value/nth_value) aren't supported.
+const WINDOW_OPS = new Set(['row_number', 'rank', 'dense_rank', 'lag', 'lead', 'sum', 'mean', 'average', 'count', 'min', 'max', 'median', 'distinct']);
+function isSupportedWindowOp(op) {
+  return WINDOW_OPS.has(op);
+}
 
 export function renderTransforms(transformList, dataVar, ignoreUnsupported = false) {
   const statements = [];
@@ -98,6 +106,22 @@ function renderOne(t, dataVar, ignoreUnsupported) {
       `${dataVar} = vlDensity(${dataVar}, {field: ${opts.field}, groupby: ${opts.groupby}, extent: ${opts.extent}, ` +
         `bandwidth: ${opts.bandwidth}, steps: ${opts.steps}, counts: ${opts.counts}, as: ${opts.as}});`,
     ];
+  }
+  if ('window' in t) {
+    const unsupportedOp = t.window.map(w => w.op).find(op => !isSupportedWindowOp(op));
+    if (unsupportedOp && !ignoreUnsupported) {
+      throw new Error(`Unsupported window op: "${unsupportedOp}"`);
+    }
+    if (unsupportedOp) {
+      return [`// vl2plot: skipped unsupported window op "${unsupportedOp}" (--ignore-unsupported)`];
+    }
+    const opts = {
+      window: JSON.stringify(t.window),
+      groupby: JSON.stringify(t.groupby || []),
+      sort: JSON.stringify(t.sort || []),
+      frame: Array.isArray(t.frame) ? JSON.stringify(t.frame) : 'null',
+    };
+    return [`${dataVar} = vlWindow(${dataVar}, {window: ${opts.window}, groupby: ${opts.groupby}, sort: ${opts.sort}, frame: ${opts.frame}});`];
   }
   const key = Object.keys(t)[0] || '<unknown>';
   if (ignoreUnsupported) {

@@ -149,6 +149,16 @@ export function buildScaleOptions(def, ctx = {}) {
 
   if (def.axis === null || def.axis === false) out.axis = null;
   if (def.legend === null || def.legend === false) out.legend = null;
+  // Vega-Lite shows a legend by default for any field-encoded legendable
+  // channel (unless explicitly turned off, handled above) -- unlike an
+  // axis, Plot has no equivalent default of its own: every one of Plot's
+  // own marks renders with no legend at all unless `legend: true` is set
+  // explicitly on that channel's own top-level scale options, even when a
+  // `fill`/`color` (etc.) channel is otherwise fully configured.
+  const LEGENDABLE_CHANNELS = new Set(['color', 'opacity', 'r', 'symbol']);
+  if (out.legend === undefined && LEGENDABLE_CHANNELS.has(ctx.channel) && typeof def.field === 'string') {
+    out.legend = true;
+  }
 
   return Object.keys(out).length ? out : null;
 }

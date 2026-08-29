@@ -145,9 +145,19 @@ function commonChannels(encoding, markType, markProps) {
   const colorDef = encoding.color || encoding.fill || encoding.stroke;
   const colorCh = colorChannelName(markType, markProps);
   const tooltipDef = Array.isArray(encoding.tooltip) ? encoding.tooltip[0] : encoding.tooltip;
+  // A static `mark: {"color": "red", "opacity": 0.3}`-style property (as
+  // opposed to a field/value *encoding* channel) sets every instance of
+  // the mark to that one constant -- distinct from, and independent of,
+  // any `encoding.color`/`encoding.opacity` (an encoding channel always
+  // takes precedence when both are present, matching Vega-Lite's own
+  // rule). Left unhandled entirely, a mark relying solely on its own
+  // static style (a common real pattern -- no color/opacity *field* at
+  // all) silently rendered with Plot's own default styling instead.
+  const colorValue = val(colorDef) ?? (typeof markProps.color === 'string' ? formatValue(markProps.color) : undefined);
+  const opacityValue = val(encoding.opacity) ?? (typeof markProps.opacity === 'number' ? formatValue(markProps.opacity) : undefined);
   return [
-    [colorCh, val(colorDef)],
-    ['opacity', val(encoding.opacity)],
+    [colorCh, colorValue],
+    ['opacity', opacityValue],
     ['z', val(encoding.detail)],
     ['title', val(tooltipDef)],
   ];
@@ -224,12 +234,19 @@ function renderLineOrArea(isArea) {
     const valueCh = orient === 'horizontal' ? 'x' : 'y';
     const companionCh = `${valueCh}2`;
     const orderField = hasField(encoding.order) ? encoding.order.field : (hasField(enc[domainCh]) ? enc[domainCh].field : null);
+    // A static `mark: {"size": 3}` (VL's own line-width alias for a
+    // "line" mark) or `{"strokeWidth": 3}` is this project's own
+    // markProps fallback pattern (see `commonChannels()`'s own comment,
+    // and `renderRule()`'s identical fallback below) -- an encoding-
+    // channel `size` still takes precedence when present.
+    const staticStrokeWidth = markProps.strokeWidth ?? markProps.size;
+    const strokeWidthValue = val(enc.size) ?? (staticStrokeWidth != null ? formatValue(staticStrokeWidth) : undefined);
     const pairs = [
       [domainCh, val(enc[domainCh])],
       isArea && enc[companionCh] ? [`${valueCh}1`, val(enc[companionCh])] : null,
       isArea && enc[companionCh] ? [`${valueCh}2`, val(enc[valueCh])] : [valueCh, val(enc[valueCh])],
       ...commonChannels(enc, isArea ? 'area' : 'line', markProps),
-      !isArea ? ['strokeWidth', val(enc.size)] : null,
+      !isArea ? ['strokeWidth', strokeWidthValue] : null,
       orderField ? ['sort', formatValue(orderField)] : null,
     ].filter(Boolean);
     const stackPlan = planStack(isArea ? 'area' : 'line', enc, orient);
@@ -342,6 +359,56 @@ function renderBoxplot(encoding, markProps, dataVar, ignoreUnsupported) {
   return {statements, markExpr: `Plot.${fn}(${dataVar}, ${optionsSrc})`};
 }
 
+// Plot has no native arc/pie mark at all -- `VlArc` (see `runtime.js`) is
+// a real one built on `d3.pie()`/`d3.arc()`, wrapped as a genuine Plot
+// `Mark` subclass so its own `fill` channel still gets Plot's shared
+// color scale *and legend* for free. v1 scope: a plain quantitative
+// `theta` (implicit stacking, matching Vega-Lite's own default for this
+// mark) with `color` and an optional `tooltip`; `order` reorders the
+// wedges (VL's own stacking order); `mark.innerRadius`/`outerRadius`
+// (donut vs. pie) and an explicit `theta.scale.range` override (a
+// truncated/rotated circle) both pass through directly. A *non*-
+// quantitative `theta` (equal-sized wedges per category, a wind-rose-
+// style chart) or a per-row-varying `radius` channel are real gaps, not
+// attempted here -- both need genuine additional scale machinery this
+// v1 doesn't have yet.
+function renderArc(encoding, markProps, dataVar, ignoreUnsupported) {
+  if (!hasField(encoding.theta)) {
+    if (ignoreUnsupported) {
+      return {statements: [`// vl2plot: unsupported arc mark without a theta encoding, skipped (--ignore-unsupported)`], markExpr: null};
+    }
+    throw new Error('"arc" mark requires a theta encoding');
+  }
+  if (hasField(encoding.radius)) {
+    if (ignoreUnsupported) {
+      return {statements: [`// vl2plot: unsupported arc mark with a per-row "radius" channel, skipped (--ignore-unsupported)`], markExpr: null};
+    }
+    throw new Error('Unsupported: an "arc" mark with its own "radius" channel is not yet supported by vl2plot');
+  }
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const orderField = hasField(enc.order) ? enc.order.field : null;
+  const orderStatements = orderField
+    ? [
+        `${dataVar} = ${dataVar}.slice().sort((a, b) => ` +
+          `(a[${JSON.stringify(orderField)}] < b[${JSON.stringify(orderField)}] ? -1 : a[${JSON.stringify(orderField)}] > b[${JSON.stringify(orderField)}] ? 1 : 0));`,
+      ]
+    : [];
+  const colorDef = enc.color || enc.fill;
+  const tooltipDef = Array.isArray(enc.tooltip) ? enc.tooltip[0] : enc.tooltip;
+  const rangeOverride = enc.theta.scale && Array.isArray(enc.theta.scale.range) ? enc.theta.scale.range : null;
+  const pairs = [
+    ['theta', val(enc.theta)],
+    colorDef ? ['fill', val(colorDef)] : null,
+    tooltipDef ? ['title', val(tooltipDef)] : null,
+    rangeOverride ? ['startAngle', formatValue(rangeOverride[0])] : null,
+    rangeOverride ? ['endAngle', formatValue(rangeOverride[1])] : null,
+    typeof markProps.innerRadius === 'number' ? ['innerRadius', formatValue(markProps.innerRadius)] : null,
+    typeof markProps.outerRadius === 'number' ? ['outerRadius', formatValue(markProps.outerRadius)] : null,
+  ].filter(Boolean);
+  const optionsSrc = objectSource(pairs);
+  return {statements: [...statements, ...orderStatements], markExpr: `new VlArc(${dataVar}, ${optionsSrc})`};
+}
+
 const RENDERERS = {
   point: renderDot,
   circle: renderDot,
@@ -354,6 +421,7 @@ const RENDERERS = {
   text: renderText,
   rect: renderRect,
   boxplot: renderBoxplot,
+  arc: renderArc,
 };
 
 export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false) {
