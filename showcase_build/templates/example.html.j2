@@ -28,101 +28,110 @@
     </label>
   </div>
   <h1 class="example-title">{{ title }}</h1>
-  {% if description %}<p class="example-desc">{{ description }}</p>{% endif %}
+  <p class="example-desc">{{ description or '&nbsp;' | safe }}</p>
 
-  <section class="hero">
-    <div class="hero-label">Original Vega-Lite spec (ground truth render)</div>
-    <div class="hero-vis"><div id="vis-original"></div></div>
-    <details class="spec-toggle">
-      <summary>View raw spec JSON</summary>
+  <div class="nav-arrows nav-arrows-top">
+    {% if prev_name %}<a href="../{{ prev_name }}/index.html">← {{ prev_name }}</a>{% else %}<span></span>{% endif %}
+    {% if next_name %}<a href="../{{ next_name }}/index.html">{{ next_name }} →</a>{% else %}<span></span>{% endif %}
+  </div>
+
+  <div class="compare-toolbar">
+    <div class="view-toggle" role="group" aria-label="View mode">
+      <button type="button" class="view-btn active" data-view="compare">Compare</button>
+      <button type="button" class="view-btn" data-view="gallery">Show all visualizations</button>
+    </div>
+    <div class="tab-bar">
+      <button type="button" class="tab-btn active" data-tab="altair">Altair {{ "✅" if altair.ok else "❌" }}</button>
+      <button type="button" class="tab-btn" data-tab="vlapi">vl-api {{ "✅" if vlapi.ok else "❌" }}</button>
+      <button type="button" class="tab-btn" data-tab="d3">D3 {{ "✅" if d3.ok else "❌" }}</button>
+      <button type="button" class="tab-btn" data-tab="plot">Obs. Plot {{ "✅" if plot.ok else "❌" }}</button>
+      <button type="button" class="tab-btn" data-tab="ggplot">ggplot2 {{ "✅" if (ggplot.ok and ggplot.has_png) else "❌" }}</button>
+      <button type="button" class="tab-btn" data-tab="matplotlib">matplotlib {{ "✅" if (matplotlib.ok and matplotlib.has_png) else "❌" }}</button>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+
+    <section class="panel source-panel" data-panel="source">
+      <div class="panel-head"><span class="title">Vega-Lite (source)</span><span class="lang">ground truth</span></div>
+      <div class="render-wrap"><div id="vis-original"></div></div>
       <div class="code-wrap"><pre><code class="language-json" id="spec-json"></code></pre></div>
-    </details>
-  </section>
+    </section>
 
-  <div class="panels">
+    <div class="tab-panels">
 
-    <div class="panel">
-      <div class="panel-head"><span class="title">Altair {{ "✅" if altair.ok else "❌" }}</span><span class="lang">Python</span></div>
-      <div class="panel-body">
-        {% if altair.ok %}
-        <div class="code-wrap"><pre><code class="language-python">{{ altair.code }}</code></pre></div>
-        <div class="render-wrap"><div id="vis-altair"></div></div>
-        <div class="render-note">Altair compiles to a real Vega-Lite spec, so it renders via the same Vega-Lite/Vega runtime as the original above.</div>
-        {% else %}
-        <div class="error-box">{{ altair.error }}</div>
-        {% endif %}
-      </div>
-    </div>
+        <section class="panel tab-panel active" data-tab-panel="altair" data-panel="altair">
+          <div class="panel-head"><span class="title">Altair {{ "✅" if altair.ok else "❌" }}</span><span class="lang">Python</span></div>
+          {% if altair.ok %}
+          <div class="render-wrap"><div id="vis-altair"></div></div>
+          <div class="code-wrap"><pre><code class="language-python">{{ altair.code }}</code></pre></div>
+          <div class="render-note">Altair compiles to a real Vega-Lite spec, so it renders via the same Vega-Lite/Vega runtime as the original above.</div>
+          {% else %}
+          <div class="error-box">{{ altair.error }}</div>
+          {% endif %}
+        </section>
 
-    <div class="panel">
-      <div class="panel-head"><span class="title">vega-lite-api {{ "✅" if vlapi.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
-      <div class="panel-body">
-        {% if vlapi.ok %}
-        <div class="code-wrap"><pre><code class="language-javascript">{{ vlapi.code }}</code></pre></div>
-        <div class="render-wrap"><div id="vis-vlapi"></div></div>
-        <div class="render-note">vega-lite-api also compiles to a real Vega-Lite spec — same rendering path as the original.</div>
-        {% else %}
-        <div class="error-box">{{ vlapi.error }}</div>
-        {% endif %}
-      </div>
-    </div>
+        <section class="panel tab-panel" data-tab-panel="vlapi" data-panel="vlapi">
+          <div class="panel-head"><span class="title">vega-lite-api {{ "✅" if vlapi.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
+          {% if vlapi.ok %}
+          <div class="render-wrap"><div id="vis-vlapi"></div></div>
+          <div class="code-wrap"><pre><code class="language-javascript">{{ vlapi.code }}</code></pre></div>
+          <div class="render-note">vega-lite-api also compiles to a real Vega-Lite spec — same rendering path as the original.</div>
+          {% else %}
+          <div class="error-box">{{ vlapi.error }}</div>
+          {% endif %}
+        </section>
 
-    <div class="panel">
-      <div class="panel-head"><span class="title">D3 {{ "✅" if d3.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
-      <div class="panel-body">
-        {% if d3.translated %}
-        <div class="code-wrap"><pre><code class="language-javascript">{{ d3.code }}</code></pre></div>
-        <div class="render-wrap"><div id="vis-d3"></div></div>
-        <div class="render-note">Generated D3 code running live in this page (no grammar-of-graphics layer — drawn from scratch). Built with <code>ignoreUnsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
-        {% else %}
-        <div class="error-box">{{ d3.error }}</div>
-        {% endif %}
-      </div>
-    </div>
+        <section class="panel tab-panel" data-tab-panel="d3" data-panel="d3">
+          <div class="panel-head"><span class="title">D3 {{ "✅" if d3.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
+          {% if d3.translated %}
+          <div class="render-wrap"><div id="vis-d3"></div></div>
+          <div class="code-wrap"><pre><code class="language-javascript">{{ d3.code }}</code></pre></div>
+          <div class="render-note">Generated D3 code running live in this page (no grammar-of-graphics layer — drawn from scratch). Built with <code>ignoreUnsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
+          {% else %}
+          <div class="error-box">{{ d3.error }}</div>
+          {% endif %}
+        </section>
 
-    <div class="panel">
-      <div class="panel-head"><span class="title">Observable Plot {{ "✅" if plot.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
-      <div class="panel-body">
-        {% if plot.translated %}
-        <div class="code-wrap"><pre><code class="language-javascript">{{ plot.code }}</code></pre></div>
-        <div class="render-wrap"><div id="vis-plot"></div></div>
-        <div class="render-note">Generated Observable Plot code running live in this page (Plot supplies its own grammar-of-graphics scales/legends/faceting). Built with <code>ignoreUnsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
-        {% else %}
-        <div class="error-box">{{ plot.error }}</div>
-        {% endif %}
-      </div>
-    </div>
+        <section class="panel tab-panel" data-tab-panel="plot" data-panel="plot">
+          <div class="panel-head"><span class="title">Observable Plot {{ "✅" if plot.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
+          {% if plot.translated %}
+          <div class="render-wrap"><div id="vis-plot"></div></div>
+          <div class="code-wrap"><pre><code class="language-javascript">{{ plot.code }}</code></pre></div>
+          <div class="render-note">Generated Observable Plot code running live in this page (Plot supplies its own grammar-of-graphics scales/legends/faceting). Built with <code>ignoreUnsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
+          {% else %}
+          <div class="error-box">{{ plot.error }}</div>
+          {% endif %}
+        </section>
 
-    <div class="panel">
-      <div class="panel-head"><span class="title">ggplot2 {{ "✅" if (ggplot.ok and ggplot.has_png) else "❌" }}</span><span class="lang">R</span></div>
-      <div class="panel-body">
-        {% if ggplot.ok and ggplot.has_png %}
-        <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
-        <div class="render-wrap"><img src="../../renders/{{ name }}.png" alt="ggplot2 render of {{ title }}"></div>
-        <div class="render-note">Static PNG rendered ahead of time with R (can't run R in a browser). Built with <code>ignore_unsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
-        {% elif ggplot.ok %}
-        <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
-        <div class="error-box">Translated, but evaluating the generated R failed.</div>
-        {% else %}
-        <div class="error-box">{{ ggplot.error }}</div>
-        {% endif %}
-      </div>
-    </div>
+        <section class="panel tab-panel" data-tab-panel="ggplot" data-panel="ggplot">
+          <div class="panel-head"><span class="title">ggplot2 {{ "✅" if (ggplot.ok and ggplot.has_png) else "❌" }}</span><span class="lang">R</span></div>
+          {% if ggplot.ok and ggplot.has_png %}
+          <div class="render-wrap"><img src="../../renders/{{ name }}.png" alt="ggplot2 render of {{ title }}"></div>
+          <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
+          <div class="render-note">Static PNG rendered ahead of time with R (can't run R in a browser). Built with <code>ignore_unsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
+          {% elif ggplot.ok %}
+          <div class="code-wrap"><pre><code class="language-r">{{ ggplot.code }}</code></pre></div>
+          <div class="error-box">Translated, but evaluating the generated R failed.</div>
+          {% else %}
+          <div class="error-box">{{ ggplot.error }}</div>
+          {% endif %}
+        </section>
 
-    <div class="panel">
-      <div class="panel-head"><span class="title">matplotlib {{ "✅" if (matplotlib.ok and matplotlib.has_png) else "❌" }}</span><span class="lang">Python</span></div>
-      <div class="panel-body">
-        {% if matplotlib.ok and matplotlib.has_png %}
-        <div class="code-wrap"><pre><code class="language-python">{{ matplotlib.code }}</code></pre></div>
-        <div class="render-wrap"><img src="../../renders_matplotlib/{{ name }}.png" alt="matplotlib render of {{ title }}"></div>
-        <div class="render-note">Static PNG rendered ahead of time (matplotlib can't run in a browser either). Built with <code>ignore_unsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
-        {% elif matplotlib.ok %}
-        <div class="code-wrap"><pre><code class="language-python">{{ matplotlib.code }}</code></pre></div>
-        <div class="error-box">Translated, but executing the generated Python failed.</div>
-        {% else %}
-        <div class="error-box">{{ matplotlib.error }}</div>
-        {% endif %}
-      </div>
+        <section class="panel tab-panel" data-tab-panel="matplotlib" data-panel="matplotlib">
+          <div class="panel-head"><span class="title">matplotlib {{ "✅" if (matplotlib.ok and matplotlib.has_png) else "❌" }}</span><span class="lang">Python</span></div>
+          {% if matplotlib.ok and matplotlib.has_png %}
+          <div class="render-wrap"><img src="../../renders_matplotlib/{{ name }}.png" alt="matplotlib render of {{ title }}"></div>
+          <div class="code-wrap"><pre><code class="language-python">{{ matplotlib.code }}</code></pre></div>
+          <div class="render-note">Static PNG rendered ahead of time (matplotlib can't run in a browser either). Built with <code>ignore_unsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
+          {% elif matplotlib.ok %}
+          <div class="code-wrap"><pre><code class="language-python">{{ matplotlib.code }}</code></pre></div>
+          <div class="error-box">Translated, but executing the generated Python failed.</div>
+          {% else %}
+          <div class="error-box">{{ matplotlib.error }}</div>
+          {% endif %}
+        </section>
+
     </div>
 
   </div>
@@ -171,6 +180,35 @@
       setSourcePathCommentsVisible(sourcePathToggle.checked);
     });
   }
+
+  // Tab bar (right column): only one tool's own panel body is shown at a
+  // time -- every render underneath is already live-rendered regardless of
+  // which tab is active (see the render scripts below), so switching tabs
+  // is a pure CSS visibility flip, no re-render needed.
+  var tabButtons = document.querySelectorAll('.tab-btn');
+  var tabPanels = document.querySelectorAll('.tab-panel');
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      tabButtons.forEach(function (b) { b.classList.remove('active'); });
+      tabPanels.forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      var target = document.querySelector('.tab-panel[data-tab-panel="' + btn.dataset.tab + '"]');
+      if (target) target.classList.add('active');
+    });
+  });
+
+  // "Show all visualizations": a `gallery-mode` class on <body> switches
+  // the whole comparison over to CSS alone (see style.css) -- every tool's
+  // own tab panel becomes visible at once, laid out in one grid alongside
+  // the source panel, with all code/notes hidden so only the renders show.
+  var viewButtons = document.querySelectorAll('.view-btn');
+  viewButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      viewButtons.forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.body.classList.toggle('gallery-mode', btn.dataset.view === 'gallery');
+    });
+  });
 
   // Relative to *this page's own URL* (examples/<name>/index.html), not
   // domain-root -- so this still resolves to showcase/ when the site is

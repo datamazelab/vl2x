@@ -265,59 +265,98 @@ h3 { font-size: 1.25em; }
   max-width: 900px;
 }
 
-.hero {
-  background: var(--panel);
-  border: 1px solid var(--border);
+/* ---- Compare toolbar + two-column source/tabs layout ---- */
+
+/* Same two-column grid as `.compare-grid` immediately below (and the same
+   20px gap) so the tab bar lines up directly above the right-hand panel
+   it controls, while still sharing one horizontal row with the view
+   toggle above the source panel on the left. */
+.compare-toolbar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 900px) {
+  .compare-toolbar { grid-template-columns: 1fr; }
+}
+
+.view-toggle {
+  display: inline-flex;
+  justify-self: start;
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
-  padding: 18px;
+  overflow: hidden;
+}
+
+.view-btn {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  border: none;
+  border-left: 1px solid var(--rule);
+  color: var(--text);
+  cursor: pointer;
+}
+.view-btn:first-child { border-left: none; }
+.view-btn:hover { background: var(--panel-alt); }
+.view-btn.active { background: var(--header-bg); color: #fff; }
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
   margin-bottom: 28px;
 }
 
-.hero-label {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin-bottom: 10px;
+@media (max-width: 900px) {
+  .compare-grid { grid-template-columns: 1fr; }
 }
 
-.hero-vis {
+/* `overflow-x: auto` + `nowrap` (rather than letting the bar wrap to a
+   second row) keeps every tab label on one line -- a horizontal scrollbar
+   is the fallback on a narrow viewport rather than a taller tab bar.
+   `min-width: 0` is needed for that overflow to actually kick in inside
+   a grid cell (a grid item's default `min-width: auto` would otherwise
+   refuse to shrink below its own content's full width). */
+.tab-bar {
   display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 120px;
-  overflow: auto;
-  background: #fff;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 2px;
 }
 
-/* vega-embed's own SVG output has no intrinsic responsiveness (unlike the
-   generated D3 code, which sets this itself) -- without this, a chart wider
-   than its panel gets flex-centered and clipped equally on both sides,
-   which reads as truncation rather than "scroll to see more". Scaling it
-   down to fit instead avoids that entirely for the vast majority of charts;
-   .hero-vis/.render-wrap still scroll as a fallback for anything that
-   still doesn't fit (e.g. a chart taller than the panel, which this rule
-   deliberately doesn't constrain). */
-.hero-vis svg, .render-wrap svg {
-  max-width: 100%;
-  height: auto;
-}
-
-details.spec-toggle { margin-top: 12px; }
-details.spec-toggle summary {
-  cursor: pointer;
-  color: var(--muted);
+.tab-btn {
+  padding: 6px 10px;
   font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-details.spec-toggle pre {
-  max-height: 400px;
-}
+.tab-btn:hover { color: var(--text); border-color: var(--link); }
+.tab-btn.active { background: var(--header-bg); color: #fff; border-color: var(--header-bg); }
 
-.panels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
-  gap: 20px;
-}
+.tab-panels { position: relative; min-width: 0; }
+/* `.panel.tab-panel`/`.panel.tab-panel.active` (two classes, not one) so
+   these always outrank the plain `.panel` rule's own `display: flex`
+   regardless of which one is defined later in this file -- with equal
+   (single-class) specificity, `.panel`'s rule was winning the source-order
+   tie-break and forcing every tab panel visible at once, independent of
+   its own `.active` class (clicking a tab changed nothing visible). */
+.panel.tab-panel { display: none; }
+.panel.tab-panel.active { display: flex; flex-direction: column; }
 
 .panel {
   background: #fff;
@@ -326,6 +365,7 @@ details.spec-toggle pre {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .panel-head {
@@ -348,15 +388,48 @@ details.spec-toggle pre {
   font-size: 11px;
 }
 
-.panel-body {
+/* Render on top, code beneath -- for both the source panel and every
+   tool's own tab panel. */
+.render-wrap {
+  padding: 14px;
+  min-height: 140px;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: #fff;
 }
+
+/* vega-embed's own SVG output has no intrinsic responsiveness (unlike the
+   generated D3/Plot code, which sets this itself) -- without this, a chart
+   wider than its panel gets flex-centered and clipped equally on both
+   sides, which reads as truncation rather than "scroll to see more".
+   Scaling it down to fit instead avoids that entirely for the vast
+   majority of charts; .render-wrap still scrolls as a fallback for
+   anything that still doesn't fit (e.g. a chart taller than the panel,
+   which this rule deliberately doesn't constrain). */
+.render-wrap svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* A `"width": "container"` spec (vega-lite sizes it via a ResizeObserver on
+   its mount element's own box) needs that element to actually have a
+   defined width -- otherwise, as a bare flex child with no width/content of
+   its own, it measures 0 and the chart renders invisibly at zero width.
+   Giving the mount point 100% width is harmless for a fixed-width spec too
+   (only "container"-sized specs read the parent's width at all). */
+.render-wrap > div {
+  width: 100%;
+}
+
+.render-wrap img { max-width: 100%; height: auto; display: block; }
 
 .code-wrap {
   max-height: 340px;
   overflow: auto;
   background: var(--code-bg);
+  border-top: 1px solid var(--border);
 }
 
 .code-wrap pre {
@@ -367,28 +440,31 @@ details.spec-toggle pre {
 
 .code-wrap code.hljs { background: transparent; padding: 0; }
 
-.render-wrap {
-  padding: 14px;
-  border-top: 1px solid var(--border);
-  min-height: 140px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: auto;
-  background: #fff;
+/* ---- Gallery mode: every render visible at once, no code ---- */
+
+body.gallery-mode .compare-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
-/* A `"width": "container"` spec (vega-lite sizes it via a ResizeObserver on
-   its mount element's own box) needs that element to actually have a
-   defined width -- otherwise, as a bare flex child with no width/content of
-   its own, it measures 0 and the chart renders invisibly at zero width.
-   Giving the mount point 100% width is harmless for a fixed-width spec too
-   (only "container"-sized specs read the parent's width at all). */
-.hero-vis > div, .render-wrap > div {
-  width: 100%;
+/* `display: contents` drops the wrapper's own box but keeps its children
+   in the DOM, promoting them to participate directly in `.compare-grid`'s
+   own grid layout -- so every tool's own tab panel (normally only the
+   `.active` one shown, picked via the tab bar) becomes a sibling grid
+   item of the source panel instead of being nested inside one fixed-size
+   column. */
+body.gallery-mode .tab-panels {
+  display: contents;
 }
-
-.render-wrap img { max-width: 100%; height: auto; display: block; }
+body.gallery-mode .tab-bar,
+body.gallery-mode .code-wrap,
+body.gallery-mode .render-note,
+body.gallery-mode .source-path-toggle {
+  display: none;
+}
+body.gallery-mode .tab-panel {
+  display: flex !important;
+  flex-direction: column;
+}
 
 .render-note {
   padding: 9px 14px;
@@ -411,6 +487,13 @@ details.spec-toggle pre {
   justify-content: space-between;
   margin-top: 30px;
   font-size: 13px;
+}
+
+/* Same prev/next links repeated above the compare toolbar too, so cycling
+   through examples never needs a scroll back up from the bottom. */
+.nav-arrows-top {
+  margin-top: 0;
+  margin-bottom: 16px;
 }
 
 footer.site-footer {

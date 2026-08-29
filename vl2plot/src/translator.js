@@ -120,6 +120,44 @@ function sourceComment(path, includeSourcePaths) {
   return includeSourcePaths && path ? [`// from: ${path}`] : [];
 }
 
+// Vega-Lite's own bracket-index convention for referencing a nested
+// property of a compound *top-level* `aggregate` result -- `argmin`/
+// `argmax` store the whole matching *row* under their own `as` name, and
+// a downstream encoding channel then reads one of that row's own other
+// fields via e.g. `argmax_US_Gross['Production Budget']` (adapted from
+// `vl2d3`'s own identical helper). Scoped to bracket-index segments only
+// (`['key']`/`[0]`) -- a bare dot-path (`record.low`, a nested object-
+// valued column) is already handled by `data.js`'s own
+// `vlFlattenOneLevel()` at data-load time instead, so parsing it here too
+// would just be redundant, not wrong, but there's no reason to.
+function parseBracketFieldPath(field) {
+  const m = /^([A-Za-z_$][\w$]*)((?:\[(?:'[^']*'|"[^"]*"|-?\d+)\])+)$/.exec(String(field));
+  if (!m) return null;
+  const keys = [...m[2].matchAll(/\[(?:'([^']*)'|"([^"]*)"|(-?\d+))\]/g)].map(km => (km[3] !== undefined ? Number(km[3]) : km[1] ?? km[2]));
+  return {base: m[1], keys};
+}
+
+// Flattens every bracket-indexed encoding field into a real plain field
+// (via a `.map()` statement over `dataVar`) before any mark/scale code
+// ever sees the channel -- none of them can express a nested property
+// read from a single `field` string.
+function flattenBracketFields(encoding, dataVar) {
+  const statements = [];
+  const rewritten = {...encoding};
+  for (const ch of Object.keys(encoding)) {
+    const def = encoding[ch];
+    if (!def || typeof def !== 'object' || typeof def.field !== 'string') continue;
+    const parsed = parseBracketFieldPath(def.field);
+    if (!parsed) continue;
+    const flatField = `${parsed.base}__${parsed.keys.map(k => String(k).replace(/[^A-Za-z0-9_]/g, '_')).join('__')}`;
+    let expr = `d[${JSON.stringify(parsed.base)}]`;
+    for (const k of parsed.keys) expr = `(${expr} == null ? null : ${expr}[${JSON.stringify(k)}])`;
+    statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${JSON.stringify(flatField)}: ${expr}}));`);
+    rewritten[ch] = {...def, field: flatField};
+  }
+  return {statements, encoding: rewritten};
+}
+
 // Translates one unit view (a real `mark`, not a further composition):
 // returns `{statements, dataVar, markExpr, scaleOptions}`.
 function translateUnit(node, ctx, path) {
@@ -138,7 +176,8 @@ function translateUnit(node, ctx, path) {
     }
   }
 
-  const encoding = node.encoding || {};
+  const {statements: bracketStmts, encoding} = flattenBracketFields(node.encoding || {}, dataVar);
+  statements.push(...bracketStmts);
   const {statements: markStmts, markExpr} = renderMark(node.mark, encoding, dataVar, ctx.ignoreUnsupported);
   statements.push(...markStmts);
   if (markExpr) {

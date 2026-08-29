@@ -34,8 +34,12 @@ export function isSupportedAggregateOp(op) {
 // Returns Plot's own reducer name for `op`, or (under `ignoreUnsupported`) a
 // reasonable numeric stand-in ("mean") with an explanatory comment appended
 // by the caller -- ops with no Plot-native equivalent at all (variancep,
-// stdevp, sum2, argmin/argmax, valid/missing, ci0/ci1) fall back the same
-// way `vl2d3`'s own aggregateExpr() does.
+// stdevp, sum2, argmin/argmax -- a *row* lookup, not a value reducer Plot's
+// own group/bin transforms have any way to express inline -- valid/missing,
+// ci0/ci1) fall back the same way `vl2d3`'s own aggregateExpr() does. The
+// top-level `transform: [{"aggregate": ...}]` form (aggregateExpr() below)
+// is a separate code path operating on a materialized array, and does
+// support argmin/argmax there.
 export function plotReducer(op, ignoreUnsupported = false) {
   const reducer = OPS[op];
   if (reducer) return reducer;
@@ -67,6 +71,16 @@ const D3_OPS = {
   distinct: (rows, acc) => `new Set(${rows}.map(${acc})).size`,
   valid: (rows, acc) => `${rows}.map(${acc}).filter(v => v != null && !Number.isNaN(v)).length`,
   missing: (rows, acc) => `${rows}.map(${acc}).filter(v => v == null || Number.isNaN(v)).length`,
+  // Unlike every other op above (which reduces to a single *value*),
+  // argmax/argmin return the whole matching *row* -- the row whose own
+  // field the accessor reads is greatest/least within the group. A
+  // downstream encoding channel then references one of that row's own
+  // other fields via Vega-Lite's own bracket-index convention (e.g.
+  // `argmax_US_Gross['Production Budget']`), flattened into a real plain
+  // field by `flattenBracketFields()` in translator.js before any mark/
+  // scale code ever sees it.
+  argmax: (rows, acc) => `${rows}.reduce((best, r) => (best === null || (${acc})(r) > (${acc})(best)) ? r : best, null)`,
+  argmin: (rows, acc) => `${rows}.reduce((best, r) => (best === null || (${acc})(r) < (${acc})(best)) ? r : best, null)`,
 };
 
 export function isSupportedD3AggregateOp(op) {
