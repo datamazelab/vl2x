@@ -215,6 +215,33 @@ test('temporal x-axis', async () => {
   assert.equal(marksOf(document, 'path').length, 1);
 });
 
+test('a trail mark renders a real variable-width ribbon, not a constant-width line', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{x: 1, y: 10, size: 2}, {x: 2, y: 20, size: 20}, {x: 3, y: 15, size: 2}]},
+    mark: 'trail',
+    encoding: {
+      x: {field: 'x', type: 'quantitative'},
+      y: {field: 'y', type: 'quantitative'},
+      size: {field: 'size', type: 'quantitative'},
+    },
+  });
+  const [path] = marksOf(document, 'path');
+  assert.ok(path);
+  const d = path.getAttribute('d');
+  // A real ribbon (vlTrailPath, runtime.js) draws one closed sub-path per
+  // consecutive point pair -- "M...L...A...L...A...Z" repeated -- not a
+  // single constant-width stroked line; 3 points means 2 segments, so 2
+  // "Z" (closePath) commands.
+  assert.equal((d.match(/Z/g) || []).length, 2, `expected 2 closed ribbon segments (3 points), got: ${d}`);
+  // The middle point's own size (20) is far larger than either
+  // neighbor's (2), so the ribbon's own perpendicular half-width there --
+  // read directly off the arc radius vega-scenegraph's own algorithm
+  // emits at each point -- should be visibly larger too.
+  const radii = [...d.matchAll(/A([\d.]+),\1/g)].map(m => Number(m[1]));
+  assert.ok(radii.length >= 3, `expected at least 3 arc radii, got: ${d}`);
+  assert.ok(Math.max(...radii) > Math.min(...radii) * 2, 'expected the middle (large-size) point to have a visibly larger radius than the small-size ends');
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

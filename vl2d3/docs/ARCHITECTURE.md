@@ -280,6 +280,101 @@ reading of the generator would have missed the problem:
   fields to 0 upstream of drawing instead of leaving them to become `NaN`
   path coordinates.
 
+## `trail`: a real variable-width ribbon, ported from vega-scenegraph itself
+
+Vega-Lite's `trail` mark draws a line whose own stroke width varies per
+point according to a `size` channel (`trail_color.vl.json`: stock price
+over time, one trail per symbol, width keyed to price). No d3-shape
+generator draws this — `d3.line()` only ever emits a constant-width
+stroke — so `trail` previously fell through `renderApproximateMark()` and
+was drawn as a plain same-width line, silently dropping the size encoding
+entirely (a documented v1 gap, not a crash).
+
+Rather than hand-deriving a tapered-ribbon approximation, `vlTrailPath()`
+(`runtime.js`) ports vega-scenegraph's own `path/trail.js` shape generator
+directly — the literal algorithm the real Vega/Vega-Lite renderer itself
+uses to draw this mark. Each consecutive point pair becomes its own
+closed sub-path: a trapezoid between the two points' own perpendicular
+offsets (the normal to the segment direction, scaled by each point's own
+radius), capped at each end by a real circular arc so consecutive
+segments meet with a seamless rounded joint regardless of how sharply the
+line turns — confirmed correct by feeding it a hand-picked 3-point line
+and inspecting the emitted `moveTo`/`lineTo`/`arc` commands directly (see
+the module's own doc comment). `renderTrail()` (`marks.js`) builds one
+`d3.path()` context per color/detail group (mirroring `renderLine()`'s own
+grouping/sort-by-x conventions) and calls `vlTrailPath()` into it, using
+the resulting `context.toString()` as the `<path>`'s own `d` attribute —
+filled (`fill`), not stroked, matching the real compiled Vega spec for
+this mark exactly (`fill: {scale: "color", field: "symbol"}`, no `stroke`
+property at all).
+
+One easy-to-get-wrong detail, caught only by compiling the real spec
+through `vega-lite`'s own compiler and reading its output rather than
+guessing: **a `trail` mark's own `size` channel means a full stroke
+WIDTH, linearly scaled** (`config.scale.minStrokeWidth`/`maxStrokeWidth`,
+default range `[1, 4]`) — a completely different default than a `point`
+mark's own `size` (an AREA, sqrt-scaled, range `[2, 20]`). Reusing
+`resolveSizeScale()` unchanged for `trail` would have quietly applied the
+wrong scale *type* (sqrt instead of linear) and the wrong default range,
+producing a real-looking but numerically wrong taper — `resolveSizeScale()`
+now takes the resolving layer's own mark type and switches both the scale
+function and the default range for `line`/`trail`/`rule` (only `trail`
+draws a size-driven ribbon today; `line`/`rule` are included so a future
+size-on-line/rule wouldn't silently inherit the point-mark default).
+
+## `hconcat`/`vconcat`: a fixed shape shouldn't reflow to the wrong one
+
+`hconcat`/`vconcat`'s runtime composition wrapper (`buildRuntimeComposition()`,
+`translator.js`) already gave each panel a smaller-than-standalone default
+size (200x200, see the comment at its own call site) — but the wrapper
+itself still set `flex-wrap: wrap` unconditionally. `hconcat`/`vconcat`
+have a *fixed* semantic shape (Vega-Lite itself has no "reflow into a grid
+if the container is too narrow" concept for either — the real renderer
+either fits the panels or the whole thing overflows), so relying on a
+flexbox's own width-triggered wrap to decide the layout is itself the
+bug: in a narrow-enough embedding (a showcase tab column, an embedding
+page's own sidebar, a "gallery"-mode grid cell narrower than 260px), any
+one panel already wider than the container forces every panel onto its
+own line, and a 2-up `hconcat` renders visually indistinguishable from a
+`vconcat` — not a bug in any individual panel's own rendering, the wrong
+*composition* shape coming out the other end of a reflow decision this
+composition was never supposed to make in the first place. Fixed by
+`flex-wrap: nowrap` plus a scrollbar along the fixed axis
+(`overflow-x`/`overflow-y: auto`) for `hconcat`/`vconcat` specifically —
+guaranteeing the requested shape always holds, at the cost of a
+scrollbar instead of a silent reflow when it doesn't fit, the same
+tradeoff a real Vega-Lite render forces here too. A plain `concat` with
+no explicit `columns` (`direction: "wrap"`) intentionally keeps
+wrap-to-fit — it has no single fixed row/column shape of its own to
+protect.
+
+## `encoding.facet`'s own `columns` was silently ignored by the runtime split
+
+A *wrapped* facet (`encoding.facet: {field, columns: N}`, e.g.
+`trellis_barley.vl.json`'s own `columns: 2` across 8 `site` panels) is
+handled by `buildRuntimeFacetPanels()`'s `direction: "wrap"` case — which,
+like the `hconcat`/`vconcat` bug above, used a plain `flex-wrap: wrap`
+with no explicit column count at all, silently ignoring the spec's own
+`columns` and instead showing however many panels happened to fit the
+embedding container's own width (anywhere from all 8 side by side down
+to a single column, each panel wrapping onto its own line and looking
+exactly like an unrequested vertical stack, depending purely on viewport
+width). Unlike the fixed-direction `hconcat`/`vconcat` case, a *wrapped*
+facet's own requested shape is a genuine multi-column grid, which
+`nowrap` alone can't express — instead, whenever the facet def carries an
+explicit `columns`, a real CSS grid (`grid-template-columns: repeat(N,
+auto)`) is used instead of flex, the identical fix already used for a
+plain top-level `concat`'s own `columns` (`buildRuntimeComposition()`).
+
+By contrast, `trellis_bar.vl.json`'s own `row: {field: "gender"}` facet
+(no `columns`, `direction: "column"`) turns out to already be correct as
+originally reported bug-for-bug: verified by compiling the actual spec
+through `vega-lite`'s own compiler and reading its compiled Vega
+`layout` block directly (`{"columns": 1, ...}`) — a `row` facet with no
+`column` sibling produces a genuine single-column, vertically-stacked
+grid in real Vega-Lite too. `direction: "column"` (vertical stacking) was
+already the right mapping; no change was needed there.
+
 ## Corpus validation methodology
 
 Because `vl2d3` targets a fundamentally lower-level toolkit with a

@@ -213,18 +213,14 @@ const SKIP_COMMENT = reason => `// vl2d3: mark not drawn (${reason}, --ignore-un
 //  - `rect` with an x2/y2 range -> drawn as a bar (renderBar already
 //    handles the ranged-box case); without a range, falls through to a
 //    point per row (still shows the underlying data, just not the
-//    summary/band shape). `errorbar`/`errorband`/`boxplot` have their own
-//    real renderers (renderErrorbar/renderErrorband/renderBoxplot) and
-//    never reach this function at all.
-//  - `trail` -> a plain line (drops the width-by-`size` encoding).
+//    summary/band shape). `errorbar`/`errorband`/`boxplot`/`trail` have
+//    their own real renderers (renderErrorbar/renderErrorband/
+//    renderBoxplot/renderTrail) and never reach this function at all.
 //  - `square`/anything else unrecognized -> a point.
 function renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported) {
   const note = asType => `// vl2d3: unsupported mark type "${type}", drawing as "${asType}" instead (--ignore-unsupported)`;
   if (type === 'rect' && (encoding.x2 || encoding.y2)) {
     return note('bar') + '\n' + renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
-  }
-  if (type === 'trail') {
-    return note('line') + '\n' + renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
   }
   return note('point') + '\n' + renderPoint(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
 }
@@ -758,6 +754,8 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
       return renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     case 'area':
       return renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+    case 'trail':
+      return renderTrail(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
     case 'rule':
       return renderRule(encoding, scales, dims, dataVar, markProps, ignoreUnsupported, extentParams);
     case 'tick':
@@ -1583,6 +1581,73 @@ function curveClause(markProps, ignoreUnsupported = false) {
   const interpolate = simpleMarkProp(markProps.interpolate, undefined, 'interpolate', ignoreUnsupported);
   const curve = interpolate && CURVE_FOR_INTERPOLATE[interpolate];
   return curve ? `.curve(d3.${curve})` : '';
+}
+
+// Vega-Lite's `trail` mark: a line whose own stroke width varies per point
+// according to its own `size` channel -- no d3-shape generator draws this
+// (d3.line() only ever emits a constant-width stroke), so this ports
+// vega-scenegraph's own `path/trail.js` shape generator directly (the
+// exact algorithm the real Vega/Vega-Lite renderer itself uses): each
+// consecutive point pair becomes its own closed, filled sub-path -- a
+// trapezoid between the two points' own perpendicular offsets, capped by a
+// rounded joint (a real circular arc) at each end so consecutive segments
+// meet seamlessly regardless of how sharply the line turns. `vlTrailPath`
+// (runtime.js) is the ported algorithm itself, built once per group here
+// via a real `d3.path()` context (matching real Vega's own use of
+// d3-path, so joints come out pixel-identical, not merely "some tapered
+// ribbon").
+function renderTrail(encoding, scales, dims, dataVar, markProps, ignoreUnsupported = false) {
+  const {x, y, size} = scales;
+  if ((!x || !y) && !ignoreUnsupported) throw new Error('"trail" mark requires both x and y encodings');
+  if (!x || !y) return SKIP_COMMENT('"trail" mark requires both x and y encodings');
+  const cx = dodgeAwareAccessor(encoding, scales, 'x');
+  const cy = dodgeAwareAccessor(encoding, scales, 'y');
+  const sortField = encoding.x.field;
+  const groupField = seriesGroupField(encoding);
+  // Vega-Lite's own `size` semantics for `trail` are a full stroke WIDTH,
+  // not a radius and not area-scaled (unlike a `point` mark's own `size`)
+  // -- see resolveSizeScale's own comment (scales.js) for the confirmed
+  // ground truth (a plain linear scale, default range [1, 4], matching
+  // `config.scale.minStrokeWidth`/`maxStrokeWidth`).
+  const w =
+    size && encoding.size && encoding.size.field
+      ? `size(d[${JSON.stringify(encoding.size.field)}])`
+      : encoding.size && 'value' in encoding.size
+        ? formatValue(encoding.size.value)
+        : formatValue(simpleMarkProp(markProps.size, 2, 'size', ignoreUnsupported)) + markPropNote(markProps.size, 'size', ignoreUnsupported);
+  // Real Vega-Lite renders a `trail` mark's own color via `fill` (a filled
+  // ribbon shape), never `stroke` -- confirmed against the compiled Vega
+  // spec for trail_color.vl.json (its mark's own `encode.update` carries
+  // a `fill`, no `stroke` property at all).
+  const validConds = ['x', 'y']
+    .map(ch => encoding[ch])
+    .filter(def => def && def.field)
+    .map(def => `d[${JSON.stringify(def.field)}] != null && !Number.isNaN(d[${JSON.stringify(def.field)}])`);
+  const filterClause = validConds.length ? `.filter(d => ${validConds.join(' && ')})` : '';
+  const pointsExpr = rowsVar =>
+    `${rowsVar}${filterClause}.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}])).map(d => ({x: ${cx}, y: ${cy}, w: ${w}}))`;
+  const pathExpr = rowsVar => `(() => { const ctx = d3.path(); vlTrailPath(ctx, ${pointsExpr(rowsVar)}); return ctx.toString(); })()`;
+  const lines = [];
+  if (groupField) {
+    const fill =
+      encoding.color && encoding.color.field
+        ? 'color(key)'
+        : encoding.color && 'value' in encoding.color
+          ? formatValue(encoding.color.value)
+          : JSON.stringify(markColorFallback(markProps, 'fill', DEFAULT_FILL));
+    lines.push(`svg.append("g")`);
+    lines.push(`  .selectAll("path")`);
+    lines.push(`  .data(d3.group(${dataVar}, d => d[${JSON.stringify(groupField)}]))`);
+    lines.push(`  .join("path")`);
+    lines.push(`    .attr("fill", ([key]) => ${fill})`);
+    lines.push(`    .attr("d", ([key, rows]) => ${pathExpr('rows')});`);
+  } else {
+    const fill = JSON.stringify(markColorFallback(markProps, 'fill', DEFAULT_FILL));
+    lines.push(`svg.append("path")`);
+    lines.push(`    .attr("fill", ${fill})`);
+    lines.push(`    .attr("d", ${pathExpr(dataVar)});`);
+  }
+  return lines.join('\n');
 }
 
 function positionDefinedClause(encoding, channels) {

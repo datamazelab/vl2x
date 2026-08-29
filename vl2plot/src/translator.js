@@ -293,7 +293,7 @@ function translateUnit(node, ctx, path) {
   const {statements: bracketStmts, encoding: flattenedEncoding} = flattenBracketFields(encoding, dataVar);
   statements.push(...bracketStmts);
   encoding = flattenedEncoding;
-  const {statements: markStmts, markExpr} = renderMark(node.mark, encoding, dataVar, ctx.ignoreUnsupported);
+  const {statements: markStmts, markExpr} = renderMark(node.mark, encoding, dataVar, ctx.ignoreUnsupported, ctx.facetChannels);
   statements.push(...markStmts);
   if (markExpr) {
     const channels = ['mark', ...Object.keys(encoding).map(ch => `encoding.${ch}`)];
@@ -443,7 +443,23 @@ function translateFacet(node, ctx, path) {
     throw new Error('Unsupported: faceting a layered spec template is not yet supported by vl2plot');
   }
 
-  const unit = translateUnit(merged, ctx, `${path}spec.`);
+  // Threaded down into renderMark()/commonChannels() so the mark itself
+  // carries an explicit `fx`/`fy` channel matching this facet, rather than
+  // relying solely on Plot's own "auto-facet a mark whose data is the
+  // exact same array reference as facet.data" heuristic. That heuristic
+  // alone turns out not to be robust: an explicit, non-default-ordered
+  // `fx`/`fy` scale domain (see facetScaleOptions above, e.g. a facet
+  // field's own `sort: [...]`) silently breaks Plot's own per-facet
+  // stack computation for a stacked mark -- confirmed empirically (a
+  // `Plot.stackY` grouped by a color field, faceted by a *different*
+  // field, with a reordered `fy.domain`, degenerates to a flat
+  // zero-height shape in every facet) -- while an explicit `fy: "field"`
+  // channel on the mark itself sidesteps it entirely. Always setting it
+  // costs nothing when the domain isn't reordered (identical output,
+  // confirmed empirically too), so it's unconditional here rather than
+  // only kicking in when a reordering is actually present.
+  const facetChannelsCtx = {x: colField || plainField, y: rowField};
+  const unit = translateUnit(merged, {...ctx, facetChannels: facetChannelsCtx}, `${path}spec.`);
   const facet = {dataVar: unit.dataVar, x: colField || plainField, y: rowField};
   const scaleOptions = {...unit.scaleOptions, ...facetScaleOptions};
   const plotSrc = buildPlotCallSource(unit.markExpr ? [unit.markExpr] : [], scaleOptions, size, facet, 1);

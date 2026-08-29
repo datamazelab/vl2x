@@ -38,7 +38,7 @@ import {timeUnitExpr, isSupportedTimeUnit, cyclicLabelExpr} from './timeunit.js'
 // Every function name runtime.js exports, in preference order for the
 // generated `import {...} from "./vl2d3-runtime.js"` line -- see
 // specToCode()'s conditional-import logic below.
-const RUNTIME_EXPORTS = ['vlPivot'];
+const RUNTIME_EXPORTS = ['vlPivot', 'vlTrailPath'];
 
 const UNSUPPORTED_COMPOSITIONS = ['facet', 'repeat', 'concat', 'hconcat', 'vconcat'];
 const GEO_CHANNELS = ['longitude', 'latitude', 'longitude2', 'latitude2'];
@@ -872,10 +872,16 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
     const invalidOverride = root.config && root.config.scale && root.config.scale.invalid && root.config.scale.invalid[channel]
       ? root.config.scale.invalid[channel].value
       : undefined;
+    // Which layer's own mark this `size` def actually came from -- a
+    // `line`/`trail`/`rule`'s own `size` means a stroke width (a plain
+    // linear scale), unlike a `point`/`circle`/`square`'s own `size`
+    // (an area, sqrt scale); see resolveSizeScale's own comment.
+    const markType = channel === 'size' ? (prepared.find(p => p.encoding[channel] === def) || {}).mark : undefined;
     const scale = resolver(effectiveDef, {
       dataVar: allDataExpr,
       ignoreUnsupported,
       invalidOverride,
+      markType,
       rangeExpr: `Math.min(${dims.innerWidthExpr}, ${dims.innerHeightExpr}) / 2`,
     });
     b(scale.decl);
@@ -1330,6 +1336,22 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
     b(`__facetGroups.sort((a, b) => d3.ascending(a.key, b.key));`);
   }
 
+  // A wrapped facet (`encoding.facet: {field, columns: N}`, no `row`/
+  // `column` split -- direction `"wrap"`) has an explicit requested
+  // column count, e.g. trellis_barley.vl.json's own `columns: 2` (8 site
+  // panels arranged 2-per-row, 4 rows). A flexbox's own width-triggered
+  // `flex-wrap: wrap` can't express a FIXED count like that -- how many
+  // panels land on one row depends entirely on how wide the embedding
+  // container happens to be, so the exact same generated code can show
+  // anywhere from 1 column (every panel wrapping onto its own line,
+  // rendering what looks exactly like a single vertical stack instead of
+  // the requested grid) up to all 8 side by side, depending on viewport
+  // width alone. A CSS grid with an explicit column count (the same fix
+  // already used for a plain top-level `concat`'s own `columns`, see
+  // buildRuntimeComposition() above) is used instead whenever the facet
+  // itself specifies one, so the requested shape holds regardless of the
+  // container's width.
+  const facetColumns = direction === 'wrap' && typeof facetDef.columns === 'number' ? facetDef.columns : null;
   const flexStyle =
     direction === 'column' ? 'flex-direction: column;' : direction === 'row' ? 'flex-direction: row;' : 'flex-wrap: wrap;';
   // Each panel gets its own width/height from the per-view spec (e.g.
@@ -1367,7 +1389,11 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   const panelOptionsExpr = panelDims.length > 0 || stepDimFragments.length > 0 ? `{...options, ${[...panelDims, ...stepDimFragments].join(', ')}}` : 'options';
   b(`const doc = container.ownerDocument;`);
   b(`const wrap = doc.createElement("div");`);
-  b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 4px;";`);
+  if (facetColumns) {
+    b(`wrap.style.cssText = "display: grid; grid-template-columns: repeat(${facetColumns}, auto); gap: 4px;";`);
+  } else {
+    b(`wrap.style.cssText = "display: flex; ${flexStyle} gap: 4px;";`);
+  }
   b(`container.appendChild(wrap);`);
   b(`for (const {key, rows} of __facetGroups) {`);
   b(`  const panelWrap = doc.createElement("div");`);
@@ -1656,6 +1682,27 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '', includ
   // given.
   const columns = compositionKey === 'concat' && typeof spec.columns === 'number' ? spec.columns : null;
   const gap = typeof spec.spacing === 'number' ? spec.spacing : 12;
+  // `hconcat`/`vconcat` (direction `row`/`column`) have a fixed semantic
+  // shape -- Vega-Lite itself has no "reflow into a grid if the container
+  // is too narrow" concept for either, the panels either fit or the whole
+  // thing overflows/scrolls. A plain flexbox's `flex-wrap: wrap` doesn't
+  // know that: in a narrow embedding (a showcase tab column, an embedding
+  // page's own sidebar, "gallery" mode's own narrower grid cells), each
+  // panel wrapping onto its own line silently turns a 2-up `hconcat` into
+  // what looks exactly like a `vconcat`, and vice versa -- not a rendering
+  // bug in any one panel, just the wrong *composition* shape coming out
+  // the other end of a width-based reflow decision this composition was
+  // never supposed to have. `nowrap` (plus a scrollbar along the fixed
+  // axis, via the matching `overflow-x`/`overflow-y: auto`) guarantees the
+  // requested shape always holds, at the cost of a scrollbar instead of a
+  // reflow when it doesn't fit -- the same tradeoff a real Vega-Lite
+  // render forces here too. Only a plain "concat" (`direction: 'wrap'`,
+  // no explicit `columns`) intentionally keeps wrap-to-fit, since it has
+  // no single fixed row/column shape of its own to protect.
+  const wrapStyle =
+    direction === 'row' ? 'flex-wrap: nowrap; overflow-x: auto;'
+    : direction === 'column' ? 'flex-wrap: nowrap; overflow-y: auto;'
+    : 'flex-wrap: wrap;';
   const wrapperBody = [];
   const b = s => wrapperBody.push('  ' + s);
   b(
@@ -1672,7 +1719,7 @@ function buildPanelFunction(spec, fnName, ignoreUnsupported, prefix = '', includ
   if (columns) {
     b(`wrap.style.cssText = "display: grid; grid-template-columns: repeat(${columns}, auto); gap: ${gap}px;";`);
   } else {
-    b(`wrap.style.cssText = "display: flex; ${flexStyle} flex-wrap: wrap; gap: ${gap}px;";`);
+    b(`wrap.style.cssText = "display: flex; ${flexStyle} ${wrapStyle} gap: ${gap}px;";`);
   }
   b(`container.appendChild(wrap);`);
   children.forEach((child, i) => {

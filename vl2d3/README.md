@@ -145,7 +145,11 @@ relaxes that into a best-effort sacrifice instead, so the chart still draws
   (nested layer-of-layers included) — no shared/aligned scales across
   panels, and a `facet`'s distinct values must be knowable at generation
   time (inline data, or a flat `repeat` field list) or it falls back to one
-  combined view ignoring the split entirely.
+  combined view ignoring the split entirely. `hconcat`/`vconcat` never
+  reflow into the wrong shape regardless of the embedding container's own
+  width (a fixed row/column, with a scrollbar if it doesn't fit, not a
+  silent wrap); an `encoding.facet`'s own explicit `columns: N` is honored
+  via a real CSS grid rather than an uncontrolled width-based wrap.
 - An unsupported mark type (`rect`, `errorbar`/`errorband` without an x2/y2
   range, `boxplot`, ...) is approximated by the nearest supported one (a bar
   for a ranged box, a point/tick otherwise) instead of refusing.
@@ -170,8 +174,8 @@ for the full list of fallbacks.
 | `layer` (including nested layer-of-layers) | ✅ — children rendered on shared scales/axes |
 | `facet`, `concat`, `hconcat`, `vconcat` | ❌ throws a clear "not yet supported" error |
 | `repeat` | ✅ for `repeat: {layer: [...]}` (field substitution into each repeated layer, sharing one panel) — ❌ (same as `facet`) for the row/column-grid form |
-| Marks: `bar`, `rect`, `point`, `circle`, `square`, `line`, `area`, `rule`, `tick`, `text`, `arc`, `boxplot`, `errorbar`, `errorband` | ✅ |
-| Marks: `geoshape`, `image`, `trail` | ❌ |
+| Marks: `bar`, `rect`, `point`, `circle`, `square`, `line`, `area`, `rule`, `tick`, `text`, `arc`, `boxplot`, `errorbar`, `errorband`, `trail` | ✅ — `trail`'s own variable-width ribbon is a direct port of vega-scenegraph's own `path/trail.js` shape generator (its `size` channel is a linearly-scaled stroke width, default range `[1, 4]` — not area-scaled the way a point mark's own `size` is) |
+| Marks: `geoshape`, `image` | ❌ |
 | `x`/`y` scales: linear, time, band, point, log/pow/sqrt | ✅ (inferred from field type + mark) |
 | `color`: ordinal (with a basic swatch legend) and sequential/continuous | ✅ |
 | `size`, `opacity` | ✅ (quantitative only) |

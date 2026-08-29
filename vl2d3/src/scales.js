@@ -520,19 +520,38 @@ export function resolveShapeScale(def, {dataVar, ignoreUnsupported = false}) {
   };
 }
 
-export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false, invalidOverride} = {}) {
+// Vega-Lite's own default `size` scale differs by mark: a `point`/`circle`/
+// `square`'s size is an AREA (a reader perceives area, not radius, so the
+// default scale is `sqrt`, range `[2, 20]` -- er, really the mark's own
+// area-to-radius conversion happens downstream in marks.js, this scale
+// itself just maps a domain value to that radius). A `line`/`trail`/`rule`'s
+// own `size` instead means a stroke WIDTH directly -- a plain `linear`
+// scale, default range `[1, 4]` (matching Vega-Lite's own
+// `config.scale.minStrokeWidth`/`maxStrokeWidth` defaults, confirmed
+// against the real compiler's own compiled output for
+// trail_color.vl.json's `size` scale: `{"type": "linear", "range": [1, 4],
+// "zero": true}` -- not an area scale at all). Only `trail` actually reads
+// a per-row `size` for its own positional rendering today (renderTrail,
+// marks.js); `line`/`rule` are included here too so a future size-on-line/
+// rule wouldn't silently inherit the wrong (area) default.
+const STROKE_WIDTH_SIZE_MARKS = new Set(['line', 'trail', 'rule']);
+
+export function resolveSizeScale(def, {dataVar, ignoreUnsupported = false, invalidOverride, markType} = {}) {
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);
-  const discretized = discretizingScaleExpr(def, dataVar, {defaultRange: '[2, 20]'});
+  const isStrokeWidth = STROKE_WIDTH_SIZE_MARKS.has(markType);
+  const defaultRange = isStrokeWidth ? '[1, 4]' : '[2, 20]';
+  const discretized = discretizingScaleExpr(def, dataVar, {defaultRange});
   if (discretized) {
     return {varName: 'size', decl: scaleDecl('size', discretized, domainNote, invalidOverride), kind: 'discretizing'};
   }
   const domain = explicitDomain ?? domainFromData(dataVar, field);
-  const range = def.scale && def.scale.range ? formatValue(def.scale.range) : '[2, 20]';
+  const range = def.scale && def.scale.range ? formatValue(def.scale.range) : defaultRange;
+  const scaleFn = isStrokeWidth ? 'd3.scaleLinear' : 'd3.scaleSqrt';
   return {
     varName: 'size',
-    decl: scaleDecl('size', `d3.scaleSqrt(${domain}, ${range})`, domainNote, invalidOverride),
+    decl: scaleDecl('size', `${scaleFn}(${domain}, ${range})`, domainNote, invalidOverride),
     kind: 'continuous',
   };
 }

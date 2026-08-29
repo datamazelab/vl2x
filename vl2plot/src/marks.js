@@ -188,11 +188,30 @@ function commonChannels(encoding, markType, markProps) {
   // all) silently rendered with Plot's own default styling instead.
   const colorValue = val(colorDef) ?? (typeof markProps.color === 'string' ? formatValue(markProps.color) : undefined);
   const opacityValue = val(encoding.opacity) ?? (typeof markProps.opacity === 'number' ? formatValue(markProps.opacity) : undefined);
+  // An explicit `fx`/`fy` channel on the mark itself, matching the facet
+  // this mark's own view is nested inside (threaded down from
+  // translateFacet() via renderMark()'s own `facetChannels` param, spliced
+  // onto `markProps` as `__facetChannels`) -- NOT redundant with the
+  // top-level `facet: {data, x, y}` option already set on the `Plot.plot()`
+  // call. Plot auto-facets a mark whose own data is the exact same array
+  // reference as `facet.data`, which normally makes this unnecessary, but
+  // that heuristic turns out not to be robust for a STACKED mark once the
+  // facet's own scale has an explicit, non-default-ordered `domain` (e.g.
+  // a facet field's own `sort: [...]`, see translateFacet()'s own comment)
+  // -- confirmed empirically to silently degenerate every facet's own
+  // stack into a flat, zero-height shape otherwise. Always setting it
+  // (not just when a reordering is actually present) costs nothing when
+  // the domain isn't reordered -- confirmed to produce identical output
+  // either way -- so it's unconditional rather than only kicking in for
+  // the one case that exposed the bug.
+  const facetChannels = markProps.__facetChannels;
   return [
     [colorCh, colorValue],
     ['opacity', opacityValue],
     ['z', val(encoding.detail)],
     ['title', val(tooltipDef)],
+    ...(facetChannels && facetChannels.x ? [['fx', JSON.stringify(facetChannels.x)]] : []),
+    ...(facetChannels && facetChannels.y ? [['fy', JSON.stringify(facetChannels.y)]] : []),
   ];
 }
 
@@ -483,7 +502,7 @@ const RENDERERS = {
   trail: renderTrail,
 };
 
-export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false) {
+export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false, facetChannels) {
   const markType = typeof mark === 'string' ? mark : mark.type;
   const markProps = typeof mark === 'string' ? {} : mark;
   const renderer = RENDERERS[markType];
@@ -493,5 +512,10 @@ export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false) {
     }
     throw new Error(`Unsupported mark type: "${markType}"`);
   }
-  return renderer(encoding, {...markProps, type: markType}, dataVar, ignoreUnsupported);
+  // Spliced onto `markProps` (rather than added as its own positional
+  // parameter to every renderer) so every existing renderer function
+  // that already forwards `markProps` into commonChannels() picks this up
+  // for free, with no signature change needed anywhere else -- see
+  // commonChannels()'s own comment for why this needs to exist at all.
+  return renderer(encoding, {...markProps, type: markType, __facetChannels: facetChannels}, dataVar, ignoreUnsupported);
 }
