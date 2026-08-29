@@ -10,7 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script type="importmap">
-{ "imports": { "d3": "https://cdn.jsdelivr.net/npm/d3@7/+esm" } }
+{ "imports": { "d3": "https://cdn.jsdelivr.net/npm/d3@7/+esm", "@observablehq/plot": "https://cdn.jsdelivr.net/npm/@observablehq/plot@0/+esm" } }
 </script>
 </head>
 <body>
@@ -81,6 +81,19 @@
     </div>
 
     <div class="panel">
+      <div class="panel-head"><span class="title">Observable Plot {{ "✅" if plot.ok else "❌" }}</span><span class="lang">JavaScript</span></div>
+      <div class="panel-body">
+        {% if plot.translated %}
+        <div class="code-wrap"><pre><code class="language-javascript">{{ plot.code }}</code></pre></div>
+        <div class="render-wrap"><div id="vis-plot"></div></div>
+        <div class="render-note">Generated Observable Plot code running live in this page (Plot supplies its own grammar-of-graphics scales/legends/faceting). Built with <code>ignoreUnsupported</code>, so an unsupported feature may be dropped or approximated rather than reflected exactly.</div>
+        {% else %}
+        <div class="error-box">{{ plot.error }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
       <div class="panel-head"><span class="title">ggplot2 {{ "✅" if (ggplot.ok and ggplot.has_png) else "❌" }}</span><span class="lang">R</span></div>
       <div class="panel-body">
         {% if ggplot.ok and ggplot.has_png %}
@@ -119,7 +132,7 @@
     {% if next_name %}<a href="../{{ next_name }}/index.html">{{ next_name }} →</a>{% else %}<span></span>{% endif %}
   </div>
 </main>
-<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2ggplot · vl2matplotlib — Vega-Lite translation showcase</footer>
+<footer class="site-footer">vl2altair · vl2vlapi · vl2d3 · vl2plot · vl2ggplot · vl2matplotlib — Vega-Lite translation showcase</footer>
 
 <script>
   const spec = {{ spec_json | safe }};
@@ -197,6 +210,19 @@
     if (node) el.appendChild(node);
   } catch (e) {
     el.innerHTML = '<div class="error-box">D3 render failed: ' + (e && e.message ? e.message : e) + '</div>';
+  }
+</script>
+{% endif %}
+{% if plot.translated %}
+<script type="module">
+  import chart from './plot.js?v={{ plot.cachebust }}';
+  const el = document.getElementById('vis-plot');
+  try {
+    const baseURL = new URL('../../', location.href).href;
+    const node = await chart(el, {baseURL});
+    if (node) el.appendChild(node);
+  } catch (e) {
+    el.innerHTML = '<div class="error-box">Plot render failed: ' + (e && e.message ? e.message : e) + '</div>';
   }
 </script>
 {% endif %}

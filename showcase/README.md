@@ -1,8 +1,8 @@
 # Showcase
 
 A static site with one page per [Vega-Lite example spec](../vega-lite-example-specs)
-(633 of them), showing the generated code from all five translators
-(`vl2altair`, `vl2vlapi`, `vl2d3`, `vl2ggplot`, `vl2matplotlib`) next to a rendering of each —
+(633 of them), showing the generated code from all six translators
+(`vl2altair`, `vl2vlapi`, `vl2d3`, `vl2plot`, `vl2ggplot`, `vl2matplotlib`) next to a rendering of each —
 plus a searchable/filterable, thumbnail-gallery landing page (`index.html`),
 organized the same way as the official
 [Vega-Lite example gallery](https://vega.github.io/vega-lite/examples/):
@@ -19,6 +19,10 @@ filename-prefix category.
 - **D3**: the generated JavaScript runs *live* in the page (via an
   [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
   pointing the bare `d3` import at a CDN build) — no pre-rendering.
+- **Observable Plot**: same live-in-page approach as D3 (the same import map
+  additionally points `@observablehq/plot` at a CDN build) — `Plot.plot(...)`
+  returns a real DOM node directly, so this panel doesn't need vega-embed or
+  a pre-rendered image either.
 - **ggplot2**: pre-rendered to a static PNG ahead of time with R (a browser
   can't run R), embedded as a plain `<img>`.
 - **matplotlib**: pre-rendered to a static PNG ahead of time with Python (a
@@ -30,7 +34,7 @@ path>`/`// from: <json path>` comment above the statement(s) it produced
 (e.g. `# from: encoding.x`, `// from: layer[0].transform`) — see each
 project's own README for exactly what it labels. Every example page has a
 checkbox ("show `from:` source-mapping comments", next to the breadcrumb,
-checked by default) that hides/shows just those comments across all five
+checked by default) that hides/shows just those comments across all six
 panels at once, without touching the *other* comments a panel can carry
 (the provenance header, an "unsupported feature" fallback note) — it works
 by finding the `.hljs-comment` span highlight.js's own tokenizer already
@@ -61,6 +65,7 @@ translator change:
 python3 showcase_build/run_altair.py       # -> examples/<name>/altair.py + status_altair.json
 node showcase_build/run_vlapi.mjs          # -> examples/<name>/vlapi.js  + status_vlapi.json
 node showcase_build/run_d3.mjs             # -> examples/<name>/d3.js    + status_d3.json
+node showcase_build/run_plot.mjs           # -> examples/<name>/plot.js  + status_plot.json
 Rscript showcase_build/render_ggplot.R     # -> examples/<name>/ggplot.R + renders/<name>.png + status_ggplot.json
 python3 showcase_build/run_matplotlib.py   # -> examples/<name>/matplotlib.py + renders_matplotlib/<name>.png + status_matplotlib.json
 python3 showcase_build/build_site.py       # -> index.html + examples/<name>/index.html (reads all of the above + thumbs_png/)
@@ -88,12 +93,12 @@ needed) for any example that doesn't have one in `vega-lite-example-compiled/`
 as a fallback in `build_site.py`'s thumbnail lookup if you need it.
 
 Current pass rates (translate + render), out of 633: Altair 633, vega-lite-api
-633, D3 618 (drawn live), ggplot2 589 (pre-rendered), matplotlib 594
-(pre-rendered) — matching each project's own `docs/ARCHITECTURE.md` numbers
-modulo methodology differences (this harness also counts execution failures
-the same way as translation failures, where each project's own validator
-distinguishes them). D3/ggplot2/matplotlib are built with their own
-best-effort `ignoreUnsupported`/`ignore_unsupported` fallback on (Altair/
-vega-lite-api don't need it — both already validate near-100% strict), so
-these three numbers run higher than each project's own *strict*-mode corpus
-pass rate reported in its own `docs/ARCHITECTURE.md`.
+633, D3 618 (drawn live), Observable Plot 630 (drawn live), ggplot2 589
+(pre-rendered), matplotlib 594 (pre-rendered) — matching each project's own
+`docs/ARCHITECTURE.md` numbers modulo methodology differences (this harness
+also counts execution failures the same way as translation failures, where
+each project's own validator distinguishes them). D3/Plot/ggplot2/matplotlib
+are built with their own best-effort `ignoreUnsupported`/`ignore_unsupported`
+fallback on (Altair/vega-lite-api don't need it — both already validate
+near-100% strict), so these four numbers run higher than each project's own
+*strict*-mode corpus pass rate reported in its own `docs/ARCHITECTURE.md`.

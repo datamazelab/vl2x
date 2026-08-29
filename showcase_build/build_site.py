@@ -53,6 +53,7 @@ def main():
     status_altair = load_status("status_altair.json")
     status_vlapi = load_status("status_vlapi.json")
     status_d3 = load_status("status_d3.json")
+    status_plot = load_status("status_plot.json")
     status_ggplot = load_status("status_ggplot.json")
     status_matplotlib = load_status("status_matplotlib.json")
 
@@ -86,6 +87,7 @@ def main():
         altair_status = status_altair.get(name, {"ok": False, "error": "not run"})
         vlapi_status = status_vlapi.get(name, {"ok": False, "error": "not run"})
         d3_status = status_d3.get(name, {"ok": False, "error": "not run"})
+        plot_status = status_plot.get(name, {"ok": False, "error": "not run"})
         ggplot_status = status_ggplot.get(name, {"ok": False, "error": "not run"})
         matplotlib_status = status_matplotlib.get(name, {"ok": False, "error": "not run"})
         has_png = (RENDERS_DIR / f"{name}.png").exists()
@@ -114,6 +116,10 @@ def main():
                 # actual content (not e.g. current time) means the URL only
                 # changes when the code actually did.
                 "cachebust": hashlib.md5(read_code(example_dir, "d3.js").encode()).hexdigest()[:10]},
+            plot={"ok": plot_status.get("ok", False), "translated": plot_status.get("translated", plot_status.get("ok", False)),
+                  "error": plot_status.get("error", ""), "code": read_code(example_dir, "plot.js"),
+                  # Same same-URL-caching concern as d3.js above.
+                  "cachebust": hashlib.md5(read_code(example_dir, "plot.js").encode()).hexdigest()[:10]},
             ggplot={"ok": ggplot_status.get("ok", False), "error": ggplot_status.get("error", ""),
                     "code": read_code(example_dir, "ggplot.R"), "has_png": has_png},
             matplotlib={"ok": matplotlib_status.get("ok", False), "error": matplotlib_status.get("error", ""),
@@ -135,7 +141,7 @@ def main():
         return dict(
             name=ex["name"], title=ex["title"], description=ex["description"],
             has_thumb=ex["has_thumb"],
-            altair_ok=ex["altair"]["ok"], vlapi_ok=ex["vlapi"]["ok"], d3_ok=ex["d3"]["ok"],
+            altair_ok=ex["altair"]["ok"], vlapi_ok=ex["vlapi"]["ok"], d3_ok=ex["d3"]["ok"], plot_ok=ex["plot"]["ok"],
             ggplot_ok=ex["ggplot"]["ok"] and ex["ggplot"]["has_png"],
             matplotlib_ok=ex["matplotlib"]["ok"] and ex["matplotlib"]["has_png"],
         )
@@ -178,7 +184,7 @@ def main():
     ))
 
     print(f"Built {len(examples)} example pages + index.html")
-    for sysname, key in [("altair", "altair"), ("vlapi", "vlapi"), ("d3", "d3"), ("ggplot2", "ggplot"), ("matplotlib", "matplotlib")]:
+    for sysname, key in [("altair", "altair"), ("vlapi", "vlapi"), ("d3", "d3"), ("plot", "plot"), ("ggplot2", "ggplot"), ("matplotlib", "matplotlib")]:
         ok = sum(1 for ex in examples if (ex[key]["ok"] and (key not in ("ggplot", "matplotlib") or ex[key]["has_png"])))
         print(f"  {sysname}: {ok}/{len(examples)} ok")
 
