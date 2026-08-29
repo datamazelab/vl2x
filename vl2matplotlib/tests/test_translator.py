@@ -863,3 +863,124 @@ def test_fold_transform_keeps_the_original_folded_fields():
     ax = fig.axes[0]
     ys = ax.collections[0].get_offsets()[:, 1]
     assert set(ys.tolist()) == {-1.0}
+
+
+def test_window_sum_with_no_frame_is_cumulative_not_whole_partition():
+    # waterfall_chart.vl.json's own shape: `window: [{op: "sum", ...}]`
+    # with no `frame` at all means a *running* total (Vega-Lite's real
+    # default frame, `[null, 0]`), not the grand total repeated on every
+    # row (an earlier, unverified assumption this project used to make).
+    fig, code = render({
+        "data": {"values": [{"v": 1}, {"v": 2}, {"v": 3}]},
+        "transform": [{"window": [{"op": "sum", "field": "v", "as": "running"}]}],
+        "mark": "line",
+        "encoding": {"x": {"field": "v", "type": "quantitative"}, "y": {"field": "running", "type": "quantitative"}},
+    })
+    ys = list(fig.axes[0].lines[0].get_ydata())
+    assert ys == [1, 3, 6]
+
+
+def test_window_rank_breaks_ties_with_the_full_sort_order():
+    # window_rank.vl.json's own shape: two rows tied on the *first* sort
+    # field need the second to break the tie correctly.
+    fig, code = render({
+        "data": {"values": [
+            {"g": 1, "point": 6, "diff": -1}, {"g": 1, "point": 6, "diff": 3}, {"g": 1, "point": 3, "diff": 0},
+        ]},
+        "transform": [{
+            "sort": [{"field": "point", "order": "descending"}, {"field": "diff", "order": "descending"}],
+            "window": [{"op": "rank", "as": "rank"}],
+            "groupby": ["g"],
+        }],
+        "mark": "point",
+        "encoding": {"x": {"field": "diff", "type": "quantitative"}, "y": {"field": "rank", "type": "quantitative"}},
+    })
+    ranks = sorted(fig.axes[0].collections[0].get_offsets()[:, 1].tolist())
+    assert ranks == [1, 2, 3]
+
+
+def test_stack_transform_produces_start_end_columns():
+    fig, code = render({
+        "data": {"values": [{"g": "a", "v": 1}, {"g": "a", "v": 2}, {"g": "b", "v": 3}]},
+        "transform": [{"stack": "v", "as": ["lo", "hi"], "groupby": []}],
+        "mark": "bar",
+        "encoding": {"x": {"field": "g", "type": "nominal"}, "y": {"field": "lo", "type": "quantitative"}, "y2": {"field": "hi"}},
+    })
+    assert "vl_stack(" in code
+    assert len(fig.axes[0].patches) == 3
+
+
+def test_area_orientation_flips_when_x_is_the_value_channel():
+    # area_vertical.vl.json's own shape: x is the quantitative measure, y
+    # is a bare `timeUnit` (reduces to a plain int -- still the
+    # domain/sequence axis, not a value being measured) -- must use
+    # fill_betweenx, not fill_between.
+    fig, code = render({
+        "data": {"values": [{"t": "2020-01-01", "v": 5}, {"t": "2021-01-01", "v": 10}, {"t": "2022-01-01", "v": 3}]},
+        "mark": "area",
+        "encoding": {"x": {"aggregate": "sum", "field": "v"}, "y": {"timeUnit": "year", "field": "t"}},
+    })
+    assert "fill_betweenx(" in code
+    assert len(fig.axes[0].collections) == 1
+
+
+def test_dodge_and_stack_combine_when_color_differs_from_xoffset():
+    # bar_grouped_stacked.vl.json's own shape: dodge by one field, stack by
+    # a genuinely different color field within each dodge slot.
+    fig, code = render({
+        "data": {"values": [
+            {"cyl": 4, "origin": "A", "year": 2000, "w": 10}, {"cyl": 4, "origin": "A", "year": 2001, "w": 20},
+            {"cyl": 4, "origin": "B", "year": 2000, "w": 15},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "cyl", "type": "nominal"},
+            "xOffset": {"field": "origin", "type": "nominal"},
+            "y": {"aggregate": "sum", "field": "w", "type": "quantitative"},
+            "color": {"field": "year", "type": "nominal"},
+        },
+    })
+    ax = fig.axes[0]
+    assert len(ax.patches) == 3
+    # The two same-dodge-slot (origin "A") bars must stack (not overlap at
+    # the same bottom=0).
+    bottoms = sorted(p.get_y() for p in ax.patches)
+    assert bottoms[-1] > 0
+
+
+def test_color_scale_null_uses_the_raw_field_value_as_the_color():
+    # bar_color_disabled_scale.vl.json's own shape: `scale: null` means the
+    # field's own values ARE literal color specs, not categories to map
+    # through a palette.
+    fig, _ = render({
+        "data": {"values": [{"c": "red", "v": 1}, {"c": "blue", "v": 2}]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "c", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative"},
+            "color": {"field": "c", "type": "nominal", "scale": None},
+        },
+    })
+    colors = {tuple(p.get_facecolor()) for p in fig.axes[0].patches}
+    import matplotlib.colors as mcolors
+    assert colors == {mcolors.to_rgba("red"), mcolors.to_rgba("blue")}
+
+
+def test_shape_channel_varies_marker_by_the_same_color_field():
+    # point_color_with_shape.vl.json's own shape: shape and color grouped
+    # by the identical field.
+    fig, code = render({
+        "data": {"values": [{"x": 1, "y": 1, "g": "a"}, {"x": 2, "y": 2, "g": "b"}]},
+        "mark": "point",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative"},
+            "color": {"field": "g", "type": "nominal"},
+            "shape": {"field": "g", "type": "nominal"},
+        },
+    })
+    ax = fig.axes[0]
+    assert "__shapemap_" in code
+    assert len(ax.collections) == 2
+    paths = [c.get_paths()[0].vertices.tobytes() for c in ax.collections]
+    assert paths[0] != paths[1]

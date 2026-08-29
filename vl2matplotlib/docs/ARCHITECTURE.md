@@ -1112,6 +1112,152 @@ in substance — see the feature table above for the current, precise list.
 `test_trail_mark_draws_a_variable_width_line` from the mark's own
 implementation above.
 
+## v2.6: window semantics, orientation, dodge+stack, and disabled color scales
+
+A fourth visual-QA-driven round, prompted by a fourth list of specific
+showcase examples (fourteen named, several more found investigating them).
+
+- **JS string-concatenation `+` and unary `+`** (`waterfall_chart.vl.
+  json`'s own `"(cond ? '+' : '') + datum.amount"`, `wheat_wages.vl.
+  json`'s own `"+datum.year + 5"`) -- both previously left untranslated on
+  purpose (see v2.1's own reasoning: a bare `+` is genuinely ambiguous
+  between string concat and numeric addition). Implemented for the two
+  *unambiguous* sub-cases instead of the fully general (unsafe) one: a
+  binary `+` where one side is provably a string (a literal, or a ternary
+  whose both branches are), and a unary `+` in an unambiguous *unary*
+  syntactic position (start of expression, right after an operator/`(`/
+  `,`), applied only to the single following `row[...]` or `(...)`
+  operand it binds to.
+- **A `window` transform with no `frame` given at all used the whole
+  partition**, not a running/cumulative total -- an earlier, unverified
+  assumption (`waterfall_chart.vl.json`'s own `window: [{op: "sum", ...}]`
+  repeated the *grand total* on every bar instead of each one's own
+  cumulative sum). Vega-Lite's real default frame is `[null, 0]`
+  (cumulative up to the current row); `vl_window()` now matches. Also
+  implemented: `lag`/`lead` (a single `.shift()`, previously a
+  documented no-op), and `rank`/`dense_rank` now break ties using the
+  *full* `sort` order (every field, not just the first) --
+  `window_rank.vl.json`'s own two teams tied on `point` needed `diff` to
+  rank correctly.
+- **The top-level `stack` transform** (an *explicit* version of
+  `stack.py`'s own implicit per-mark stacking, producing real `as`
+  columns instead of being inferred from the mark's encoding --
+  `stacked_bar_population_transform.vl.json`'s own shape) was entirely
+  unimplemented; added via a new `vl_stack()` runtime helper sharing the
+  same zero/normalize/center math. Exposed two more real, general bugs in
+  the process: `_render_aggregate()`/`_render_joinaggregate()` sanitized
+  an `as` name for pandas' own keyword-arg syntax but never renamed the
+  column back to the spec's own literal name afterward (`rect_mosaic_
+  simple.vl.json`'s own `as: "count_*"` produced a column actually named
+  `count__`, so a later `stack: "count_*"` couldn't find it) -- fixed by
+  renaming back (aggregate) or simply not sanitizing at all where the
+  original bracket-assignment code never needed a valid identifier in the
+  first place (joinaggregate).
+- **A layer child's own explicit `data` still inherited the wrapper's
+  top-level `transform`**, crashing the moment that transform referenced
+  a field the child's own (different) dataset doesn't have
+  (`wheat_wages.vl.json`'s own monarchs.json layers, siblings of the
+  main wheat/wages ones, sharing the wrapper's `calculate: "+datum.year +
+  5"`). `_merge_down()` now only merges the wrapper's transform into a
+  child that also inherits the wrapper's *data*.
+- **`_force_nominal_if_ambiguous()` inside `_render_rect()` forced a span
+  channel's own numeric field ordinal even when it had a real `x2`/`y2`
+  companion** -- a `field`+companion pair is a genuine numeric span (bin
+  edges, a start/end range) almost always, never a categorical label pair;
+  forcing it ordinal turned `wheat_wages.vl.json`'s own monarchs' reign
+  timeline into one absurdly wide rectangle per row (a tiny ordinal code
+  subtracted from a real four-digit year). Now skipped whenever a
+  companion field is present.
+- **A categorical `color` field on `rect`'s own single-axis span shape
+  (`axvspan`/`axhspan`) was never wired up at all** -- `_color_source()`
+  only ever returns a *group field name* for this case (there's no
+  per-group draw loop the way other marks have; `rect`'s span shape draws
+  via one shared `df.iterrows()` loop), so every span silently fell back
+  to the same flat default color (`layer_falkensee.vl.json`'s own Nazi-
+  Rule/GDR background bands, meant to be two different colors). Fixed via
+  a per-row `value -> color` map, the same `_domain_expr` convention
+  `_render_text()`'s own color support already established.
+- **`mark: {invalid: null}` (keep null rows instead of filtering them)
+  silently shrank the visible domain-axis range** -- `fill_between()`'s
+  own internal NaN-masking excludes a null-value row from its bounding
+  box entirely, cropping the x-axis to only the *valid* rows' own extent
+  (`area_invalid_null.vl.json`'s own edge rows, `x: -1, y: null` / `x: 10,
+  y: null`, vanished from the visible range instead of showing as a gap
+  within a -1..10 domain). Fixed by explicitly extending the domain
+  axis's own limits to the full column's range whenever `invalid: null`
+  is set.
+- **An area/line mark's own orientation was always assumed vertical** (x =
+  domain, y = value) -- wrong whenever x is the quantitative *value*
+  channel and y is the domain one instead (`area_vertical.vl.json`'s own
+  `x: {aggregate: "sum", ...}, y: {timeUnit: "year", ...}`, an area chart
+  running sideways). Affects which field rows are sorted by before
+  drawing (wrong axis -> a scrambled zigzag instead of a smooth curve) and,
+  for `area` specifically, `fill_betweenx()` vs `fill_between()` (not
+  interchangeable). Detecting this needed more than a plain
+  `is_quantitative()` check on both channels: a bare *single* `timeUnit`
+  like `"year"` reduces to a plain int (this project's own cyclic-timeUnit
+  convention), which reads as quantitative too by the time `marks.py` ever
+  sees it (`prepare.py` already rewrote it into a flat column with `type:
+  "quantitative"` baked in for orientation-inference purposes elsewhere).
+  A new internal-only `_was_timeunit` marker survives that rewrite so
+  `_render_line_or_area()` can still tell a genuine value channel apart
+  from a domain one that merely reads as quantitative too.
+- **A grouped (`xOffset`) bar mark's own `color`, when it named a
+  *different* field than the dodge channel, was silently dropped** --
+  color/stacking were only ever wired up when `color` happened to share
+  the *same* field as `xOffset` (the far more common "grouped, not also
+  stacked" shape); a genuinely different color field
+  (`bar_grouped_stacked.vl.json`'s own dodge-by-Origin, color/stack-by-
+  year) fell back to a flat default color with every color's own bar
+  drawn *unstacked*, fully overlapping at the identical dodge position
+  (only the tallest visible). Fixed by stacking within each dodge slot
+  (`groupby(category).cumsum()`, the same formula `stack.py`'s own
+  zero-baseline mode uses) whenever `color` names a real, different,
+  non-quantitative field.
+- **A *continuous* `color` field on a `bar` mark was dropped entirely** --
+  `_render_bar()` never had a continuous-color branch of its own the way
+  `rect`/`point` do (`bar_invalid_color_show_override.vl.json`'s own
+  `color: {field: "c", type: "quantitative"}`). A second, related bug in
+  the same spec: `plan_stacking()`'s own group-channel detection never
+  checked `is_quantitative()`, so a continuous color/opacity field was
+  wrongly treated as a categorical *grouping* field, silently stacking
+  bars that were never meant to stack at all. Both fixed: `_render_bar()`
+  gained a continuous-color branch (`ax.bar()`'s own `color=` accepts a
+  per-bar array, unlike a single value), and `plan_stacking()` now
+  excludes a quantitative field from its group-channel search.
+- **`color.scale: null` (Vega-Lite's "disable scale" convention -- the
+  field's own raw values *are* literal CSS colors already, not categories
+  to map through a palette) was indistinguishable from `scale` being
+  absent entirely**, both falling through to the same default categorical
+  palette (`bar_color_disabled_scale.vl.json`'s own `color: {field:
+  "color", scale: null}`, a column of `"red"`/`"green"`/`"blue"` strings,
+  silently reassigned arbitrary tab10 colors instead). `_categorical_
+  color_lookup()` now returns a new `"raw"` kind (the group key's own
+  string value, used directly) whenever `scale` is explicitly `null`,
+  handled at all five of its own call sites.
+- **The `shape` encoding channel was entirely unimplemented** -- every
+  point mark drew as matplotlib's own default circle regardless of the
+  spec. A fixed `{value: ...}` now picks one marker for every point
+  (`point_color_shape_constant.vl.json`); a field-based `shape` grouping
+  by the *same* field `color` already does now assigns a different marker
+  symbol per category too (`point_color_with_shape.vl.json`'s own
+  `shape`/`color` both keyed to `Species`) via a `_DEFAULT_SHAPE_ORDER`
+  ->matplotlib-marker mapping, respecting an explicit `scale.range` of
+  shape names when given. A `shape` field independently grouping by a
+  *different* field than `color` isn't attempted (a documented, narrower
+  gap -- not exercised by the reported specs).
+- **`parallel_coordinate.vl.json`** (reported alongside these, also
+  broken for `vl2ggplot`/`vl2d3`) was investigated but not fixed -- see
+  v2.5's own entry for the full diagnosis (a pixel-space-vs-data-space
+  coordinate mismatch across layers), unchanged this round.
+
+Net effect on the strict-mode corpus: **522/633 OK, 105/633 skipped,
+6/633 failed** (up from v2.5's 515/110/8 -- the `stack` transform and the
+`trail`/mosaic fixes moved several specs from skip/fail to OK; two of the
+previous round's 8 failures, `waterfall_chart.vl.json` and `wheat_wages.
+vl.json`, are now fixed outright). 8 new regression tests cover this
+round's fixes.
+
 ## Corpus validation methodology
 
 Like `vl2d3`/`vl2ggplot` (and unlike `vl2altair`/`vl2vlapi`, which validate
@@ -1127,7 +1273,7 @@ yet." `tests/validate_examples.py` instead buckets every spec in
   documented scope boundary, see the feature table in `README.md`).
 - **Failed** — anything else. A real bug, worth investigating.
 
-At the time of writing: **515/633 OK, 110/633 skipped, 8/633 failed** (v1
+At the time of writing: **522/633 OK, 105/633 skipped, 6/633 failed** (v1
 launched at 368/249/16; v2 closed the gap to 439/177/17 — see "v2: new
 marks, and the gap between 'renders' and 'renders correctly'" above; v2.1
 reached 472/154/17 — see "v2.1: grouped bars, conditional color, nested
@@ -1138,29 +1284,34 @@ reached 504/121/8 — see "v2.3: normalized/centered stacking, value-based
 color mapping, and N-way binning" above; v2.4 reached 512/113/8 — see
 "v2.4: two new transforms, per-panel/child color sharing, and hconcat/
 vconcat sizing" above; v2.5 reached 515/110/8 — see "v2.5: text color,
-size/log scales, a new `trail` mark, and two more transforms" above). The
+size/log scales, a new `trail` mark, and two more transforms" above; v2.6
+reached 522/105/6 — see "v2.6: window semantics, orientation, dodge+stack,
+and disabled color scales" above, and fixed two of v2.5's own residual 8
+failures outright, `waterfall_chart.vl.json`/`wheat_wages.vl.json`). The
 showcase's own best-effort (`ignore_unsupported=True`) build — exercising
 every fallback path, a wider sample than this strict-mode check — went
 from 547/633 to 579/633 over v2.2, to 578/633 over v2.3 (noise-level;
 v2.3's fixes mostly changed *how* an already-non-crashing spec renders,
 not whether it crashed), to 586/633 over v2.4 (the `density`/`pivot`
 transform support this time genuinely turning prior crashes into clean
-renders), then to **588/633** over v2.5 (the `quantile` transform and new
-`trail` mark again genuinely turning prior crashes/skips into clean
-renders). `tests/validate_rendering.py` runs the same corpus a second
-way: for every spec that translates *and* executes cleanly, it
+renders), to 588/633 over v2.5 (the `quantile` transform and new `trail`
+mark again genuinely turning prior crashes/skips into clean renders), then
+to **594/633** over v2.6 (the `stack` transform and the mosaic/aggregate-
+naming fixes it exposed). `tests/validate_rendering.py` runs the same
+corpus a
+second way: for every spec that translates *and* executes cleanly, it
 introspects the resulting `Figure`'s own `Axes` children
 (`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) for two failure
 shapes an exception-only check can't catch — a script that runs without
 error but draws nothing at all, and one that draws only NaN-valued
-(off-screen) geometry. Neither occurred: **0/515 OK renders are empty or
+(off-screen) geometry. Neither occurred: **0/522 OK renders are empty or
 all-NaN** (note this check can't catch `parallel_coordinate.vl.json`'s
 own subtler failure — v2.5's own section above — since its line data is
 technically non-empty and non-NaN, just visually flattened to a sliver
 by a separate, unfixed layered-coordinate-space issue). Note that this
 check, by construction, cannot catch the *other* class of "renders but is
 wrong" bug v2 through
-v2.5 fixed (a technically-non-empty, non-NaN bar that's still a
+v2.6 fixed (a technically-non-empty, non-NaN bar that's still a
 barely-visible sliver, one drawn at the wrong position, one overdrawing
 another rather than sitting side by side, the right position but the
 wrong flat color, a stack that isn't actually normalized, or a correct

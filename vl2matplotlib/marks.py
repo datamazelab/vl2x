@@ -1201,6 +1201,40 @@ def _render_point(encoding, mark_props, data_var, ax_var, ignore_unsupported) ->
             stmts.append(f"plt.colorbar(plt.cm.ScalarMappable(norm={norm_var}, cmap={cmap_var}), ax={ax_var})")
         return stmts
 
+    # `shape` was previously never consulted at all -- every point drew as
+    # matplotlib's own default circle regardless of the spec. A fixed
+    # `{"value": ...}` just picks one marker for every point
+    # (`point_color_shape_constant.vl.json`'s own `shape: {value:
+    # "square"}`). A field-based `shape` groups points into different
+    # marker symbols the same way a categorical `color` groups them into
+    # different colors -- only handled here when it groups by the *same*
+    # field `color` already does (`point_color_with_shape.vl.json`'s own
+    # `color`/`shape` both keyed to `Species`, by far the most common real
+    # shape: shape reinforcing the same categorical distinction color
+    # already makes, e.g. for colorblind-safe or greyscale-safe reading);
+    # an independently-grouping `shape` field (a different field from
+    # `color`) would need its own dedicated grouping loop, not attempted
+    # here, and falls back to the default circle.
+    shape_def = encoding.get("shape")
+    marker_expr = "'o'"
+    if isinstance(shape_def, dict) and "value" in shape_def:
+        marker_expr = repr(_shape_marker(shape_def["value"]))
+    elif isinstance(shape_def, dict) and shape_def.get("field"):
+        shape_field = shape_def["field"]
+        color_field = color_def.get("field") if isinstance(color_def, dict) else None
+        if shape_field == color_field:
+            shape_scale = shape_def.get("scale") if isinstance(shape_def.get("scale"), dict) else {}
+            shape_range = shape_scale.get("range")
+            shape_order = shape_range if isinstance(shape_range, list) and shape_range else _DEFAULT_SHAPE_ORDER
+            markers_var = f"__shapes_{data_var}"
+            stmts.append(f"{markers_var} = [{', '.join(repr(_shape_marker(s)) for s in shape_order)}]")
+            shape_map_var = f"__shapemap_{data_var}"
+            stmts.append(
+                f"{shape_map_var} = {{__dv: {markers_var}[__di % len({markers_var})] for __di, __dv in "
+                f"enumerate(sorted({data_var}[{shape_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY}))}}"
+            )
+            marker_expr = f"{shape_map_var}.get(__key, 'o')"
+
     def draw(rows, color, label):
         rx = x_col.replace(data_var, rows) if rows != data_var else x_col
         ry = y_col.replace(data_var, rows) if rows != data_var else y_col
@@ -1211,7 +1245,7 @@ def _render_point(encoding, mark_props, data_var, ax_var, ignore_unsupported) ->
         else:
             s = size_expr.replace(data_var, rows) if data_var in size_expr else size_expr
         label_kw = f", label={label}" if label else ""
-        return [f"{ax_var}.scatter({rx}, {ry}, s={s}, color={color}, alpha={alpha}{label_kw})"]
+        return [f"{ax_var}.scatter({rx}, {ry}, s={s}, color={color}, alpha={alpha}{label_kw}, marker={marker_expr})"]
 
     stmts += _grouped_or_single(encoding, mark_props, data_var, draw, stmts=stmts)
     group_field = _color_source(encoding, mark_props)[0]

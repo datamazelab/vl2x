@@ -193,8 +193,8 @@ ways instead of a plain pass/fail:
   not to implement yet (an `"Unsupported: ..."` error). Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **515/633 OK, 110/633 skipped (documented
-boundaries above), 8/633 failed** against the corpus's real-world example
+At the time of writing: **522/633 OK, 105/633 skipped (documented
+boundaries above), 6/633 failed** against the corpus's real-world example
 specs (v1 launched at 368/249/16; v2 reached 439/177/17 — new marks, and
 fixing marks that silently rendered nothing; v2.1 reached 472/154/17 —
 grouped bars, conditional color, nested fields, a shared runtime module;
@@ -203,29 +203,28 @@ v2.2 reached 496/129/8, headlined by a working `repeat` operator — see
 class" below; v2.3 reached 504/121/8 — see "v2.3: normalized/centered
 stacking, value-based color mapping, and N-way binning" below; v2.4
 reached 512/113/8 — see "v2.4: two new transforms, per-panel/child color
-sharing, and hconcat/vconcat sizing" below; this pass reached 515/110/8 —
-see "v2.5: text color, size/log scales, a new `trail` mark, and two more
-transforms" below). The residual failures are each their own narrow gap:
-a `param`/selection-bound literal or expression value used where a plain
+sharing, and hconcat/vconcat sizing" below; v2.5 reached 515/110/8 — see
+"v2.5: text color, size/log scales, a new `trail` mark, and two more
+transforms" below; this pass reached 522/105/6 — see "v2.6: window
+semantics, orientation, dodge+stack, and disabled color scales" below,
+which also fixed two of v2.5's own residual failures outright, the
+JS-`+` ones). The residual failures are each their own narrow gap: a
+`param`/selection-bound literal or expression value used where a plain
 scalar is expected (3: `bar_bullet_expr_bind`, `param_expr`,
 `rule_params`), an embedded-CSV-format data source (1), a
 `geoshape`-with-projection map (1, distinct from the plain-scatter
-`longitude`/`latitude` fallback added in v2.3 — see below), a field name
-that is itself a SQL-expression-shaped string (1), JS's unary `+`
-string-to-number coercion (1, deliberately not attempted — see "v2.1" for
-why), and a JS string-concatenation `+` operator mixing a string and a
-number (1, the same "too easy to misfire on an unrelated numeric `+`"
-reason as the unary case). See
+`longitude`/`latitude` fallback added in v2.3 — see below), and a field
+name that is itself a SQL-expression-shaped string (1). See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full list, and for
 the showcase's own best-effort (`ignore_unsupported=True`) build — a wider
 sample than this strict-mode corpus check, since it also exercises every
-fallback path — **588/633** render without error.
+fallback path — **594/633** render without error.
 
 A second harness, `tests/validate_rendering.py`, additionally executes
 every OK spec's generated code and introspects the resulting `Figure`'s own
 `Axes` children (`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) to
 catch a script that "succeeds" but silently draws nothing, or draws only
-NaN-valued geometry: **0/515 OK renders are empty or all-NaN**.
+NaN-valued geometry: **0/522 OK renders are empty or all-NaN**.
 
 ## Shared runtime helpers
 
@@ -464,6 +463,68 @@ would need new, layer-composition-level machinery — left as a known,
 narrower gap rather than a risky general heuristic. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)'s own "v2.5" section for
 the full diagnosis.
+
+## v2.6: window semantics, orientation, dodge+stack, and disabled color scales
+
+A fourth visual-QA-driven round, prompted by a fourth list of specific
+showcase examples:
+
+- **JS string-concatenation `+` and unary `+`** are now translated for
+  their two *unambiguous* sub-cases (a binary `+` where one side is
+  provably a string; a unary `+` in an unambiguous unary syntactic
+  position) — previously left untouched entirely, since a bare `+` is
+  genuinely ambiguous in the fully general case.
+- **A `window` transform with no `frame` given used the whole partition**,
+  not a running/cumulative total — Vega-Lite's real default is `[null,
+  0]` (cumulative); fixed, along with `lag`/`lead` (previously a no-op)
+  and `rank`/`dense_rank` now breaking ties using the *full* `sort` order
+  instead of just the first field.
+- **The top-level `stack` transform** (an explicit version of this
+  project's own implicit per-mark stacking) was entirely unimplemented —
+  added via a new `vl_stack()` runtime helper. Exposed a real,
+  general bug along the way: an aggregate/joinaggregate's own sanitized
+  `as` name (needed only for pandas' keyword-arg syntax) was never
+  renamed back to the spec's own literal name afterward, so a later
+  transform referencing it by that name couldn't find it.
+- **A layer child's own explicit `data` still inherited the wrapper's
+  top-level `transform`**, crashing when that transform referenced a
+  field the child's different dataset doesn't have — now only merged
+  into a child that also inherits the wrapper's data.
+- **A `rect` span's own numeric field was forced ordinal even with a real
+  `x2`/`y2` companion**, turning a start/end timeline into one absurdly
+  wide rectangle per row; and **a categorical `color` on that same
+  single-axis span shape was never wired up at all**, always drawing the
+  flat default color — both fixed.
+- **`mark: {invalid: null}` silently shrank the visible domain-axis
+  range** when the *other* channel's null values excluded a row from
+  matplotlib's own internal bounding-box computation — fixed by
+  explicitly extending the domain axis to the field's own full range.
+- **An area/line mark's own orientation was always assumed vertical** —
+  wrong when x is the quantitative value channel and y is the domain one
+  instead, affecting both draw-order sorting and (for `area`)
+  `fill_betweenx()` vs `fill_between()`.
+- **A grouped (`xOffset`) bar's own `color`, when it named a different
+  field than the dodge channel, was silently dropped** — now stacks
+  within each dodge slot by that color field, matching Vega-Lite's real
+  "grouped and stacked at once" behavior.
+- **A *continuous* `color` field on a `bar` mark was dropped entirely** —
+  `bar` never had a continuous-color branch the way `rect`/`point` do;
+  fixed, along with a related bug where `plan_stacking()` treated a
+  continuous color/opacity field as a categorical grouping field.
+- **`color.scale: null`** (Vega-Lite's "disable scale" convention — the
+  field's own raw values are literal colors already) was indistinguishable
+  from `scale` being absent, both defaulting to the categorical palette —
+  now returns the raw value directly.
+- **The `shape` encoding channel was entirely unimplemented** — every
+  point drew as the default circle regardless of the spec. A fixed value
+  now picks one marker for every point; a field grouping by the same
+  field `color` already does now assigns a different marker per category
+  too (an independently-grouping `shape` field isn't attempted — a
+  documented, narrower gap).
+
+`parallel_coordinate.vl.json` (reported alongside these) remains
+unfixed — see v2.5's own entry above for the diagnosis, unchanged this
+round.
 
 ## Testing
 
