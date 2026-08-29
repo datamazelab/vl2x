@@ -4,6 +4,12 @@
 // scales and the timeUnit helpers both expect that.
 
 import {formatValue} from './literals.js';
+// Generated code below calls `vlFlattenOneLevel(...)` by name (a shared
+// runtime helper, see `runtime.js`) -- `translator.js`'s own body-text
+// regex scan for that name is what adds the actual `import {...} from
+// "./vl2plot-runtime.js"` line to the final generated module, so this
+// module itself needs no import of `runtime.js` at all.
+
 
 // Vega-Lite's own convention for inline `values`: an array of *primitive*
 // values (not row objects) is ingested as if each were `{"data": value}` --
@@ -19,7 +25,27 @@ function wrapPrimitiveValues(values) {
 
 export function renderDataLoad(data, dataVar, ignoreUnsupported = false) {
   if (data && Array.isArray(data.values)) {
-    return {statements: [`let ${dataVar} = ${formatValue(wrapPrimitiveValues(data.values))};`], isAsync: false};
+    return {
+      statements: [`let ${dataVar} = vlFlattenOneLevel(${formatValue(wrapPrimitiveValues(data.values))});`],
+      isAsync: false,
+    };
+  }
+  // Inline `values` given as a plain *object* rather than an array (e.g. a
+  // GeoJSON-shaped `{"type": "FeatureCollection", "features": [...]}`, or
+  // an Elasticsearch-shaped `{"hits": {"hits": [...]}}`) needs `format.
+  // property` to name which of its own keys holds the real row array --
+  // Vega-Lite's own convention for exactly this shape, where the property
+  // name is itself a *dotted path* to traverse (`"hits.hits"` means
+  // `values.hits.hits`), not a single literal key to look up verbatim.
+  if (data && data.values && typeof data.values === 'object' && !Array.isArray(data.values)) {
+    const property = data.format && typeof data.format.property === 'string' ? data.format.property : null;
+    if (property) {
+      const accessExpr = property.split('.').reduce((acc, key) => `${acc}?.[${JSON.stringify(key)}]`, formatValue(data.values));
+      return {
+        statements: [`let ${dataVar} = vlFlattenOneLevel(${accessExpr});`],
+        isAsync: false,
+      };
+    }
   }
   if (data && typeof data.url === 'string') {
     const format = (data.format && data.format.type) || guessFormatFromUrl(data.url);

@@ -55,6 +55,11 @@ if (datasetsDir) {
 
 const scratchDir = new URL('.scratch-rendering/', import.meta.url);
 mkdirSync(scratchDir, {recursive: true});
+// Generated code that uses the shared runtime helper module (see
+// src/runtime.js) imports it via the relative specifier
+// "./vl2plot-runtime.js" -- needs a plain copy alongside every generated
+// file this harness writes and then dynamically imports.
+writeFileSync(new URL('vl2plot-runtime.js', scratchDir), readFileSync(new URL('../src/runtime.js', import.meta.url)));
 
 let files = readdirSync(specsDir).filter(f => f.endsWith('.vl.json'));
 files.sort();

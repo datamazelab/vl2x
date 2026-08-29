@@ -264,3 +264,173 @@ test('substring() Vega expression coerces to a string first', async () => {
   });
   assert.equal(document.querySelectorAll('circle').length, 2);
 });
+
+test('1-dimensional aggregate (no other channel) collapses to one correctly-summed bar', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{people: 10}, {people: 20}, {people: 30}]},
+    mark: 'bar',
+    encoding: {x: {aggregate: 'sum', field: 'people', type: 'quantitative', scale: {domain: [0, 1000]}}},
+  });
+  const rects = document.querySelectorAll('rect');
+  assert.equal(rects.length, 1);
+  // A fixed [0, 1000] domain makes the sum (60) directly checkable from
+  // pixel width -- an un-summed render (one bar per row, wrongly scaled)
+  // previously still "looked" full-width under Plot's own auto-domain
+  // fitting for a single point, masking the bug.
+  const width = Number(rects[0].getAttribute('width'));
+  assert.ok(width > 30 && width < 40, `expected width ~34.8 for sum=60/1000, got ${width}`);
+});
+
+test('a reference rule (1D aggregate, no x) draws a real, correctly-valued line', async () => {
+  // A known, narrower cosmetic limitation: the synthetic grouping key
+  // `needsConstantKey` injects to collapse a 1D aggregate into one group
+  // (see prepare.js) also becomes a real (if arbitrary) band position for
+  // a mark like `ruleY`, which ideally spans the *entire* opposite axis
+  // when no x is given at all -- so this only asserts the line renders
+  // with the correct y (mean) value, not that it spans full width.
+  const {document} = await renderSpec({
+    data: {values: [{a: 'A', b: 28}, {a: 'B', b: 56}]},
+    layer: [
+      {mark: 'bar', encoding: {x: {field: 'a', type: 'nominal'}, y: {field: 'b', type: 'quantitative'}}},
+      {mark: 'rule', encoding: {y: {aggregate: 'mean', field: 'b', type: 'quantitative'}}},
+    ],
+  });
+  const [line] = marksOf(document, 'line');
+  assert.ok(line);
+  const rectYs = [...document.querySelectorAll('rect')].map(r => Number(r.getAttribute('y')));
+  const lineY = Number(line.getAttribute('y1'));
+  // mean(28, 56) = 42 -- exactly halfway between the two bars' own heights,
+  // so the rule's own y should land between the two rects' own y values.
+  assert.ok(lineY > Math.min(...rectYs) && lineY < Math.max(...rectYs));
+});
+
+test('bin with no companion channel defaults to a vertical histogram', async () => {
+  const {document} = await renderSpec({
+    data: {values: Array.from({length: 30}, (_, i) => ({v: i}))},
+    mark: 'bar',
+    encoding: {x: {field: 'v', bin: true, type: 'quantitative'}},
+  });
+  const rects = [...document.querySelectorAll('rect')];
+  assert.ok(rects.length > 1);
+  // Vertical: bars differ in x (bin edges), not in y.
+  const xs = new Set(rects.map(r => r.getAttribute('x')));
+  assert.ok(xs.size > 1);
+});
+
+test('opacity alongside an aggregate on a different channel does not break grouping', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{age: 10, people: 100}, {age: 10, people: 50}, {age: 20, people: 200}]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'age', type: 'ordinal'},
+      y: {aggregate: 'sum', field: 'people', type: 'quantitative'},
+      opacity: {field: 'people', type: 'quantitative'},
+    },
+  });
+  const rects = [...document.querySelectorAll('rect')];
+  assert.equal(rects.length, 2);
+  const heights = rects.map(r => Number(r.getAttribute('height'))).sort((a, b) => a - b);
+  // age=10 sums to 150, age=20 sums to 200 -- correctly summed heights
+  // should differ noticeably, not collapse to near-zero (the un-fixed bug
+  // rendered zero rects at all).
+  assert.ok(heights[1] > heights[0]);
+});
+
+test('a text label with its own aggregate + explicit stack matches the bar it labels', async () => {
+  const {document} = await renderSpec({
+    data: {values: [
+      {age: 10, gender: 'M', people: 100}, {age: 10, gender: 'F', people: 50},
+      {age: 20, gender: 'M', people: 200}, {age: 20, gender: 'F', people: 150},
+    ]},
+    layer: [
+      {
+        mark: 'bar',
+        encoding: {
+          y: {field: 'age', type: 'ordinal'},
+          x: {aggregate: 'sum', field: 'people', type: 'quantitative', stack: 'normalize'},
+          color: {field: 'gender', type: 'nominal'},
+        },
+      },
+      {
+        mark: 'text',
+        encoding: {
+          y: {field: 'age', type: 'ordinal'},
+          x: {aggregate: 'sum', field: 'people', type: 'quantitative', stack: 'normalize'},
+          text: {aggregate: 'sum', field: 'people', type: 'quantitative'},
+          detail: {field: 'gender'},
+        },
+      },
+    ],
+  });
+  const rects = [...document.querySelectorAll('rect')];
+  assert.equal(rects.length, 4);
+  // Every bar for one y-position (age) should sum to the full normalized
+  // width -- if the label's own un-stacked values leaked into the shared
+  // x-scale (the original bug), the bars would shrink to slivers instead.
+  const byY = new Map();
+  for (const r of rects) {
+    const y = r.getAttribute('y');
+    byY.set(y, (byY.get(y) || 0) + Number(r.getAttribute('width')));
+  }
+  for (const total of byY.values()) assert.ok(total > 400, `expected a near-full-width stacked total, got ${total}`);
+  const labels = marksOf(document, 'text').map(t => t.textContent).sort();
+  assert.deepEqual(labels, ['100', '150', '200', '50']);
+});
+
+test('bin: {binned: true} with an explicit x2 companion renders the pre-computed bins as-is', async () => {
+  const {document} = await renderSpec({
+    data: {values: [
+      {bin_start: 8, bin_end: 10, count: 7},
+      {bin_start: 10, bin_end: 12, count: 29},
+    ]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'bin_start', bin: {binned: true, step: 2}},
+      x2: {field: 'bin_end'},
+      y: {field: 'count', type: 'quantitative'},
+    },
+  });
+  assert.equal(document.querySelectorAll('rect').length, 2);
+});
+
+test('inline values as an object needs format.property (a dotted path) to extract the row array', async () => {
+  const {document} = await renderSpec({
+    data: {
+      values: {hits: {hits: [{source: {reco: 2, yes: 1}}, {source: {reco: 3, yes: 4}}]}},
+      format: {type: 'json', property: 'hits.hits'},
+    },
+    mark: 'point',
+    encoding: {x: {field: 'source.reco', type: 'quantitative'}, y: {field: 'source.yes', type: 'quantitative'}},
+  });
+  assert.equal(document.querySelectorAll('circle').length, 2);
+});
+
+test('top-level density transform produces a real (non-empty) KDE curve', async () => {
+  const {document} = await renderSpec({
+    data: {values: Array.from({length: 40}, () => ({v: 3000 + Math.random() * 3000, g: Math.random() < 0.5 ? 'a' : 'b'}))},
+    transform: [{density: 'v', groupby: ['g'], extent: [2500, 6500]}],
+    mark: 'area',
+    encoding: {x: {field: 'value', type: 'quantitative'}, y: {field: 'density', type: 'quantitative', stack: 'zero'}, color: {field: 'g', type: 'nominal'}},
+  });
+  const paths = marksOf(document, 'path');
+  assert.equal(paths.length, 2);
+  for (const p of paths) assert.ok(p.getAttribute('d').length > 100);
+});
+
+test('top-level stack transform computes correctly-proportioned segments', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{age: 10, gender: 'M', people: 100}, {age: 10, gender: 'F', people: 50}]},
+    transform: [{stack: 'people', groupby: ['age'], offset: 'normalize', as: ['v1', 'v2']}],
+    mark: 'bar',
+    encoding: {
+      x: {field: 'age', type: 'ordinal'},
+      y: {field: 'v1', type: 'quantitative'},
+      y2: {field: 'v2'},
+      color: {field: 'gender', type: 'nominal'},
+    },
+  });
+  const rects = [...document.querySelectorAll('rect')];
+  assert.equal(rects.length, 2);
+  const totalHeight = rects.reduce((s, r) => s + Number(r.getAttribute('height')), 0);
+  assert.ok(totalHeight > 300, `expected the two segments to sum to a near-full-height stack, got ${totalHeight}`);
+});

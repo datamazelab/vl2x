@@ -160,9 +160,9 @@ without the flag. See `src/translator.js`'s module docstring and
 | `color` (categorical and continuous), `size`, `opacity`, `shape` | ✅ — Plot's own scale type inference handles both categorical and continuous color without a hand-rolled dual path |
 | `detail` (→ Plot's own `z` channel), `order` (→ Plot's own `sort` mark option), `tooltip` (→ Plot's own `title` channel, a real native tooltip) | ✅ |
 | Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ — routed through `Plot.binX`/`Plot.groupX` (etc.) wrapper calls |
-| Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`) | ✅ — Plot's own native `offset: "normalize"/"center"` |
-| Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit` | ✅ |
-| Top-level `transform`: `window`, `joinaggregate`, `fold`, `pivot`, `lookup`, `density`, `flatten`, `sort`, `impute`, `stack` | ❌ |
+| Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`), plus an explicit `stack` on a `text` label overlaid on one | ✅ — Plot's own native `offset: "normalize"/"center"` for bar/area; `text` stacks only when `stack` is set explicitly (no Vega-Lite convention auto-stacks a label) |
+| Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `stack`, `density` | ✅ — `stack`/`density` via a shared runtime helper (`src/runtime.js`), since neither has a native Plot *data-array* transform equivalent (`density` is a real Gaussian-kernel KDE, not an approximation) |
+| Top-level `transform`: `window`, `joinaggregate`, `fold`, `pivot`, `lookup`, `flatten`, `sort`, `impute` | ❌ |
 | Vega expression strings (`filter`/`calculate`) | ⚠️ best-effort: `datum` → row var, `Math.*` functions, date-component extraction, `length()`/`substring()`/`indexof()`/`format()`/`isValid()`/`if()`; anything else passes through as literal text and fails loudly at chart-render time rather than silently miscalculating |
 | `params`/`selection` (live interactivity) | ❌ |
 
@@ -182,12 +182,12 @@ a plain pass/fail:
   not to implement yet. Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **458/633 OK, 175/633 skipped (documented
+At the time of writing: **465/633 OK, 168/633 skipped (documented
 boundaries above), 0/633 failed**. A second, stricter harness
 (`test/validate-rendering.js`) additionally inspects the *rendered SVG
 geometry* of every `--ignore-unsupported` run (not just whether
-translation+execution threw): **562/633 render with real, finite-geometry
-shapes** (0/633 have `NaN`-positioned geometry, 68/633 execute but draw
+translation+execution threw): **564/633 render with real, finite-geometry
+shapes** (0/633 have `NaN`-positioned geometry, 66/633 execute but draw
 nothing — almost entirely the documented mark/composition gaps above under
 best-effort mode — 3/633 fail outright, each a narrow, out-of-scope
 combination: live-selection filter params, TopoJSON/GeoJSON `format`-typed
@@ -253,8 +253,13 @@ src/
     expr.js                     best-effort Vega-expression-string -> JS
                                  translation
     data.js                      data-loading code (inline values / url fetch)
-    literals.js                   JSON value -> JavaScript literal source
-                                   pretty-printer
+    runtime.js                     shared helpers a spec's generated code
+                                    imports by name (`vlStack`, `vlDensity`,
+                                    `vlFlattenOneLevel`) when a transform is
+                                    complex enough that re-deriving it inline
+                                    every time would be error-prone
+    literals.js                     JSON value -> JavaScript literal source
+                                     pretty-printer
 bin/
     cli.js           command-line entry point
 test/

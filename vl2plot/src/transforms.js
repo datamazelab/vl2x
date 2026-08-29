@@ -6,9 +6,10 @@
 // explicit (an aggregate transform always lists its own `groupby` fields),
 // so they need no channel-inference logic, just a direct translation.
 //
-// v1 scope: filter, calculate, aggregate, bin, timeUnit. Anything else
-// throws a clear "unsupported" error naming the transform, unless
-// `ignoreUnsupported` is set, in which case the step is skipped entirely.
+// v1 scope: filter, calculate, aggregate, bin, timeUnit, stack, density.
+// Anything else throws a clear "unsupported" error naming the transform,
+// unless `ignoreUnsupported` is set, in which case the step is skipped
+// entirely.
 
 import {filterToExpr, translateExpr} from './expr.js';
 import {isSupportedD3AggregateOp, aggregateExpr} from './aggops.js';
@@ -71,6 +72,32 @@ function renderOne(t, dataVar, ignoreUnsupported) {
     }
     const keyExpr = `d => JSON.stringify([${groupby.map(f => `d[${JSON.stringify(f)}]`).join(', ')}])`;
     return [`${dataVar} = Array.from(d3.rollup(${dataVar}, ${reducer}, ${keyExpr}).values());`];
+  }
+  if ('stack' in t) {
+    const opts = {
+      field: JSON.stringify(t.stack),
+      groupby: JSON.stringify(t.groupby || []),
+      sort: JSON.stringify(t.sort || []),
+      offset: JSON.stringify(t.offset || 'zero'),
+      as: JSON.stringify(t.as),
+    };
+    return [`${dataVar} = vlStack(${dataVar}, {field: ${opts.field}, groupby: ${opts.groupby}, sort: ${opts.sort}, offset: ${opts.offset}, as: ${opts.as}});`];
+  }
+  if ('density' in t) {
+    const asNames = Array.isArray(t.as) && t.as.length === 2 ? t.as : ['value', 'density'];
+    const opts = {
+      field: JSON.stringify(t.density),
+      groupby: JSON.stringify(t.groupby || []),
+      extent: Array.isArray(t.extent) ? JSON.stringify(t.extent) : 'null',
+      bandwidth: t.bandwidth != null ? JSON.stringify(t.bandwidth) : 'null',
+      steps: Number.isInteger(t.steps) ? t.steps : 200,
+      counts: t.counts ? 'true' : 'false',
+      as: JSON.stringify(asNames),
+    };
+    return [
+      `${dataVar} = vlDensity(${dataVar}, {field: ${opts.field}, groupby: ${opts.groupby}, extent: ${opts.extent}, ` +
+        `bandwidth: ${opts.bandwidth}, steps: ${opts.steps}, counts: ${opts.counts}, as: ${opts.as}});`,
+    ];
   }
   const key = Object.keys(t)[0] || '<unknown>';
   if (ignoreUnsupported) {

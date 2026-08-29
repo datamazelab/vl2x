@@ -45,17 +45,64 @@ function colorChannelName(markType, markProps) {
 function orientation(encoding) {
   const x = encoding.x || {};
   const y = encoding.y || {};
+  // A *binned* position channel with no companion channel at all is
+  // Vega-Lite's implicit histogram shorthand (the missing channel becomes
+  // `{"aggregate": "count"}`) -- always drawn with the bin edges on the
+  // conventional distribution axis (x, vertical bars), regardless of which
+  // single channel the spec actually wrote out -- unlike a plain (non-bin)
+  // 1-dimensional aggregate summary (e.g. `bar_1d`'s "sum of a field"),
+  // which Vega-Lite's own convention draws as a single *horizontal* bar
+  // (the `isQuantitative(x) && !isQuantitative(y)` fallback below already
+  // gets that case right).
+  if (x.bin && !encoding.y) return 'vertical';
+  if (y.bin && !encoding.x) return 'horizontal';
   return isQuantitative(x) && !isQuantitative(y) ? 'horizontal' : 'vertical';
 }
 
-// Wraps `optionsSrc` (already-rendered JS source for the mark's own options
-// object) in this mark's own bin/group transform (from `prepare.js`) and/or
+// Splices `channel: 1,` in as the options object's own first entry --
+// used only for `transformPlan.needsConstantKey` (see `prepare.js`): a
+// genuinely 1-dimensional aggregate has no other channel for `groupX`/
+// `groupY` to group by at all, and without one Plot silently falls back to
+// each row's own array index as an implicit key (one "group" per row,
+// not the single combined total Vega-Lite's own semantics call for) --
+// giving every row the same constant value on the missing axis forces
+// them into the one group intended here.
+function injectConstantChannel(optionsSrc, channel, indent = 2) {
+  const pad = '  '.repeat(indent);
+  const line = `${pad}${channel}: 1,\n`;
+  if (optionsSrc === '{}') return `{\n${line}${'  '.repeat(indent - 1)}}`;
+  return optionsSrc.replace('{\n', `{\n${line}`);
+}
+
+// Per-row "styling" channels (as opposed to a real groupby identity like
+// `color`/`fill`/`stroke`/`detail`) that have no single well-defined value
+// once a `Plot.binX`/`groupX` transform has collapsed many rows into one --
+// this project doesn't (yet) apply an explicit reducer to carry one through
+// (matching VL's own real ambiguity here: a continuous, non-aggregated
+// channel alongside an aggregate on a *different* channel has no single
+// correct per-group value either). Left in as a raw per-row field
+// reference, one of these breaks the *whole* group transform outright
+// (confirmed empirically: `Plot.groupX({y: "sum"}, {x: "age", y: "people",
+// opacity: "people"})` -- a real generated shape -- rendered zero shapes,
+// not merely a wrong or missing opacity), since Plot's own group/bin
+// transforms treat every extra field-valued channel as an *additional*
+// implicit groupby key (see `prepare.js`'s own module docstring): with
+// `opacity` varying per row, grouping (age, opacity) together made almost
+// every row its own singleton group instead of one bar per age.
+const UNGROUPABLE_STYLE_CHANNELS = new Set(['opacity', 'r', 'symbol', 'title']);
+
+// Builds the mark's own options-object JS source from `pairs` and wraps it
+// in this mark's own bin/group transform (from `prepare.js`) and/or
 // implicit stack transform (from `stack.js`), innermost (bin/group) first
 // -- matches the composition order verified empirically (`Plot.stackY(Plot.
 // groupX(outputs, options))`).
-function wrapTransforms(optionsSrc, transformPlan, stackPlan) {
-  let src = optionsSrc;
+function wrapTransforms(pairs, transformPlan, stackPlan, indent = 2) {
+  const filteredPairs = transformPlan ? pairs.filter(([k]) => !UNGROUPABLE_STYLE_CHANNELS.has(k)) : pairs;
+  let src = objectSource(filteredPairs, indent);
   if (transformPlan) {
+    if (transformPlan.needsConstantKey) {
+      src = injectConstantChannel(src, transformPlan.needsConstantKey, indent);
+    }
     src = `Plot.${transformPlan.fn}(${formatValue(transformPlan.outputs)}, ${src})`;
   }
   if (stackPlan) {
@@ -97,8 +144,7 @@ function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
     ['symbol', val(shapeDef)],
   ];
   const transformPlan = planTransform(enc, ignoreUnsupported);
-  const optionsSrc = objectSource(pairs);
-  const wrapped = wrapTransforms(optionsSrc, transformPlan, null);
+  const wrapped = wrapTransforms(pairs, transformPlan, null);
   return {statements, markExpr: `Plot.dot(${dataVar}, ${wrapped})`};
 }
 
@@ -144,8 +190,7 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
     throw new Error('Unsupported: an aggregated value on a bar with a continuous bin-interval category axis is not yet supported by vl2plot');
   }
   const stackPlan = planStack('bar', enc, orient);
-  const optionsSrc = objectSource(pairs);
-  const wrapped = wrapTransforms(optionsSrc, transformPlan, stackPlan);
+  const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
   const fn = orient === 'horizontal' ? 'barX' : 'barY';
   return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
 }
@@ -166,8 +211,7 @@ function renderLineOrArea(isArea) {
       orderField ? ['sort', formatValue(orderField)] : null,
     ].filter(Boolean);
     const stackPlan = planStack(isArea ? 'area' : 'line', enc, orient);
-    const optionsSrc = objectSource(pairs);
-    const wrapped = wrapTransforms(optionsSrc, null, stackPlan);
+    const wrapped = wrapTransforms(pairs, null, stackPlan);
     const fn = isArea ? (orient === 'horizontal' ? 'areaX' : 'areaY') : 'line';
     return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
   };
@@ -193,8 +237,7 @@ function renderRule(encoding, markProps, dataVar, ignoreUnsupported) {
     ['strokeWidth', val(markProps.strokeWidth != null ? {value: markProps.strokeWidth} : encoding.size)],
   ];
   const transformPlan = planTransform(enc, ignoreUnsupported);
-  const optionsSrc = objectSource(pairs);
-  const wrapped = wrapTransforms(optionsSrc, transformPlan, null);
+  const wrapped = wrapTransforms(pairs, transformPlan, null);
   return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
 }
 
@@ -209,13 +252,12 @@ function renderTick(encoding, markProps, dataVar, ignoreUnsupported) {
     ...commonChannels(enc, 'tick', markProps),
   ];
   const transformPlan = planTransform(enc, ignoreUnsupported);
-  const optionsSrc = objectSource(pairs);
-  const wrapped = wrapTransforms(optionsSrc, transformPlan, null);
+  const wrapped = wrapTransforms(pairs, transformPlan, null);
   return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
 }
 
 function renderText(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported);
   const pairs = [
     ['x', val(enc.x)],
     ['y', val(enc.y)],
@@ -223,8 +265,18 @@ function renderText(encoding, markProps, dataVar, ignoreUnsupported) {
     ...commonChannels(enc, 'text', markProps),
   ];
   const transformPlan = planTransform(enc, ignoreUnsupported);
-  const optionsSrc = objectSource(pairs);
-  const wrapped = wrapTransforms(optionsSrc, transformPlan, null);
+  // Unlike bar/area (auto-stacked whenever a color/detail group is
+  // present, `stack.js`'s own "implicit" case), a text label only stacks
+  // when the spec *explicitly* asks for it -- typically a value label
+  // overlaid on an already-stacked bar/area, sharing its own stacked
+  // position (e.g. `"x": {"aggregate": "sum", ..., "stack":
+  // "normalize"}`) so the label lands within its own segment instead of
+  // at the raw (unstacked) aggregate value on a totally different scale
+  // (confirmed empirically: without this, the label mark's own un-stacked
+  // "x" values leaked into the *shared* x-scale's domain, silently
+  // shrinking the bar mark's own normalized-to-[0,1] bars to slivers).
+  const stackPlan = planStack('text', enc, orient);
+  const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
   return {statements, markExpr: `Plot.text(${dataVar}, ${wrapped})`};
 }
 
@@ -250,8 +302,7 @@ function renderRect(encoding, markProps, dataVar, ignoreUnsupported) {
         ...commonChannels(enc, 'rect', markProps),
       ].filter(Boolean);
   const transformPlan = planTransform(enc, ignoreUnsupported);
-  const optionsSrc = objectSource(pairs);
-  const wrapped = wrapTransforms(optionsSrc, transformPlan, null);
+  const wrapped = wrapTransforms(pairs, transformPlan, null);
   return {statements, markExpr: `Plot.${isCell ? 'cell' : 'rect'}(${dataVar}, ${wrapped})`};
 }
 

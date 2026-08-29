@@ -228,6 +228,129 @@ ownerDocument` → `Plot.plot({document: ...})` pattern (confirmed
 empirically to behave identically under jsdom and in a real browser), same
 `options.baseURL` threading into `data.js`'s `d3.csv`/`d3.json` calls.
 
+## A silent-correctness sweep, and what it found
+
+The bugs above were caught by the corpus harnesses (which only check "did
+it throw") or by a handful of hand-written unit assertions. A follow-up
+pass specifically hunted for the harder class of bug those two methods
+both miss: code that translates and executes without error but draws the
+*wrong* thing, or nothing at all. That meant checking real showcase output
+image-by-image against the ground-truth Vega-Lite render, plus writing a
+sweep that renders every showcase example and flags any Plot panel with no
+mark-drawn shapes beyond axis chrome. It surfaced several real,
+previously-undetected bugs, all fixed:
+
+- **A genuinely 1-dimensional aggregate had no grouping key at all.**
+  `{"x": {"aggregate": "sum", "field": "people"}}` with no `y` at all (a
+  single summary bar) fed `Plot.groupY({x: "sum"}, {x: "people"})` — with
+  no *other* channel present, Plot's own group transform has nothing to
+  group by and silently falls back to each row's own array index, drawing
+  one wrongly-scaled bar per row instead of one correctly-summed bar.
+  `prepare.js`'s `needsConstantKey` now detects this (no channel among
+  `GROUP_KEY_CHANNELS` besides the one being aggregated) and `marks.js`
+  injects a literal constant (`y: 1`) onto the missing axis, collapsing
+  every row into the one group intended. The same missing-key case affects
+  a rule mark's own reference-line pattern (`{"y": {"aggregate": "mean",
+  ...}}`, no `x`) — injecting the constant onto `x` there works fine for
+  *grouping* purposes without breaking `ruleY`'s own "no x means span the
+  full axis" rendering, since the constant is dropped from what's actually
+  visually positioned (`ruleY` never reads an `x` channel for its own
+  drawing).
+- **A binned position channel with no companion decided orientation
+  wrong.** `orientation()` treated `{"x": {"field": ..., "bin": ...}}`
+  with no `y` the same as a plain aggregate with no `y` (both "only x
+  looks quantitative" cases) — but Vega-Lite's own convention is the
+  opposite of what that heuristic picked: a *binned* x with no y is an
+  implicit histogram (missing channel becomes `count`, drawn as **vertical**
+  bars, x = bin edges), while a plain (non-bin) aggregate with no y is a
+  single **horizontal** summary bar. `orientation()` now special-cases
+  `bin` explicitly before falling back to the quantitative-based heuristic.
+- **A per-row "styling" channel silently broke the group transform it rode
+  along in.** `{"x": {"field": "age"}, "y": {"aggregate": "sum", "field":
+  "people"}, "opacity": {"field": "people"}}` fed `Plot.groupX({y: "sum"},
+  {x: "age", y: "people", opacity: "people"})` — since `opacity` is a
+  field-valued channel too, Plot's own group transform treats it as an
+  *additional* implicit groupby key (see the module docstring above), and
+  with `opacity` varying per row, grouping by `(age, opacity)` together
+  made almost every row its own singleton group — the render came back
+  completely empty, not just missing the opacity encoding. The same shape
+  breaks a `text` mark's own un-reduced label field the same way. There's
+  no single correct per-group value for a continuous, non-aggregated
+  channel like this anyway (Vega-Lite's own semantics are ambiguous here
+  too), so `marks.js`'s `UNGROUPABLE_STYLE_CHANNELS` (`opacity`, `r`,
+  `symbol`, `title`) now drops these from the options object whenever a
+  bin/group transform wraps the mark, rather than leaving them in to
+  silently corrupt the whole grouping.
+- **A `text` channel with its own explicit `aggregate` needed its own
+  reducer, not just a pass-through field.** A labeled stacked-bar chart's
+  text layer (`{"text": {"aggregate": "sum", "field": "people"}}`
+  alongside `{"x": {"aggregate": "sum", ...}}`) hit exactly the
+  `opacity`-shaped bug above: `text` differs per row, becoming an
+  unwanted extra implicit groupby key. Unlike `opacity` (dropped
+  entirely, no faithful per-group value exists), `text` here has a
+  well-defined one — its own declared aggregate — so `prepare.js`'s
+  `augmentWithTextAggregate()` adds a second reducer entry to the same
+  `outputs` object (`{x: "sum", text: "sum"}`) instead of dropping the
+  channel.
+- **A `text` label overlaid on a stacked bar/area needs to stack too, on
+  the very same normalized scale.** Vega-Lite lets any mark's own value
+  channel carry an explicit `"stack": "normalize"`, not just bar/area's
+  own *implicit* auto-stacking — a label spec had exactly this
+  (`{"x": {"aggregate": "sum", ..., "stack": "normalize", "bandPosition":
+  0.5}}`). Left unstacked, the label mark's own raw (un-normalized) sum
+  values leaked into the **same shared x-scale** the bar mark's own
+  properly-normalized `[0, 1]` values live on, since Plot shares one scale
+  per channel across every mark in a `Plot.plot()` call by default — the
+  shared domain widened to fit both, shrinking the bar's own normalized
+  bars down to slivers. `stack.js` now has an `EXPLICIT_STACK_MARKS` set
+  (currently just `text`) that stacks only when `stack` is explicitly set
+  (never implicitly, unlike bar/area) — and Plot's own `stackX`/`Plot.text`
+  combination turns out to center the label within its own segment
+  automatically, matching `bandPosition: 0.5`'s intent for free.
+- **`bin: {"binned": true}` means "already binned," not "please bin
+  this."** Vega-Lite's own signal that a field already holds real bin
+  boundaries (typically paired with an explicit `x2` companion for the
+  other edge, e.g. pre-computed `bin_start`/`bin_end` columns) was being
+  treated as an ordinary bin request, triggering `Plot.binX` needlessly.
+  `planTransform()` now checks `def.bin.binned === true` and skips
+  `binChannel` detection entirely for that case, leaving the already-real
+  x1/x2 values untouched.
+- **Inline `values` given as an object, not an array, needs `format.
+  property` — and that property name is a dotted *path*, not a literal
+  key.** A GeoJSON-shaped `{"type": "FeatureCollection", "features":
+  [...]}` (`format.property: "features"`) or an Elasticsearch-shaped
+  `{"hits": {"hits": [...]}}` (`format.property: "hits.hits"`) both need
+  extracting before any mark sees real rows — unimplemented before, this
+  data source fell through to the generic "no url, no values array"
+  unsupported-data-source fallback, rendering an empty dataset. `data.js`
+  now handles an object-shaped `values` by walking `format.property`'s own
+  dotted path (`?.["hits"]?.["hits"]`, not a single bracket lookup on the
+  literal string `"hits.hits"`). Rows loaded this way (and every other
+  inline-`values` row) are also now flattened one level deep into dotted
+  keys (`vlFlattenOneLevel()`, a new `runtime.js` helper) — Vega-Lite
+  treats a nested-object field reference like `"properties.variety"` as
+  an already-flat field name, not a path to traverse, so a
+  GeoJSON-`properties`-shaped row needs this to resolve any such
+  reference at all.
+- **The top-level `stack` and `density` transforms are now implemented**,
+  not just documented gaps — both needed a real, non-trivial computation
+  (`stack`: a cumulative running sum per `groupby` group, honoring `sort`
+  and `offset`; `density`: an actual Gaussian-kernel KDE, adapted from
+  `vl2d3`'s own from-scratch implementation, not an approximation) with no
+  single native Plot *data-array* transform equivalent (Plot's own
+  `stackY`/`stackX` are *mark*-level wrappers, not something that can
+  produce two new named output fields on the data itself the way the
+  top-level transform's own `as: [v1, v2]` requires). Both now live as
+  real exported functions in the new `src/runtime.js` (mirroring `vl2d3`'s
+  own "shared runtime helper" convention exactly), imported by name only
+  when a spec actually needs one.
+- **`planStack()` didn't exclude a value channel with its own explicit
+  companion.** Vega-Lite's own stacking rule skips a channel that already
+  has an explicit `x2`/`y2` range (e.g. one computed by the `stack`
+  transform above, or a manually authored lo/hi range) — automatically
+  stacking on top of it would discard that explicit range and substitute
+  a wrong one. `planStack()` now checks for this and returns `null`.
+
 ## Validation methodology
 
 Like `vl2d3`, `vl2plot` targets a lower-level toolkit than `vl2altair`/
@@ -241,19 +364,24 @@ ways rather than a plain pass/fail:
   Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing (`test/validate-examples.js`, strict mode): **458/633
-OK, 175/633 skipped, 0/633 failed**.
+At the time of writing (`test/validate-examples.js`, strict mode): **465/633
+OK, 168/633 skipped, 0/633 failed**.
 
 A second, stricter harness (`test/validate-rendering.js`) runs the same
 corpus the way the showcase actually does — `{ignoreUnsupported: true}` —
 and additionally inspects the *rendered SVG geometry* of every result, not
 just whether execution threw. This is the harness that would have caught
 the `groupX`/`groupY` bug above directly (extra/wrong-count `<rect>`
-elements, not a crash): **562/633 render with real, finite-geometry
-shapes**, 0/633 have `NaN`-positioned geometry, 68/633 execute but draw
-nothing (almost entirely the documented mark/composition gaps under
-best-effort mode — e.g. an unsupported mark type is simply omitted from
-`marks: [...]`, leaving valid-but-empty output), and 3/633 fail outright —
+elements, not a crash) — though it took a real showcase-image review, not
+this harness alone, to catch the *other* silent-correctness bugs the
+section above describes (a group transform that renders a plausible-looking
+but numerically wrong result, or one broken mark that still leaves a
+plausible chart, doesn't always look empty): **564/633 render with real,
+finite-geometry shapes**, 0/633 have `NaN`-positioned geometry, 66/633
+execute but draw nothing (almost entirely the documented mark/composition
+gaps under best-effort mode — e.g. an unsupported mark type is simply
+omitted from `marks: [...]`, leaving valid-but-empty output), and 3/633
+fail outright —
 each a narrow, out-of-scope combination: a live-selection filter param
 (`{"and": ["index.date", {"param": "index"}]}`), TopoJSON/GeoJSON
 `format`-typed data (`{"format": {"type": "topojson", ...}}`, loaded as a

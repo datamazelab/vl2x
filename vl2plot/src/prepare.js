@@ -17,6 +17,11 @@ import {isSupportedAggregateOp, plotReducer} from './aggops.js';
 import {effectiveType} from './encoding.js';
 
 const POSITION_CHANNELS = ['x', 'y'];
+// Every channel Plot's own `groupX`/`groupY` transform can pick up as an
+// implicit grouping key (see the module docstring) -- consulted only to
+// detect the *degenerate* case where none of them apply at all (see
+// `needsConstantKey` below).
+const GROUP_KEY_CHANNELS = ['x', 'y', 'color', 'fill', 'stroke', 'opacity', 'size', 'symbol', 'detail'];
 // Every channel a mark's own options object can carry a `field` on --
 // consulted when deciding whether a channel participates in an implicit
 // groupby (see `hasField()` below).
@@ -98,7 +103,15 @@ export function planTransform(encoding, ignoreUnsupported = false) {
   for (const ch of POSITION_CHANNELS) {
     const def = encoding[ch];
     if (!def || typeof def !== 'object') continue;
-    if (def.bin) binChannel = binChannel || ch;
+    // `bin: {"binned": true}` is Vega-Lite's own signal that the field
+    // *already holds* the bin boundary (typically alongside an explicit
+    // `x2` companion for the other edge) -- the opposite of a request to
+    // bin it now, so this deliberately does NOT count as `binChannel`
+    // here (a real corpus spec paired this with `x2`, hitting `marks.js`'s
+    // own "aggregated value on a continuous bin-interval axis" guard for
+    // an aggregate that was never actually being requested).
+    const isPreBinned = def.bin && typeof def.bin === 'object' && def.bin.binned === true;
+    if (def.bin && !isPreBinned) binChannel = binChannel || ch;
     else if (def.aggregate != null) aggChannel = aggChannel || ch;
   }
 
@@ -111,7 +124,17 @@ export function planTransform(encoding, ignoreUnsupported = false) {
     } else {
       outputs[other] = 'count';
     }
-    return {fn: binChannel === 'x' ? 'binX' : 'binY', outputs};
+    // `Plot.binX`/`binY` accept bin-shaping options (`thresholds`, ...)
+    // merged into the same first (`outputs`) argument as the reducers --
+    // `bin: {"maxbins": N}`'s closest equivalent is an approximate target
+    // bin *count*, which is exactly what Plot's own `thresholds` accepts
+    // as a bare number (a precise bin *width*, `bin: {"step": N}`, has no
+    // matching Plot option and is left to Plot's own default heuristic).
+    const binDef = encoding[binChannel].bin;
+    if (binDef && typeof binDef === 'object' && typeof binDef.maxbins === 'number') {
+      outputs.thresholds = binDef.maxbins;
+    }
+    return augmentWithTextAggregate({fn: binChannel === 'x' ? 'binX' : 'binY', outputs}, encoding, ignoreUnsupported);
   }
 
   if (aggChannel) {
@@ -128,8 +151,48 @@ export function planTransform(encoding, ignoreUnsupported = false) {
     // output, typically onto y; picking the transform by the aggregate's
     // own channel name, as this used to, silently produced the wrong
     // grouping -- e.g. every row its own bar -- without ever throwing).
-    return {fn: aggChannel === 'x' ? 'groupY' : 'groupX', outputs};
+    const fn = aggChannel === 'x' ? 'groupY' : 'groupX';
+    const groupKeyCh = aggChannel === 'x' ? 'y' : 'x';
+    // Vega-Lite's genuinely 1-dimensional aggregate -- only the one
+    // channel being aggregated is given at all, no other position/color/
+    // detail channel to group by (e.g. a single summary bar: `{"x":
+    // {"aggregate": "sum", "field": "people"}}`, no `y` at all). Without
+    // *some* other channel present, Plot's own group transform has no
+    // grouping key to work with at all and silently falls back to each
+    // row's own array index -- one "group" per row, not one combined
+    // total (confirmed empirically: produced N separate, wrongly-scaled
+    // bars instead of a single summed one, without ever throwing). A
+    // constant on the missing axis gives every row the same key, which
+    // collapses them into the single group Vega-Lite's own semantics call
+    // for here.
+    const hasGroupKey = GROUP_KEY_CHANNELS.some(ch => ch !== aggChannel && (hasField(encoding[ch]) || (encoding[ch] && typeof encoding[ch] === 'object' && 'value' in encoding[ch])));
+    return augmentWithTextAggregate({fn, outputs, needsConstantKey: hasGroupKey ? null : groupKeyCh}, encoding, ignoreUnsupported);
   }
 
   return null;
+}
+
+// A `text` channel with its own independent `aggregate` (e.g. a bar
+// chart's own label repeating the same summary value alongside its own
+// value channel: `{"x": {"aggregate": "sum", "field": "people"}, "text":
+// {"aggregate": "sum", "field": "people"}}`) needs its own reducer entry
+// in the SAME group/bin transform's `outputs` object, riding along on
+// whichever groupby key the position channel(s) already established.
+// Left out of `outputs`, Plot's own group/bin transforms would otherwise
+// treat the still-raw `text` field (see `marks.js`'s own pairs, which
+// keep it as a plain field reference so there's something for this
+// reducer to actually read) as an *additional* implicit groupby key --
+// every other field-valued channel becomes one, per the module docstring
+// -- silently breaking the whole aggregation the same way an unhandled
+// `opacity`/`size` channel does (see `marks.js`'s own
+// `UNGROUPABLE_STYLE_CHANNELS`); confirmed empirically on a real corpus
+// spec (`stacked_bar_h_normalized_labeled`).
+function augmentWithTextAggregate(plan, encoding, ignoreUnsupported) {
+  const textDef = encoding.text;
+  if (!textDef || typeof textDef !== 'object' || textDef.aggregate == null) return plan;
+  const op = textDef.aggregate;
+  if (op !== 'count' && !isSupportedAggregateOp(op) && !ignoreUnsupported) {
+    throw new Error(`Unsupported aggregate op: "${op}"`);
+  }
+  return {...plan, outputs: {...plan.outputs, text: plotReducer(op, ignoreUnsupported)}};
 }

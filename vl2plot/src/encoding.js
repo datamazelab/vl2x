@@ -61,11 +61,12 @@ export function channelValue(def, {asCode = true} = {}) {
 // Escaped-dot / bracket field references (Vega-Lite's own convention for a
 // field name that isn't a plain identifier path, e.g. `"a.b"` meaning the
 // literal key `"a.b"`, vs. `a\\.b` meaning "escape this dot, it's part of
-// the name not a nested-object path") -- `prepare.js`'s own data-loading
-// step already flattens one level of real nested objects into dotted keys
-// (matching every other sibling's own convention), so by the time this
-// module sees a field name, a plain string key lookup is always correct;
-// this only needs to strip Vega-Lite's own backslash-escape marker.
+// the name not a nested-object path") -- `data.js`'s own inline-`values`
+// loading step already flattens one level of real nested objects into
+// dotted keys (`vlFlattenOneLevel()`, see `runtime.js`), so by the time
+// this module sees a field name, a plain string key lookup is always
+// correct; this only needs to strip Vega-Lite's own backslash-escape
+// marker.
 export function unescapeFieldName(field) {
   return typeof field === 'string' ? field.replace(/\\\./g, '.') : field;
 }
