@@ -15,11 +15,12 @@ is even called (it only ever sees the *one* dataset already loaded into
 from __future__ import annotations
 
 from .aggops import agg_expr, is_supported_agg_op
+from .encoding import _datetime_literal_expr, _is_datetime_literal_object
 from .expr import translate_expr
 from .literals import format_value, sanitize_identifier
 from .timeunit import is_supported_timeunit, timeunit_expr
 
-SUPPORTED_TRANSFORM_KEYS = {"filter", "calculate", "aggregate", "bin", "timeUnit", "window", "joinaggregate", "fold"}
+SUPPORTED_TRANSFORM_KEYS = {"filter", "calculate", "aggregate", "bin", "timeUnit", "window", "joinaggregate", "fold", "density", "pivot", "quantile"}
 
 
 def render_transforms(transform_list: list, data_var: str, ignore_unsupported: bool = False) -> list[str]:
@@ -52,10 +53,31 @@ def _render_one(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
         return _render_joinaggregate(t, data_var, ignore_unsupported)
     if "fold" in t:
         return _render_fold(t, data_var, ignore_unsupported)
+    if "density" in t:
+        return _render_density(t, data_var, ignore_unsupported)
+    if "pivot" in t:
+        return _render_pivot(t, data_var, ignore_unsupported)
+    if "quantile" in t:
+        return _render_quantile(t, data_var, ignore_unsupported)
     key = next(iter(t), "<unknown>")
     if ignore_unsupported:
         return [f"# vl2matplotlib: skipped unsupported transform type {key!r} (ignore_unsupported)"]
     raise ValueError(f"Unsupported transform type: {key!r}")
+
+
+def _filter_bound_expr(v: object) -> str:
+    """A filter predicate's own `equal`/`range` bound is usually a plain
+    literal, but for a `timeUnit`-bearing predicate comparing against an
+    extracted date component can itself be a `DateTime`-object literal
+    (`{"year": 2005, "month": 1}`, the same shape `encoding.py`'s own
+    `channel_value_expr()` already handles for a `datum` -- reused here via
+    its two helper functions rather than duplicating the table) instead of
+    a plain number -- a bare `repr()` would render it as a Python dict,
+    compared against a real `pd.Timestamp`/int component with no coercion
+    on either side, `TypeError`."""
+    if _is_datetime_literal_object(v):
+        return _datetime_literal_expr(v)
+    return repr(v)
 
 
 def _render_filter(predicate, data_var: str, ignore_unsupported: bool) -> list[str]:
@@ -73,7 +95,7 @@ def _render_filter(predicate, data_var: str, ignore_unsupported: bool) -> list[s
             field_expr = timeunit_expr(predicate["timeUnit"], field_expr)
         conds = []
         if "equal" in predicate:
-            conds.append(f"{field_expr} == {predicate['equal']!r}")
+            conds.append(f"{field_expr} == {_filter_bound_expr(predicate['equal'])}")
         if "range" in predicate and isinstance(predicate["range"], list) and len(predicate["range"]) == 2:
             # Either bound can itself be `null` (unbounded in that
             # direction, e.g. `[null, 2019]` meaning "<= 2019") -- built as
@@ -82,9 +104,9 @@ def _render_filter(predicate, data_var: str, ignore_unsupported: bool) -> list[s
             # since comparing `None <= x` raises `TypeError` outright.
             lo, hi = predicate["range"]
             if lo is not None:
-                conds.append(f"({field_expr} >= {lo!r})")
+                conds.append(f"({field_expr} >= {_filter_bound_expr(lo)})")
             if hi is not None:
-                conds.append(f"({field_expr} <= {hi!r})")
+                conds.append(f"({field_expr} <= {_filter_bound_expr(hi)})")
         if "oneOf" in predicate:
             conds.append(f"{field_expr} in {predicate['oneOf']!r}")
         if predicate.get("valid") is True:
@@ -200,14 +222,81 @@ def _render_joinaggregate(t: dict, data_var: str, ignore_unsupported: bool) -> l
     return stmts
 
 
+def _render_density(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
+    # Delegated entirely to the shared `vl_density()` runtime helper -- a
+    # real Gaussian-kernel KDE, computed inline since pandas/numpy have no
+    # built-in density-estimation convenience of their own (see
+    # `runtime.py`'s own docstring for the bandwidth/extent defaults).
+    field = t["density"]
+    as_names = t["as"] if isinstance(t.get("as"), list) and len(t["as"]) == 2 else ["value", "density"]
+    bandwidth_arg = format_value(t["bandwidth"]) if isinstance(t.get("bandwidth"), (int, float)) else "None"
+    extent = t.get("extent")
+    extent_arg = f"({format_value(extent[0])}, {format_value(extent[1])})" if isinstance(extent, list) and len(extent) == 2 else "None"
+    steps_arg = t["steps"] if isinstance(t.get("steps"), int) else 200
+    counts_arg = "True" if t.get("counts") else "False"
+    return [
+        f"{data_var} = vl_density({data_var}, {field!r}, groupby={format_value(t.get('groupby') or [])}, "
+        f"bandwidth={bandwidth_arg}, extent={extent_arg}, steps={steps_arg}, counts={counts_arg}, "
+        f"as_names=({as_names[0]!r}, {as_names[1]!r}))"
+    ]
+
+
+def _render_pivot(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
+    # `fold`'s inverse: real per-group bookkeeping (collect duplicates,
+    # aggregate them, keep a stable possibly-limited column ordering) that
+    # would be error-prone to re-derive inline at every call site --
+    # delegated to the shared `vl_pivot()` runtime helper (mirrors
+    # `vl2d3`'s own `vlPivot()`/`vl2ggplot`'s own `vl_pivot()`).
+    opts = [f"groupby={format_value(t.get('groupby') or [])}"]
+    if t.get("op"):
+        opts.append(f"op={t['op']!r}")
+    if t.get("limit"):
+        opts.append(f"limit={t['limit']!r}")
+    return [f"{data_var} = vl_pivot({data_var}, {t['pivot']!r}, {t['value']!r}, {', '.join(opts)})"]
+
+
+def _render_quantile(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
+    # Delegated to the shared `vl_quantile()` runtime helper -- see its own
+    # docstring for the probability-sampling convention.
+    field = t["quantile"]
+    as_names = t["as"] if isinstance(t.get("as"), list) and len(t["as"]) == 2 else ["prob", "value"]
+    step = t["step"] if isinstance(t.get("step"), (int, float)) else 0.01
+    return [
+        f"{data_var} = vl_quantile({data_var}, {field!r}, groupby={format_value(t.get('groupby') or [])}, "
+        f"step={step!r}, as_names=({as_names[0]!r}, {as_names[1]!r}))"
+    ]
+
+
 def _render_fold(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
-    # The inverse of `pivot`: N value columns -> two columns (a key naming
-    # which original column, and that row's own value from it), one row
-    # per (original row x folded column) pair -- exactly `DataFrame.melt()`.
+    # The inverse of `pivot`: N value columns -> two new columns (a key
+    # naming which original column, and that row's own value from it), one
+    # row per (original row x folded column) pair. NOT a plain
+    # `DataFrame.melt()`, despite the superficial resemblance: Vega-Lite's
+    # own `fold` keeps *every* original field on each output row --
+    # including the very fields being folded -- while a bare `melt(id_vars=
+    # <everything except the folded fields>, value_vars=<folded fields>)`
+    # necessarily drops them (they can't be both an id_var and a
+    # value_var). Real corpus usage relies on this: `trail_comet.vl.json`'s
+    # own `fold: ["1931", "1932"]` is followed by a `calculate:
+    # "datum['1932'] - datum['1931']"` step reading the *original* folded
+    # fields back, after the fold -- exactly what `vl2d3`'s own
+    # `renderFoldTransform()` (`{...d, key: f, value: d[f]}`, spreading the
+    # whole original row) and `vl2ggplot`'s own `render_fold_transform()`
+    # (`.d <- var_name; .d[[key]] <- .f; ...`) already do. Implemented here
+    # as a melt over the non-folded columns (`ignore_index=False`, so the
+    # original row index survives, duplicated once per folded field) with
+    # the folded fields' own original values re-joined back afterward by
+    # that same index.
     fields = t["fold"]
     as_names = t.get("as") or ["key", "value"]
-    id_vars = f"[c for c in {data_var}.columns if c not in {fields!r}]"
-    return [
-        f"{data_var} = {data_var}.melt(id_vars={id_vars}, value_vars={fields!r}, "
-        f"var_name={as_names[0]!r}, value_name={as_names[1]!r})"
+    src = f"__fold_src_{data_var}"
+    id_vars = f"[c for c in {src}.columns if c not in {fields!r}]"
+    stmts = [
+        f"{src} = {data_var}",
+        f"{data_var} = {src}.melt(id_vars={id_vars}, value_vars={fields!r}, "
+        f"var_name={as_names[0]!r}, value_name={as_names[1]!r}, ignore_index=False)",
     ]
+    for f in fields:
+        stmts.append(f"{data_var}[{f!r}] = {src}.loc[{data_var}.index, {f!r}]")
+    stmts.append(f"{data_var} = {data_var}.reset_index(drop=True)")
+    return stmts

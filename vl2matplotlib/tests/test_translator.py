@@ -279,6 +279,164 @@ def test_repeat_layer_shares_one_axes_with_distinct_colors():
     assert len(colors) == 2
 
 
+def test_legend_is_placed_outside_the_axes():
+    # A plain `ax.legend(title=...)` with no location lets matplotlib pick
+    # its own "best fit" spot *inside* the Axes -- for a legend with many
+    # entries on a small figure, that box can end up covering the actual
+    # plotted data (a real symptom: a normalized stacked-area chart with 14
+    # series looked entirely blank because its own legend filled the panel).
+    fig, _ = render({
+        "data": {"values": [
+            {"g": "a", "c": "x", "v": 1}, {"g": "a", "c": "y", "v": 2},
+            {"g": "b", "c": "x", "v": 3}, {"g": "b", "c": "y", "v": 4},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "g", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative"},
+            "color": {"field": "c", "type": "nominal"},
+        },
+    })
+    ax = fig.axes[0]
+    legend = ax.get_legend()
+    assert legend is not None
+    assert legend.get_bbox_to_anchor() is not None
+
+
+def test_stack_normalize_rescales_each_category_to_one():
+    fig, _ = render({
+        "data": {"values": [
+            {"c": "a", "g": "x", "v": 1}, {"c": "a", "g": "y", "v": 3},
+            {"c": "b", "g": "x", "v": 10}, {"c": "b", "g": "y", "v": 30},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "c", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative", "stack": "normalize"},
+            "color": {"field": "g", "type": "nominal"},
+        },
+    })
+    ax = fig.axes[0]
+    # Every category's own stack (its topmost segment's own top edge) must
+    # reach exactly 1.0 -- grouped by x-position since each category has
+    # two stacked segments (only the outer one's own top is the full
+    # category total).
+    tops_by_x: dict[float, float] = {}
+    for p in ax.patches:
+        x = round(p.get_x(), 3)
+        top = p.get_y() + p.get_height()
+        tops_by_x[x] = max(tops_by_x.get(x, 0), top)
+    assert sorted(round(v, 6) for v in tops_by_x.values()) == [1.0, 1.0]
+
+
+def test_categorical_color_domain_range_maps_by_value_not_index():
+    # An explicit `scale.domain`+`scale.range` is a value->color mapping,
+    # not just a positionally-indexed palette -- must still color "b"
+    # green even though it's the *second* row (index 1), matching its own
+    # domain position, not accidentally landing on the color at index 1.
+    fig, _ = render({
+        "data": {"values": [{"cat": "a", "v": 1}, {"cat": "b", "v": 2}]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "cat", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative"},
+            "color": {
+                "field": "cat", "type": "nominal",
+                "scale": {"domain": ["b", "a"], "range": ["#00ff00", "#ff0000"]},
+            },
+        },
+    })
+    ax = fig.axes[0]
+    colors = {tuple(p.get_facecolor()) for p in ax.patches}
+    assert (0.0, 1.0, 0.0, 1.0) in colors  # "b" -> green, regardless of its own row/draw order
+    assert (1.0, 0.0, 0.0, 1.0) in colors  # "a" -> red
+
+
+def test_2d_binning_bins_both_channels():
+    fig, _ = render({
+        "data": {"values": [{"a": i, "b": i * 2} for i in range(20)]},
+        "mark": "point",
+        "encoding": {
+            "x": {"field": "a", "bin": {"maxbins": 5}},
+            "y": {"field": "b", "bin": {"maxbins": 5}},
+            "size": {"aggregate": "count"},
+        },
+    })
+    ax = fig.axes[0]
+    offsets = ax.collections[0].get_offsets()
+    xs = {round(float(x), 3) for x, _ in offsets}
+    ys = {round(float(y), 3) for _, y in offsets}
+    assert len(xs) > 1 and len(ys) > 1  # both axes actually varied, not one collapsed to a single bin
+
+
+def test_bin_binned_object_form_is_not_rebinned():
+    fig, _ = render({
+        "data": {"values": [{"lo": 0, "hi": 5, "n": 3}, {"lo": 5, "hi": 10, "n": 7}]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "lo", "bin": {"binned": True, "step": 5}},
+            "x2": {"field": "hi"},
+            "y": {"field": "n", "type": "quantitative"},
+        },
+    })
+    ax = fig.axes[0]
+    widths = sorted(p.get_width() for p in ax.patches)
+    assert widths == [5, 5]  # the real bin span (hi - lo), not a re-binned/default width
+
+
+def test_longitude_latitude_falls_back_to_plain_xy_scatter():
+    # No map-projection support at all -- longitude/latitude used to be
+    # entirely unrecognized, leaving every point at the same literal (0, 0)
+    # broadcast position (a single visible dot).
+    fig, _ = render({
+        "data": {"values": [{"lon": 1, "lat": 2}, {"lon": 3, "lat": 4}, {"lon": 5, "lat": 6}]},
+        "mark": "point",
+        "encoding": {
+            "longitude": {"field": "lon", "type": "quantitative"},
+            "latitude": {"field": "lat", "type": "quantitative"},
+        },
+    })
+    ax = fig.axes[0]
+    offsets = ax.collections[0].get_offsets()
+    assert len(set(round(float(x), 3) for x, _ in offsets)) == 3  # 3 distinct x positions, not collapsed to one
+
+
+def test_binnedyearmonth_timeunit_produces_wide_bars_not_hairlines():
+    # `binnedyearmonth` (Vega-Lite's "this field is already pre-binned to
+    # yearmonth granularity" convention) used to be entirely unrecognized,
+    # and even once mapped to plain `yearmonth`, a temporal bar's own width
+    # heuristic only handled a *quantitative* category axis -- a bare `0.8`
+    # width on a Timestamp-valued x-axis is ~0.8 *days* wide, an invisible
+    # hairline next to month-wide gaps between bars.
+    fig, _ = render({
+        "data": {"values": [
+            {"d": "2020-01-15", "v": 1}, {"d": "2020-01-20", "v": 2},
+            {"d": "2020-02-10", "v": 3}, {"d": "2020-03-05", "v": 4},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "d", "timeUnit": "binnedyearmonth", "type": "temporal"},
+            "y": {"aggregate": "count", "type": "quantitative"},
+        },
+    })
+    ax = fig.axes[0]
+    widths_in_days = [p.get_width() for p in ax.patches]
+    assert all(w > 5 for w in widths_in_days)  # real month-scale width, not a ~0.8-day hairline
+
+
+def test_text_mark_ambiguous_position_does_not_crash_matplotlib():
+    # Unlike bar/scatter, ax.text() has no native fallback for a raw string
+    # x-position -- an ambiguously-typed (no explicit `type`) field used to
+    # reach matplotlib as a literal string, raising ConversionError.
+    fig, _ = render({
+        "data": {"values": [{"cat": "A", "v": 1}, {"cat": "B", "v": 2}]},
+        "mark": "text",
+        "encoding": {"x": {"field": "cat"}, "y": {"field": "v", "type": "quantitative"}, "text": {"field": "v"}},
+    })
+    ax = fig.axes[0]
+    assert len(ax.texts) == 2
+
+
 def test_1d_aggregate_bar_is_horizontal_with_nonzero_width():
     # A 1D aggregate bar chart (only `x` given, `aggregate`+`field`, no
     # explicit `type`) must be recognized as quantitative and drawn as a
@@ -436,15 +594,35 @@ def test_errorband_draws_a_filled_band():
 
 def test_unsupported_mark_strict_error():
     with pytest.raises(ValueError, match="Unsupported"):
-        render({"data": {"values": [{"a": 1}]}, "mark": "trail", "encoding": {"x": {"field": "a", "type": "quantitative"}}})
+        render({"data": {"values": [{"a": 1}]}, "mark": "geoshape", "encoding": {"x": {"field": "a", "type": "quantitative"}}})
 
 
 def test_unsupported_mark_ignore_unsupported_fallback():
     fig, _ = render(
-        {"data": {"values": [{"a": 1}]}, "mark": "trail", "encoding": {"x": {"field": "a", "type": "quantitative"}}},
+        {"data": {"values": [{"a": 1}]}, "mark": "geoshape", "encoding": {"x": {"field": "a", "type": "quantitative"}}},
         ignore_unsupported=True,
     )
     assert fig is not None
+
+
+def test_trail_mark_draws_a_variable_width_line():
+    # trail_color.vl.json's own shape: a `trail` mark's own `size` field
+    # varies the line's *width* along its length -- previously entirely
+    # unimplemented (an "Unsupported mark type" skip), drawing nothing.
+    fig, code = render({
+        "data": {"values": [{"x": i, "y": i, "w": i} for i in range(5)]},
+        "mark": "trail",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative"},
+            "size": {"field": "w", "type": "quantitative"},
+        },
+    })
+    assert "LineCollection(" in code
+    ax = fig.axes[0]
+    assert len(ax.collections) == 1
+    widths = ax.collections[0].get_linewidths()
+    assert len(set(widths)) > 1
 
 
 def test_include_source_paths_adds_comments():
@@ -463,3 +641,225 @@ def test_default_off_has_no_source_path_comments():
         "encoding": {"x": {"field": "a", "type": "nominal"}, "y": {"field": "b", "type": "quantitative"}},
     })
     assert "# from:" not in code
+
+
+def test_bar_with_only_category_channel_fills_the_full_axes_width():
+    # bar_1d_dimension_only.vl.json's own shape: a bar mark with only `y`
+    # given (no `x`/`x2` at all) draws each bar spanning the *entire* plot
+    # width, not a zero-length invisible one (see marks.py's own
+    # `value_field_missing` handling in `_render_bar()`).
+    fig, _ = render({
+        "data": {"values": [{"b": 0}, {"b": 10}, {"b": 20}]},
+        "mark": {"type": "bar", "orient": "horizontal"},
+        "encoding": {"y": {"field": "b", "type": "quantitative"}},
+    })
+    ax = fig.axes[0]
+    assert len(ax.patches) == 3
+    for patch in ax.patches:
+        assert patch.get_width() == pytest.approx(1.0)
+
+
+def test_ordinal_numeric_field_sorts_numerically_not_lexicographically():
+    # scales.py's ORDINAL_SORT_KEY: a numeric-valued ordinal field (e.g. a
+    # cyclic `month` timeUnit's own int 1-12 output) must sort 1, 2, ..., 12
+    # -- not the lexicographic 1, 10, 11, 12, 2, ... a plain `key=str` gives.
+    fig, _ = render({
+        "data": {"values": [{"m": 1, "v": 1}, {"m": 10, "v": 2}, {"m": 2, "v": 3}]},
+        "mark": "bar",
+        "encoding": {"x": {"field": "m", "type": "ordinal"}, "y": {"field": "v", "type": "quantitative"}},
+    })
+    ax = fig.axes[0]
+    labels = [t.get_text() for t in ax.get_xticklabels()]
+    assert labels == ["1", "2", "10"]
+
+
+def test_density_transform_produces_a_kde_curve():
+    fig, _ = render({
+        "data": {"values": [{"x": v} for v in [1, 2, 2, 3, 3, 3, 4, 4, 5]]},
+        "transform": [{"density": "x", "bandwidth": 0.5}],
+        "mark": "area",
+        "encoding": {"x": {"field": "value", "type": "quantitative"}, "y": {"field": "density", "type": "quantitative"}},
+    })
+    ax = fig.axes[0]
+    assert len(ax.collections) == 1  # fill_between
+
+
+def test_pivot_transform_creates_one_column_per_key():
+    fig, code = render({
+        "data": {"values": [
+            {"date": "2020", "k": "a", "v": 1}, {"date": "2020", "k": "b", "v": 2},
+            {"date": "2021", "k": "a", "v": 3}, {"date": "2021", "k": "b", "v": 4},
+        ]},
+        "transform": [{"pivot": "k", "value": "v", "groupby": ["date"]}],
+        "mark": "bar",
+        "encoding": {"x": {"field": "date", "type": "nominal"}, "y": {"field": "a", "type": "quantitative"}},
+    })
+    assert "vl_pivot(" in code
+    ax = fig.axes[0]
+    assert len(ax.patches) == 2
+
+
+def test_facet_panels_share_one_color_domain_for_the_facet_field():
+    # trellis_bar.vl.json's own shape: faceting AND coloring by the same
+    # field means every panel only ever sees a single locally-unique
+    # category -- without a shared domain, every panel's own bar lands on
+    # the same (first) palette color instead of each getting its own.
+    fig, _ = render({
+        "data": {"values": [{"g": "a", "x": 1, "y": 1}, {"g": "b", "x": 1, "y": 2}]},
+        "facet": {"field": "g", "type": "nominal"},
+        "spec": {
+            "mark": "bar",
+            "encoding": {
+                "x": {"field": "x", "type": "ordinal"},
+                "y": {"field": "y", "type": "quantitative"},
+                "color": {"field": "g", "type": "nominal", "scale": {"range": ["#111111", "#222222"]}},
+            },
+        },
+    })
+    colors = {tuple(ax.patches[0].get_facecolor()) for ax in fig.axes if ax.patches}
+    assert len(colors) == 2
+
+
+def test_repeat_plain_array_honors_top_level_columns():
+    # repeat_histogram.vl.json's own shape: a plain-array `repeat` with a
+    # top-level `columns` must wrap into a grid, not one long row.
+    fig, _ = render({
+        "repeat": ["a", "b", "c", "d"],
+        "columns": 2,
+        "spec": {
+            "data": {"values": [{"a": 1, "b": 2, "c": 3, "d": 4}]},
+            "mark": "bar",
+            "encoding": {
+                "x": {"field": {"repeat": "repeat"}, "type": "quantitative"},
+                "y": {"aggregate": "count"},
+            },
+        },
+    })
+    assert fig.axes[0].get_gridspec().nrows == 2
+    assert fig.axes[0].get_gridspec().ncols == 2
+
+
+def test_point_mark_continuous_color_uses_a_real_colormap():
+    # point_angle_windvector.vl.json's own shape: a continuous `color`
+    # field on a point mark previously fell back to one flat default color.
+    fig, _ = render({
+        "data": {"values": [{"x": i, "y": i, "dir": i * 30} for i in range(5)]},
+        "mark": "point",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative"},
+            "color": {"field": "dir", "type": "quantitative", "scale": {"domain": [0, 360]}},
+        },
+    })
+    ax = fig.axes[0]
+    assert len(ax.collections) == 1
+    array = ax.collections[0].get_array()
+    assert array is not None and len(set(array.tolist())) > 1
+
+
+def test_color_legend_null_suppresses_the_legend():
+    fig, _ = render({
+        "data": {"values": [{"g": "a", "v": 1}, {"g": "b", "v": 2}]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "g", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative"},
+            "color": {"field": "g", "type": "nominal", "legend": None},
+        },
+    })
+    assert fig.axes[0].get_legend() is None
+
+
+def test_hconcat_children_get_their_own_declared_widths():
+    # concat_population_pyramid.vl.json's own shape: a narrow middle panel
+    # sandwiched between two full-width ones must actually render narrower.
+    fig, _ = render({
+        "hconcat": [
+            {"width": 300, "data": {"values": [{"a": 1}]}, "mark": "bar", "encoding": {"x": {"field": "a", "type": "quantitative"}}},
+            {"width": 20, "data": {"values": [{"a": 1}]}, "mark": "bar", "encoding": {"x": {"field": "a", "type": "quantitative"}}},
+        ],
+    })
+    bbox0 = fig.axes[0].get_position()
+    bbox1 = fig.axes[1].get_position()
+    assert bbox0.width > bbox1.width * 2
+
+
+def test_text_mark_color_field_colors_each_label():
+    # text_scatterplot_colored.vl.json's own shape: a categorical `color`
+    # field on a `text` mark was previously dropped entirely, every label
+    # drawing in matplotlib's own default black.
+    fig, _ = render({
+        "data": {"values": [{"x": 1, "y": 1, "g": "a", "t": "A"}, {"x": 2, "y": 2, "g": "b", "t": "B"}]},
+        "mark": "text",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative"},
+            "color": {"field": "g", "type": "nominal"},
+            "text": {"field": "t", "type": "nominal"},
+        },
+    })
+    ax = fig.axes[0]
+    colors = {t.get_color() for t in ax.texts}
+    assert len(colors) == 2
+
+
+def test_point_size_field_scales_into_a_reasonable_area_range():
+    # circle_bubble_health_income.vl.json's own shape: a raw size field in
+    # the tens of millions previously produced markers so large the whole
+    # plot rendered as one solid block.
+    fig, _ = render({
+        "data": {"values": [{"x": i, "y": i, "pop": i * 10_000_000} for i in range(1, 5)]},
+        "mark": "circle",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative", "scale": {"type": "log"}},
+            "size": {"field": "pop", "type": "quantitative"},
+        },
+    })
+    ax = fig.axes[0]
+    sizes = ax.collections[0].get_sizes()
+    assert sizes.max() <= 1000
+    assert ax.get_yscale() == "log"
+
+
+def test_line_point_marker_draws_at_each_data_point():
+    # line_bump.vl.json's own shape: `mark: {type: "line", point: true}`
+    # previously drew no marker overlay at all.
+    fig, _ = render({
+        "data": {"values": [{"x": 1, "y": 1}, {"x": 2, "y": 2}]},
+        "mark": {"type": "line", "point": True},
+        "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "y", "type": "quantitative"}},
+    })
+    line = fig.axes[0].lines[0]
+    assert line.get_marker() != "None"
+
+
+def test_quantile_transform_produces_probability_value_pairs():
+    fig, code = render({
+        "data": {"values": [{"u": v} for v in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]},
+        "transform": [{"quantile": "u", "step": 0.1, "as": ["p", "v"]}],
+        "mark": "point",
+        "encoding": {"x": {"field": "p", "type": "quantitative"}, "y": {"field": "v", "type": "quantitative"}},
+    })
+    assert "vl_quantile(" in code
+    ax = fig.axes[0]
+    assert len(ax.collections[0].get_offsets()) == 10
+
+
+def test_fold_transform_keeps_the_original_folded_fields():
+    # trail_comet.vl.json's own shape: a `calculate` step *after* `fold`
+    # reads one of the original folded fields back by name -- Vega-Lite's
+    # own `fold` keeps every original field on each output row (unlike a
+    # plain `melt()`, which drops the folded ones).
+    fig, code = render({
+        "data": {"values": [{"a": 1, "b": 2}]},
+        "transform": [
+            {"fold": ["a", "b"]},
+            {"calculate": "datum['a'] - datum['b']", "as": "delta"},
+        ],
+        "mark": "point",
+        "encoding": {"x": {"field": "key", "type": "nominal"}, "y": {"field": "delta", "type": "quantitative"}},
+    })
+    ax = fig.axes[0]
+    ys = ax.collections[0].get_offsets()[:, 1]
+    assert set(ys.tolist()) == {-1.0}

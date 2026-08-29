@@ -46,6 +46,7 @@ _COMBINED = {
     "yearquarter": "pd.Timestamp({0}.year, 3 * (({0}.month - 1) // 3) + 1, 1)",
     "yearmonth": "pd.Timestamp({0}.year, {0}.month, 1)",
     "yearmonthdate": "pd.Timestamp({0}.year, {0}.month, {0}.day)",
+    "yearmonthdatehours": "pd.Timestamp({0}.year, {0}.month, {0}.day, {0}.hour)",
     "quartermonth": "pd.Timestamp(2000, {0}.month, 1)",
     "monthdate": "pd.Timestamp(2000, {0}.month, {0}.day)",
 }
@@ -53,9 +54,30 @@ _COMBINED = {
 SUPPORTED_UNITS = set(_CYCLIC) | set(_COMBINED)
 
 
+def _normalize_unit_name(name: str) -> str:
+    """Strips Vega-Lite's own `"binned"` prefix (`"binnedyearmonth"`,
+    meaning "this field is already pre-binned to yearmonth granularity" --
+    the `bin: "binned"` convention `prepare.py` already handles for a plain
+    numeric bin, applied to a `timeUnit` instead) and `"utc"` infix
+    (`"utcyearmonth"`/`"binnedutcyearmonth"` -- this project has no
+    timezone-aware handling at all, local-naive throughout, so `utc` is
+    just ignored rather than attempted) down to the base unit name every
+    other lookup in this module (and `is_supported_timeunit()`) actually
+    keys on. A pre-binned field needs no re-derivation logic differences
+    from its own non-binned counterpart -- the *value* driving the
+    extraction expression below is already at that granularity either way."""
+    if name.startswith("binned"):
+        name = name[len("binned"):]
+    if name.startswith("utc"):
+        name = name[len("utc"):]
+    return name
+
+
 def is_supported_timeunit(unit: object) -> bool:
     name = unit["unit"] if isinstance(unit, dict) else unit
-    return isinstance(name, str) and name in SUPPORTED_UNITS
+    if not isinstance(name, str):
+        return False
+    return _normalize_unit_name(name) in SUPPORTED_UNITS
 
 
 def timeunit_expr(unit: object, value_expr: str) -> str:
@@ -65,6 +87,7 @@ def timeunit_expr(unit: object, value_expr: str) -> str:
     simplification). `value_expr` is the already-rendered Python expression
     for the raw datetime value (e.g. `row['date']`)."""
     name = unit["unit"] if isinstance(unit, dict) else unit
+    name = _normalize_unit_name(name)
     if name in _COMBINED:
         return _COMBINED[name].format(value_expr)
     if name in _CYCLIC:

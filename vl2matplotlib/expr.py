@@ -148,7 +148,21 @@ _MATH_FUNCS = {
     "Math.min": "min",
     "Math.max": "max",
     "Math.log": "math.log",
+    "Math.log2": "math.log2",
+    "Math.log10": "math.log10",
     "Math.exp": "math.exp",
+    "Math.sin": "math.sin",
+    "Math.cos": "math.cos",
+    "Math.tan": "math.tan",
+    "Math.asin": "math.asin",
+    "Math.acos": "math.acos",
+    "Math.atan": "math.atan",
+    "Math.atan2": "math.atan2",
+    "Math.sinh": "math.sinh",
+    "Math.cosh": "math.cosh",
+    "Math.tanh": "math.tanh",
+    "Math.hypot": "math.hypot",
+    "Math.trunc": "math.trunc",
     "Math.PI": "math.pi",
     "Math.random": "__import__('random').random",
 }
@@ -169,7 +183,21 @@ _BARE_MATH_FUNCS = {
     "min": "min",
     "max": "max",
     "log": "math.log",
+    "log2": "math.log2",
+    "log10": "math.log10",
     "exp": "math.exp",
+    "sin": "math.sin",
+    "cos": "math.cos",
+    "tan": "math.tan",
+    "asin": "math.asin",
+    "acos": "math.acos",
+    "atan": "math.atan",
+    "atan2": "math.atan2",
+    "sinh": "math.sinh",
+    "cosh": "math.cosh",
+    "tanh": "math.tanh",
+    "hypot": "math.hypot",
+    "trunc": "math.trunc",
     "random": "__import__('random').random",
 }
 
@@ -181,6 +209,12 @@ _BARE_MISC_FUNCS = {
     "toString": "str",
     "isValid": "pd.notna",
     "length": "len",
+    # Vega's own explicit string-to-number coercion function -- distinct
+    # from a bare unary `+` (deliberately *not* translated, see
+    # `_MATH_FUNCS`'s own docstring for why: too easy to misfire on an
+    # unrelated numeric `+`), `toNumber(...)` is unambiguous, always a
+    # single-argument function call, so it's safe to map directly.
+    "toNumber": "float",
 }
 
 # Vega's own date-component extraction functions (`year(datum.date)`,
@@ -207,6 +241,41 @@ def _rewrite_substring(expr: str) -> str:
         return f"{s}[{start}:{end.strip() if end else ''}]"
 
     return _SUBSTRING_RE.sub(repl, expr)
+
+
+# Vega's `quantileUniform(p[, min, max])`/`quantileNormal(p[, mean, stdev])`
+# -- the inverse CDF ("quantile function") of a Uniform/Normal distribution,
+# most often paired with a `quantile` transform's own output probability
+# (`point_quantile_quantile.vl.json`'s own Q-Q plot: `quantileUniform(datum.p)`/
+# `quantileNormal(datum.p)`, comparing empirical quantiles against each
+# distribution's theoretical ones). `quantileUniform` on its default [0, 1]
+# domain is just the identity (no Python call needed at all); `quantileNormal`
+# has no single bare Python builtin either, but the standard library's own
+# `statistics.NormalDist` already provides exactly this (`.inv_cdf(p)`) with
+# no extra dependency -- conditionally imported the same way `math`/
+# `LineCollection` are (see `translator.py`'s own `Emitter.add_stmt()`).
+_QUANTILE_UNIFORM_RE = re.compile(r"\bquantileUniform\(([^,()]+)(?:,\s*([^,()]+),\s*([^,()]+))?\)")
+_QUANTILE_NORMAL_RE = re.compile(r"\bquantileNormal\(([^,()]+)(?:,\s*([^,()]+),\s*([^,()]+))?\)")
+
+
+def _rewrite_quantile_funcs(expr: str) -> str:
+    def repl_uniform(m: re.Match) -> str:
+        p = m.group(1).strip()
+        if m.group(2) and m.group(3):
+            lo, hi = m.group(2).strip(), m.group(3).strip()
+            return f"(({lo}) + ({p}) * (({hi}) - ({lo})))"
+        return f"({p})"
+
+    def repl_normal(m: re.Match) -> str:
+        p = m.group(1).strip()
+        if m.group(2) and m.group(3):
+            mean, stdev = m.group(2).strip(), m.group(3).strip()
+            return f"statistics.NormalDist({mean}, {stdev}).inv_cdf({p})"
+        return f"statistics.NormalDist().inv_cdf({p})"
+
+    expr = _QUANTILE_UNIFORM_RE.sub(repl_uniform, expr)
+    expr = _QUANTILE_NORMAL_RE.sub(repl_normal, expr)
+    return expr
 
 
 _LITERAL_REPLACEMENTS = [
@@ -316,6 +385,7 @@ def translate_expr(expr: str) -> str:
     out = _rewrite_date_components(out)
     out = _rewrite_if_calls(out)
     out = _rewrite_substring(out)
+    out = _rewrite_quantile_funcs(out)
     for pattern, repl in _LOGICAL_REPLACEMENTS:
         out = pattern.sub(repl, out)
     for pattern, repl in _LITERAL_REPLACEMENTS:

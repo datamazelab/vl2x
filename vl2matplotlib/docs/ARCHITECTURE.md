@@ -601,6 +601,517 @@ code, and adding the same kind of shared runtime support module `vl2d3`/
   than risk the same trade a second time; both remain among the small
   residual failure set.
 
+## v2.2: `repeat`, and closing out the mark-orientation/ambiguous-type bug class
+
+Prompted by a direct list of still-broken showcase examples and a request
+to prioritize fixes by how often each *class* of error actually occurs
+across the corpus's own `ignore_unsupported` build (not just the strict-
+mode OK/skip/fail counts) — collecting and bucketing every distinct error
+message across all 633 specs' generated code turned up one dominant,
+previously entirely-unimplemented gap, plus several smaller instances of
+the exact "ambiguous-type field" bug class v2/v2.1 already fixed in other
+call sites.
+
+- **`repeat` went from "documented gap, crash-prone fallback" to a real
+  implementation.** The v1-era `ignore_unsupported` fallback ("render the
+  template once") never substituted the template's own `{"repeat":
+  "column"}`-style placeholder fields at all -- every downstream use of
+  that field (a `data_var[field]` lookup, a dict used as a `groupby()` key,
+  ...) received a literal Python `dict` instead of a real field name,
+  `TypeError: unhashable type: 'dict'` (23 of the corpus's ~86 pre-existing
+  showcase failures, the single largest bucket by far). Implemented
+  properly instead: `_substitute_repeat_refs()` recursively replaces every
+  `{"repeat": "row"|"column"|"layer"|"repeat"}` placeholder (found as a
+  `field`/`datum` value at any depth -- `"repeat"` itself is the
+  placeholder name a plain-array `repeat: [...]` form uses, matching its
+  own top-level key) with the real value for one panel/layer, and
+  `translate_repeat()` builds either a `plt.subplots()` grid (the `{row,
+  column}`/plain-array forms -- panel *count* is known at translation time
+  straight from the spec's own `repeat` array, unlike `facet`'s data-
+  dependent count, so this unrolls the same way `hconcat`/`vconcat`/
+  `concat` already do) or N layers sharing one `Axes` (`repeat: {layer:
+  [...]}`, since Vega-Lite's own semantics for that form is "layer, not
+  grid"). One extra fix the `layer` form needed: `color: {datum: {"repeat":
+  "layer"}}` (the common real shape -- each layer's color literally *is*
+  its own repeat value, e.g. the string `"US Gross"`) isn't a color at all
+  once substituted, so every layer fell back to the same default color;
+  `translate_repeat()` now detects this specific shape and assigns each
+  layer a distinct palette color by index instead (the translate-time
+  equivalent of the runtime `__i % 10` palette indexing color/detail
+  grouping already uses elsewhere, valid here specifically because a
+  `repeat`-as-layer's own layer count, unlike a genuine data-driven
+  grouping, is already fully known at translation time).
+- **Two more call sites hit the identical "ambiguous-type field" bug
+  v2/v2.1 already fixed for `rect`/bar-dodge.** `ax.text()` has no
+  matplotlib-native fallback for a raw string position the way `bar()`/
+  `scatter()` do (confirmed directly: a bare `ax.text('A', 5, ...)` raises
+  `ConversionError` on its own) -- surfaced by a layered bar+text chart
+  where the bar layer's own `xOffset` dodge already coerced the shared
+  category field to an ordinal integer position while the text layer,
+  never having gone through that same forcing, still passed the raw string
+  straight through, breaking the shared `Axes`. `_render_text()` now always
+  forces an ambiguous position channel nominal (unconditionally, unlike
+  `_render_bar()`/`_render_tick()`'s identical fix, which only needs it
+  when a dodge is actually present since untyped-string bar/tick positions
+  otherwise already work by relying on matplotlib's own native handling).
+  Separately, the *temporal* case of the same bug: a `binned`-prefixed
+  combined `timeUnit` (see below) used as a bar's category axis fell into
+  the existing quantitative-heuristic width branch's fallback (a bare
+  `0.8`), which is ~0.8 *days* wide next to month-scale gaps between bars
+  -- an invisible hairline, not a real bar -- and `xOffset`'s own dodge
+  shift tried adding that same bare float directly to a `pd.Timestamp`
+  column, `TypeError: unsupported operand type(s) for +: 'DatetimeArray'
+  and 'float'`. Both fixed by extending the existing per-category-axis
+  width heuristic to recognize a `temporal` `scale_type()` (its own
+  `.max() - .min()` naturally produces a `pd.Timedelta` via Timestamp
+  subtraction rather than a plain float -- matplotlib's own `bar()`/
+  `barh()` already accept either for `width=` on a date axis, so only the
+  single-category fallback literal needed to differ, `pd.Timedelta(days=1)`
+  instead of `0.8`).
+- **`timeUnit`'s own `"binned"` and `"utc"` prefixes** (`binnedyearmonth`,
+  `binnedutcyearmonthdate`, ...) were entirely unrecognized -- not even
+  reaching `is_supported_timeunit()`'s own lookup table at all, since the
+  prefixed name itself was never a key in it. Fixed with
+  `_normalize_unit_name()`: a `binned`-prefixed `timeUnit` needs no
+  re-derivation logic different from its own non-binned counterpart (the
+  *value* driving the extraction expression is already at that granularity
+  either way, the same reasoning `prepare.py`'s own `bin: "binned"`
+  handling for a plain numeric bin already established); `utc` is simply
+  ignored, since this project has no timezone-aware handling at all,
+  local-naive throughout. This alone fixed most of a 5-spec skip bucket
+  outright; the one still-failing case in it (`time_parse_binnedutc_
+  with_escaped_field`) turned out to have an unrelated, narrower problem
+  the `timeUnit` gap had been incidentally masking -- a field name that is
+  itself a SQL-expression-shaped string, not a real translation bug.
+- **The two-way-facet `ignore_unsupported` fallback rendered an empty
+  chart.** `translate_facet()`'s own "unsupported facet shape, render the
+  template unsplit" path (`facet: {row: {...}, column: {...}}`, a two-way
+  grid this project doesn't build -- a documented gap) merged the child
+  spec against a wrapper with `data`/`transform` both explicitly `None`,
+  discarding the *already-loaded-and-transformed* `data_var` from earlier
+  in the very same function and leaving the child to load its own (usually
+  entirely absent, since facet children typically inherit data from the
+  facet wrapper) data instead -- silently producing `pd.DataFrame()`. Fixed
+  by threading `data_param=data_var` through instead, reusing the same
+  already-prepared frame every real (single-field) facet panel already
+  does.
+
+## v2.3: normalized/centered stacking, value-based color mapping, and N-way binning
+
+Prompted by a direct list of six specific showcase examples reported as
+visually wrong despite translating and executing without error — a
+different failure shape than v2.2's, since every one of these bugs
+produced code that ran cleanly but drew the *wrong picture*, so none of
+them showed up in the strict-mode OK/skip/fail counts or
+`validate_rendering.py`'s empty/NaN check. Found and verified the same way:
+generating each spec's code, reading it, and visually comparing rendered
+PNGs before and after.
+
+- **`stack: "normalize"`/`"center"` were silently treated as plain
+  zero-baseline stacking.** `stack.py`'s `plan_stacking()`/
+  `render_stacking_statements()` previously implemented only the
+  zero-baseline `cumsum()` case — a `stack: "normalize"` chart (each
+  category's stack rescaled to sum to 1.0) rendered as an ordinary,
+  un-normalized stack instead (`stacked_bar_normalize`,
+  `stacked_area_normalize`). Both new modes are now real: `normalize`
+  divides each value by `groupby(category)[field].transform('sum')` before
+  cumulative-summing; `center` cumulative-sums and then shifts by half the
+  category's own total, producing a streamgraph straddling zero.
+- **Categorical colors ignored `color.scale.range`/`.scheme`/`.domain`
+  entirely.** Every color-grouping call site — bar/tick dodge, boxplot,
+  `arc`/pie, the generic groupby-and-draw loop in `_grouped_or_single()` —
+  built its palette from a hardcoded `plt.get_cmap('tab10').colors`
+  regardless of what the spec itself specified
+  (`stacked_bar_normalize`'s own `color.scale.range: ["#675193",
+  "#ca8861"]` was silently discarded, always rendering default tab10
+  blue/orange instead). The renamed `_categorical_color_lookup()` now
+  honors an explicit `range` list, a named `scheme` (mapped via a new
+  `_CATEGORICAL_SCHEME_MAP` to the closest matplotlib qualitative colormap
+  — `category10`→`tab10`, `category20`→`tab20`, `tableau10`/`tableau20`,
+  `accent`→`Accent`, `dark2`→`Dark2`, `paired`→`Paired`,
+  `pastel1`/`pastel2`, `set1`/`set2`/`set3`), and — when a spec gives
+  *both* `scale.domain` and `scale.range` of equal length — builds a
+  literal `domain[i] → range[i]` **value** map instead of an
+  index-ordered palette matched by draw/row order.
+- **`arc`'s own `order` channel was entirely unhandled.** That
+  domain/range value-vs-index distinction matters concretely for
+  `arc_pie_pyramid`: its data rows arrive in one order but its
+  `order: {field: "order"}` channel specifies a *different* intended wedge
+  sequence, and its `color.scale` gives both `domain` and `range` — so a
+  naive index-based palette (matched to raw row order) would have painted
+  the wrong category the wrong color even after the palette itself
+  respected `range`. `_render_arc()` now sorts by the `order` field's
+  values before drawing when present, and (via the value-map fix above)
+  looks up each wedge's color by its own category value rather than by
+  position in the draw sequence.
+- **Only one bin channel was ever supported.** `_prepare_binned()` raised/
+  truncated when more than one encoding channel carried a `bin` — a chart
+  binning *both* `x` and `y` (`circle_binned`, a 2D histogram) got real
+  binning on one axis and raw, ungrouped values on the other, so the
+  second axis showed many thin unbinned points instead of a binned grid.
+  Rewritten to loop over every bin channel, each getting its own
+  uniquely-named `__edges_<field>` variable (so two different binned
+  fields don't clobber each other's edge variable), then grouping by the
+  *union* of every channel's own bin-start/bin-end columns before the
+  final aggregate.
+- **`bin: {"binned": true, "step": N}` (the object-form spelling of
+  "already binned") wasn't recognized** — only the bare string `"binned"`
+  was, from an earlier session's fix — so `bar_binned_data`'s
+  already-binned `bin_start`/`bin_end` data got *re-binned* via
+  `np.histogram_bin_edges`'s default bucket count, producing entirely
+  wrong intervals. The new `_is_pre_binned()` helper recognizes both
+  spellings; `prepare_encoding()`'s bin-channel filter now calls it
+  instead of comparing directly against the string.
+- **`longitude`/`latitude` encoding channels weren't recognized as
+  position channels at all** (only `x`/`y` were) — so
+  `point_angle_windvector` fell through `position_column()`'s "no field at
+  all" fallback on both axes, putting every one of its ~600 rows at the
+  literal same `(0, 0)` position: visually a single dot, not a wind-vector
+  field. Fixed with a translate-time spec rewrite, `_fallback_geo_position()`
+  (wired into `translate_top()` right after `_unescape_field_refs()`),
+  that recursively renames `encoding.longitude`→`encoding.x` and
+  `encoding.latitude`→`encoding.y` in place wherever `x`/`y` aren't
+  already present, at any nesting depth — matching `vl2ggplot`'s own
+  documented "plot as a plain unprojected x/y scatter" fallback for the
+  identical gap. (This does not attempt real map projection; a `geoshape`
+  mark using one, e.g. `geo_circle`, remains a separate, still-unsupported
+  failure.)
+- **A many-category legend could cover the entire plot.** Found purely by
+  visual inspection, after the two fixes above already made
+  `stacked_area_normalize`'s underlying stacking math and generated code
+  provably correct — the rendered PNG still looked blank. Cause: a plain
+  `ax.legend(title=...)` with no explicit location lets matplotlib choose
+  its own "best fit" spot *inside* the Axes; with 14 category entries on a
+  compact (3.1×2.1in) figure, that auto-placed box happened to sit
+  directly on top of the plotted area it was meant to label. A new shared
+  `_legend_stmt()` helper replaces every `.legend(title=...)` call site (5
+  of them, across bar dodge, tick dodge, boxplot, `arc`, and the generic
+  groupby loop) with one that places the legend outside the Axes
+  (`bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0`).
+
+Net effect on the strict-mode corpus: **504/633 OK, 121/633 skipped,
+8/633 failed** (up from v2.2's 496/129/8 — the 2D-binning fix alone moved
+8 specs from skip to OK; the rest of this pass's fixes change *how* an
+already-OK spec renders, not whether it counts as OK, so most don't move
+the bucket counts at all). The showcase's own best-effort build stayed
+flat at **578/633** (down 1 from v2.2's 579, noise-level — these fixes are
+"renders correctly" corrections, not "doesn't crash" ones, so a shift in
+the best-effort count isn't the metric that matters for this pass; the
+six originally-reported issues and the legend bug were all confirmed fixed
+by direct visual re-inspection of the rendered PNGs instead).
+
+## v2.4: two new transforms, per-panel/child color sharing, and hconcat/vconcat sizing
+
+Another visual-QA-driven round, prompted by a second list of eight
+specific showcase examples still rendering wrong. Each was found and
+verified the same way as v2.3's own pass: generating the spec's code,
+reading it, and comparing rendered PNGs against the corpus's own real
+Vega-Lite reference thumbnails (`showcase/thumbs_png/`, rendered via the
+actual Vega runtime — the one genuinely authoritative source available for
+"what should this look like").
+
+- **A bar mark with only its category channel encoded drew zero-length,
+  invisible bars.** `bar_1d_dimension_only.vl.json`'s own shape: `mark:
+  {type: "bar", orient: "horizontal"}`, only `y` given, no `x`/`x2` at
+  all. Vega-Lite still draws one bar per row in this case, each spanning
+  the *entire* plot area along the missing axis — there's no data to size
+  it by — not a zero-width sliver. `_render_bar()`'s own `top_expr`
+  previously fell back to a bare `"0"` when the value channel had no
+  field; now, when *both* the field and its `x2`/`y2` companion are
+  missing, it draws at `width=1`/`height=1` under a blended transform
+  (`ax.get_yaxis_transform()`/`get_xaxis_transform()`, data coordinates on
+  the category axis, axes-fraction `[0, 1]` on the missing value axis) —
+  matplotlib's own documented way to mean "fill the whole axes" when
+  there's no real data scale to size against.
+- **An ordinal field's own categories always sorted lexicographically,
+  even when the field is numeric.** Every category-list `sorted(...)` call
+  in this project (`position_column()`'s own ordinal branch, a facet's
+  `__facet_vals`, a dodge's `__dodge_cats`, `_grouped_or_single()`'s
+  `__groups`, `translate_facet()`'s `cats_var`) used a flat `key=str`,
+  which sorts numeric categories as strings (`1, 10, 11, 12, 2, 3, ...`)
+  instead of numerically — surfaced by `selection_layer_bar_month.vl.
+  json`'s own `timeUnit: "month"` x-axis (a cyclic timeUnit reduces to a
+  plain int 1-12, see v2.2's own `_normalize_unit_name()`), which
+  rendered its 12 months in that same broken lexicographic order instead
+  of calendar order. Fixed with one shared `ORDINAL_SORT_KEY` (`scales.py`)
+  — numbers sort numerically among themselves, strings lexically among
+  themselves, numbers before strings — used at all five call sites.
+- **The `density` transform (a kernel density estimate) was entirely
+  unimplemented**, so any spec using it (`area_density.vl.json` and its
+  `_facet`/`_stacked`/`_stacked_fold` siblings) skipped the transform
+  outright and then crashed with `KeyError` the moment an encoding channel
+  referenced the (never-created) `value`/`density` output columns. A real
+  Gaussian-kernel KDE is now computed via a new `vl_density()` runtime
+  helper (`runtime.py`) — pandas/numpy have no built-in density-estimation
+  convenience the way R's `stats::density()` does, so this is a genuine
+  KDE computed inline, not an approximation, mirroring `vl2ggplot`'s own
+  `stats::density()`-based version and `vl2d3`'s hand-rolled D3 one
+  (bandwidth defaults to Silverman's rule of thumb / R's `bw.nrd0`,
+  matching both siblings). A second, unrelated bug the same investigation
+  turned up: `_derived_field_names()` (`translator.py`) — the "don't
+  coerce a column before the transform that creates it has run" guard
+  every transform type already gets — never accounted for `density`'s own
+  *default* `as` (`["value", "density"]`, used whenever a spec omits `as`
+  entirely, the overwhelmingly common case); now defaulted there too.
+- **The `pivot` transform (`fold`'s inverse) was entirely unimplemented**
+  too, a real, if less common, corpus gap (`line_color_halo.vl.json`'s
+  own workaround-shaped `pivot: "symbol", value: "price", groupby:
+  ["date"]`, used to turn one long stock-price table into one column per
+  ticker so `repeat: {layer: [...]}` could plot each as its own line).
+  Implemented via a new `vl_pivot()` runtime helper, mirroring `vl2d3`'s
+  own `vlPivot()`/`vl2ggplot`'s own `vl_pivot()` (real per-group
+  bookkeeping: collect duplicates per pivot key, aggregate them — default
+  `op: "sum"`, Vega-Lite's own default — keep a stable, possibly
+  `limit`-truncated column ordering). Exposed the identical "coerced
+  before the transform creates it" bug class as `density` above, but with
+  no fixed default `as` to special-case around — a `pivot`'s own output
+  *column names* are literally the runtime values of its pivot field,
+  unknowable at translation time at all. Fixed more generally instead:
+  `render_temporal_coercion()`/`render_quantitative_coercion()` (`data.py`)
+  now guard every coercion statement on the column actually existing yet
+  (`if field in df.columns: ...`), a no-op instead of a `KeyError` for any
+  field that isn't there yet regardless of *why* — covering `pivot`'s
+  dynamic columns without needing to know their names in advance.
+- **`sequence_line_fold.vl.json` had two separate, unrelated bugs.** Its
+  own `data: {sequence: {start, stop, step, as}}` generator (a synthetic
+  numeric sequence, no corpus spec had exercised before) wasn't a
+  recognized data source shape at all, falling through to an empty
+  `pd.DataFrame()`; added to `data.py`'s `render_data_load()` via a direct
+  `np.arange()` call, matching Vega-Lite's own half-open, step-based
+  range semantics exactly. Separately, its `calculate: "sin(datum.x)"`
+  expression used Vega's *bare* (non-`Math.`-prefixed) trig functions
+  (`sin`, `cos`, `tan`, ...), which `expr.py`'s own `_BARE_MATH_FUNCS`/
+  `_MATH_FUNCS` tables never mapped at all (only `ceil`/`floor`/`round`/
+  `sqrt`/`log`/`exp` were) — translated through completely unchanged into
+  a bare `sin(...)` Python call with no `sin` in scope, `NameError`. Both
+  tables now also cover `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/
+  `sinh`/`cosh`/`tanh`/`log2`/`log10`/`hypot`/`trunc`, all routed through
+  `math.*`.
+- **Every categorical color assignment indexed a palette by *local* draw
+  order, not by the field's real domain** — invisible for a plain,
+  ungrouped chart (the local order *is* the real order there), but wrong
+  the moment the same call site runs on a data slice that's only a
+  *subset* of the field's true domain: a facet panel already filtered to
+  one category (`trellis_bar.vl.json`'s own `row: {field: "gender"},
+  color: {field: "gender"}` — the Male panel's only locally-visible
+  category is "Male," so it always lands on `range[0]`, the *same* color
+  a Female panel's own single value also gets). Fixed for facet panels via
+  `_share_color_domain()` (`translator.py`): when a panel's own `color`
+  reads the same field the facet itself splits on, the facet's already-
+  computed full-domain variable (`__facet_vals`, built from the
+  *pre-split* data) is threaded into the color scale as a new internal-
+  only `_domain_expr` convention `_categorical_color_lookup()` checks
+  first — every panel then builds an identical `value -> color` map at
+  runtime instead of reassigning colors per panel. A *second*, related
+  case: `concat`/`hconcat`/`vconcat` siblings that each filter down to one
+  distinct value of the *same* color field via their own `transform`
+  (`concat_population_pyramid.vl.json`'s own Female/Male panels, each
+  `{filter: {field: "gender", equal: "Female"|"Male"}}`) — here the shared
+  domain values are literal strings already sitting right there in the
+  spec, so `_share_categorical_color_domain()` builds a real, static
+  `scale.domain` directly at translation time instead (no runtime
+  plumbing needed), which `_categorical_color_lookup()`'s existing
+  domain-and-range "map" kind already handles.
+- **`repeat`'s plain-array form ignored its own top-level `columns`
+  entirely**, always laying every repeat value out in a single row
+  regardless (`repeat_histogram.vl.json`'s own 4-field repeat with
+  `"columns": 2`, meant to land as a 2x2 grid, rendered as 1x4).
+  `translate_repeat()` now computes `nrows`/`ncols` from `columns` for
+  this form exactly the way `concat`'s own grid direction already does
+  (`-(-n // columns), columns`) — the dict-shaped `{row: [...], column:
+  [...]}` form, which specifies its own grid dimensions directly, is
+  unaffected.
+- **A *continuous* `color` field on a `point`/`circle`/`square` mark was
+  silently ignored, always drawing the flat default color.**
+  `_color_source()` deliberately excludes a continuous color field (by
+  design — see its own docstring), expecting a caller to handle that case
+  itself via `_continuous_color_setup()`; `_render_rect()` already did,
+  but `_render_point()` never did at all (`point_angle_windvector.vl.
+  json`'s own `color: {field: "dir", type: "quantitative", scale:
+  {scheme: "rainbow"}}`, entirely dropped). Fixed by giving `_render_point()`
+  its own continuous-color branch, using `scatter()`'s native `c=`/`cmap=`/
+  `norm=` kwargs directly (a real per-point colormap lookup, vectorized,
+  no `df.iterrows()` loop needed) instead of `_render_rect()`'s per-row
+  `cmap(norm(row[field]))` expression, which `scatter()` doesn't need.
+- **`color.legend: null` was never honored anywhere** — every categorical
+  color grouping call site (5 of them) always drew a legend regardless,
+  and the two continuous-color colorbar call sites (`rect`, and the new
+  `point` branch above) always drew a colorbar. A real, common cause of a
+  chart looking cluttered/wrong: `concat_population_pyramid.vl.json`'s own
+  Female/Male panels each explicitly set `color.legend: null` (the
+  panel's own title already says which gender it is), but still rendered
+  a redundant one-entry legend eating a third of each panel's width. Fixed
+  with one shared `_legend_hidden()` check (`marks.py`), gating every
+  `_legend_stmt()` call and both colorbar statements.
+- **`concat`/`hconcat`/`vconcat` children all got the same shared panel
+  size regardless of their own explicit `width`/`height`.** A real,
+  common "small multiples with one narrow label column" shape
+  (`concat_population_pyramid.vl.json`'s own middle age-label panel,
+  `"width": 20` sandwiched between two full-width bar panels) rendered
+  every panel at an identical width instead. `translate_multi()` now
+  passes `gridspec_kw={'width_ratios': [...]}` (`hconcat`) or
+  `{'height_ratios': [...]}` (`vconcat`) — matplotlib's own documented way
+  to give `subplots()` unequal panel sizes — computed from each child's
+  own `_panel_size()`. Scoped to a plain single row/column, not a general
+  multi-row/column `concat` grid, where a per-cell size would need both
+  ratios reconciled across every row *and* column sharing a track, a
+  bigger change than this narrower, much more common case.
+- **A continuous *value*-axis `sort: "descending"` was never honored on
+  any position channel**, needed for the other half of
+  `concat_population_pyramid.vl.json`'s own population-pyramid mirroring
+  trick: the Female panel's `x: {aggregate: "sum", field: "people", ...,
+  sort: "descending"}` is meant to make its bars grow leftward instead of
+  rightward, mirroring the Male panel outward from a shared center.
+  `_axis_setup_stmts()` now calls `ax.invert_<channel>axis()` for a
+  `sort: "descending"` continuous (non-ordinal) position channel; also
+  newly called at all for a bar mark's own *value* channel in the first
+  place (`_render_bar()` only ever set up the *category* channel's axis
+  before), which incidentally also fixed a bar's value-axis `title` never
+  rendering (`x: {..., title: "population"}` was silently dropped too).
+
+Net effect on the strict-mode corpus: **512/633 OK, 113/633 skipped,
+8/633 failed** (up from v2.3's 504/121/8 — `density`/`pivot` support
+alone moved 8 specs from skip to OK; the rest of this pass, like v2.3's
+own, mostly changes *how* an already-non-crashing spec renders rather
+than whether it counts as OK). The residual 8 failures are unchanged in
+substance from v2.3's own list — see the feature table above for the
+current, precise list. The showcase's own best-effort build went from
+578/633 to **586/633** over this pass. A visual re-inspection of all eight
+originally-reported examples plus `concat_population_pyramid.vl.json`
+(compared directly against its real Vega-Lite reference render in
+`showcase/thumbs_png/`) confirmed every one fixed.
+
+## v2.5: text color, size/log scales, a new `trail` mark, and two more transforms
+
+A third visual-QA-driven round, prompted by a third list of six specific
+showcase examples still rendering wrong (one of them, `parallel_coordinate.
+vl.json`, also reported broken for `vl2ggplot`/`vl2d3` — out of scope for
+this module, tracked separately). Same methodology as v2.3/v2.4: generate,
+read the code, compare rendered PNGs against ground truth.
+
+- **A `text` mark's own `color` field was dropped entirely** — every label
+  always drew in matplotlib's own default black, regardless of the spec
+  (`text_scatterplot_colored.vl.json`'s own `color: {field: "Origin"}`).
+  `_render_text()` draws via one `zip()` loop, not `_grouped_or_single()`'s
+  one-call-per-group idiom every other mark's own color support is built
+  on, so it never had a way to *use* `_categorical_color_lookup()`'s
+  `_domain_expr` convention (see v2.4's own facet/concat color-sharing
+  entry) until now — reused here too, pointed at the field's own local
+  sorted unique values, plus `_continuous_color_setup()` for a quantitative
+  `color` field.
+- **A `size`-encoded `point`/`circle`/`square` marker used the raw field
+  value directly as matplotlib's own `s=` (marker *area* in points^2)** —
+  harmless for a field that happens to already sit in a plausible pixel
+  range, but `circle_bubble_health_income.vl.json`'s own `size: {field:
+  "population"}` (tens of millions) rendered as one solid black rectangle
+  covering the entire plot. A new `_size_scale_expr()` rescales into a
+  fixed, reasonable area range (`scale.range`/`.rangeMin`/`.rangeMax`
+  win when given, else `[20, 1000]`) via a square-root interpolation
+  (matching `vl2d3`'s own `d3.scaleSqrt()`-based size scale — area should
+  grow linearly with the data value, the standard perceptually-fair
+  bubble-chart convention). The same investigation surfaced a second,
+  unrelated, entirely-missing feature in the same spec: `scale: {type:
+  "log"}` had been recognized by `scale_type()` since this module's own
+  introduction but never actually wired to `ax.set_xscale`/`set_yscale` —
+  every log-scale spec silently rendered on a plain linear axis instead.
+  Both gated the same underlying "raw value density" symptom in this one
+  spec; fixing only one would have left it visually broken.
+- **`mark: {type: "line", point: true}` never drew the point overlay**
+  (`line_bump.vl.json`). `mark_props` already captured every mark-object
+  key besides `type` — `point` specifically was just never consulted;
+  `_render_line_or_area()` now adds `marker='o'` to the `ax.plot()` call
+  when it's truthy.
+- **The `trail` mark (a line whose own *width* varies along its length
+  with a `size` field) was entirely unimplemented** — a documented v1
+  scope gap, silently skipped under `ignore_unsupported` and drawing
+  nothing (`trail_color.vl.json`'s own per-symbol stock-price trail,
+  thicker where `price` is higher). matplotlib's `ax.plot()` has no
+  per-segment-width line primitive at all; implemented instead via
+  `matplotlib.collections.LineCollection` (one segment per consecutive
+  point pair, each with its own linewidth — the standard matplotlib
+  variable-width-line recipe), conditionally imported the same way
+  `math`/the runtime module are. Two more bugs surfaced by exercising this
+  new mark against the rest of the corpus (not the originally-reported
+  spec, but two others `ignore_unsupported` had been silently masking by
+  skipping the mark outright): `circle_natural_disasters.vl.json`/
+  `point_shape_custom.vl.json` hit the exact same "translation-time
+  variable name embeds `data_var` as a substring, so `.replace(data_var,
+  rows)` inside a groupby loop corrupts the name" bug class `_render_bar()`'s
+  own `width_var` already had a documented fix for — `_render_point()`'s
+  own `size_expr` (from the new `_size_scale_expr()` above) needed the
+  identical `.loc[rows.index]`-based fix; `trail_comet.vl.json` needed an
+  ordinal-forcing fix for an ambiguous nominal position channel (the same
+  class `_render_bar()`/`_render_tick()`/`_render_rect()` already have),
+  since `LineCollection` needs real numeric coordinates.
+- **Two more transforms**: `quantile` (empirical quantiles of a field,
+  sampled at evenly-spaced probabilities — a new `vl_quantile()` runtime
+  helper) and Vega's `quantileUniform`/`quantileNormal` expression
+  functions (the inverse CDF of a Uniform/Normal distribution, most often
+  paired with `quantile`'s own output for a Q-Q plot,
+  `point_quantile_quantile.vl.json`'s own shape) — `quantileNormal` routes
+  through the standard library's `statistics.NormalDist().inv_cdf()`, no
+  new dependency needed, conditionally imported like `math`/`LineCollection`.
+- **`fold` dropped the fields it folded**, unlike real Vega-Lite (which
+  keeps *every* original field on each output row, including the ones
+  just folded) — invisible until a later transform read one of those
+  fields back by name (`trail_comet.vl.json`'s own `calculate:
+  "datum['1932'] - datum['1931']"`, straight after folding exactly
+  `"1931"`/`"1932"`), which a plain `melt(id_vars=<everything except the
+  folded fields>)` can't produce at all (a column can't simultaneously be
+  an id_var and a value_var). Confirmed against both sibling
+  implementations for the correct semantics — `vl2d3`'s own
+  `renderFoldTransform()` (`{...d, key: f, value: d[f]}`, spreading the
+  *whole* original row) and `vl2ggplot`'s own `render_fold_transform()`
+  (`.d <- var_name; .d[[key]] <- .f; ...`) both already do this — fixed by
+  melting only the non-folded columns (`ignore_index=False`, preserving
+  the original row index) and rejoining the folded fields' own original
+  values back by that same index afterward. A related, second bug in the
+  same investigation: `vl_pivot()`'s own output columns kept whatever raw
+  dtype the pivot field itself had (e.g. real ints `1931`/`1932`), but a
+  later transform referring to one of those columns always does so via a
+  *string* literal (Vega-Lite's own pivot always names a column the way a
+  JS object key would — implicitly stringified regardless of the source
+  field's dtype) — `vl_pivot()` now always coerces its own new column
+  names to `str()`.
+- **`toNumber(...)`** (Vega's own explicit, unambiguous string-to-number
+  coercion — distinct from the bare unary `+` this project deliberately
+  still doesn't translate, see v2.1's own reasoning for why that one stays
+  out) now maps directly to Python's `float`.
+
+`parallel_coordinate.vl.json` (the sixth reported example) was
+investigated but *not* fixed: its own layered "manually construct axes"
+technique (explicitly named as such in the spec's own description) mixes
+a data-driven position channel (a `line` layer's own `y: {field:
+"norm_val"}`, normalized to `[0, 1]`) with sibling layers positioned via a
+literal *pixel*-space `y: {value: 0|150|300}` meant to align with that
+same normalized range only because Vega-Lite's real renderer maps a `[0,
+1]` domain onto the view's own full pixel height. This project's `value`
+channel handling (correct and load-bearing everywhere else in the corpus)
+treats every `value` as a literal *data*-coordinate position; reconciling
+the two coordinate spaces across independently-rendered sibling layers
+sharing one `Axes` would need new, layer-composition-level machinery, not
+a targeted fix. Confirmed harmless in isolation (transforms execute
+cleanly, no exception) but visually flattened (the shared Axes'
+autoscale stretches to fit the pixel-space values 0-300, squeezing the
+real `[0, 1]`-range line data down to an imperceptible sliver) — left as a
+known, narrower gap rather than a risky, speculative general heuristic.
+
+Net effect on the strict-mode corpus: **515/633 OK, 110/633 skipped,
+8/633 failed** (up from v2.4's 512/113/8 — `quantile` support moved
+`point_quantile_quantile.vl.json` and the `trail` mark implementation
+moved `trail_color.vl.json`/`trail_comet.vl.json` from skip to OK; the
+rest of this pass, like v2.3/v2.4's own, mostly changes *how* an
+already-non-crashing spec renders). The residual 8 failures are unchanged
+in substance — see the feature table above for the current, precise list.
+5 new regression tests cover the newly-implemented/fixed behavior
+(`test_text_mark_color_field_colors_each_label`,
+`test_point_size_field_scales_into_a_reasonable_area_range`,
+`test_line_point_marker_draws_at_each_data_point`,
+`test_quantile_transform_produces_probability_value_pairs`,
+`test_fold_transform_keeps_the_original_folded_fields`), plus
+`test_trail_mark_draws_a_variable_width_line` from the mark's own
+implementation above.
+
 ## Corpus validation methodology
 
 Like `vl2d3`/`vl2ggplot` (and unlike `vl2altair`/`vl2vlapi`, which validate
@@ -616,20 +1127,44 @@ yet." `tests/validate_examples.py` instead buckets every spec in
   documented scope boundary, see the feature table in `README.md`).
 - **Failed** — anything else. A real bug, worth investigating.
 
-At the time of writing: **472/633 OK, 154/633 skipped, 7/633 failed** (v1
+At the time of writing: **515/633 OK, 110/633 skipped, 8/633 failed** (v1
 launched at 368/249/16; v2 closed the gap to 439/177/17 — see "v2: new
 marks, and the gap between 'renders' and 'renders correctly'" above; v2.1
-closed it further — see "v2.1: grouped bars, conditional color, nested
-fields, and a shared runtime module" above). `tests/validate_rendering.py`
-runs the same corpus a second way: for every spec that translates *and*
-executes cleanly, it introspects the resulting `Figure`'s own `Axes`
-children (`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) for two
-failure shapes an exception-only check can't catch — a script that runs
-without error but draws nothing at all, and one that draws only NaN-valued
-(off-screen) geometry. Neither occurred: **0/472 OK renders are empty or
-all-NaN**. Note that this check, by construction, cannot catch the *other*
-class of "renders but is wrong" bug v2/v2.1 fixed (a technically-non-empty,
-non-NaN bar that's still a barely-visible sliver, or one drawn at the
-wrong position, or the right position but the wrong flat color) — those
-were only found by actually looking at rendered output, not by any
-automated check in this harness.
+reached 472/154/17 — see "v2.1: grouped bars, conditional color, nested
+fields, and a shared runtime module" above; v2.2 reached 496/129/8,
+headlined by a working `repeat` operator — see "v2.2: `repeat`, and
+closing out the mark-orientation/ambiguous-type bug class" above; v2.3
+reached 504/121/8 — see "v2.3: normalized/centered stacking, value-based
+color mapping, and N-way binning" above; v2.4 reached 512/113/8 — see
+"v2.4: two new transforms, per-panel/child color sharing, and hconcat/
+vconcat sizing" above; v2.5 reached 515/110/8 — see "v2.5: text color,
+size/log scales, a new `trail` mark, and two more transforms" above). The
+showcase's own best-effort (`ignore_unsupported=True`) build — exercising
+every fallback path, a wider sample than this strict-mode check — went
+from 547/633 to 579/633 over v2.2, to 578/633 over v2.3 (noise-level;
+v2.3's fixes mostly changed *how* an already-non-crashing spec renders,
+not whether it crashed), to 586/633 over v2.4 (the `density`/`pivot`
+transform support this time genuinely turning prior crashes into clean
+renders), then to **588/633** over v2.5 (the `quantile` transform and new
+`trail` mark again genuinely turning prior crashes/skips into clean
+renders). `tests/validate_rendering.py` runs the same corpus a second
+way: for every spec that translates *and* executes cleanly, it
+introspects the resulting `Figure`'s own `Axes` children
+(`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) for two failure
+shapes an exception-only check can't catch — a script that runs without
+error but draws nothing at all, and one that draws only NaN-valued
+(off-screen) geometry. Neither occurred: **0/515 OK renders are empty or
+all-NaN** (note this check can't catch `parallel_coordinate.vl.json`'s
+own subtler failure — v2.5's own section above — since its line data is
+technically non-empty and non-NaN, just visually flattened to a sliver
+by a separate, unfixed layered-coordinate-space issue). Note that this
+check, by construction, cannot catch the *other* class of "renders but is
+wrong" bug v2 through
+v2.5 fixed (a technically-non-empty, non-NaN bar that's still a
+barely-visible sliver, one drawn at the wrong position, one overdrawing
+another rather than sitting side by side, the right position but the
+wrong flat color, a stack that isn't actually normalized, or a correct
+chart hidden behind its own legend) —
+those were only found by actually looking at rendered output (or, in
+v2.2's case, by directly collecting and bucketing the showcase's own real
+error messages), not by any automated check in this harness.

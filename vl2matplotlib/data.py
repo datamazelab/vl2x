@@ -56,6 +56,18 @@ def render_data_load(data: object, var_name: str, ignore_unsupported: bool = Fal
     statement(s) assigning `var_name` a `pd.DataFrame`."""
     if not data:
         return [f"{var_name} = pd.DataFrame()"]
+    if "sequence" in data:
+        # Vega-Lite's `sequence` generator: a synthetic dataset with one
+        # numeric field (`as`, default `"data"`) stepping from `start`
+        # (inclusive) to `stop` (exclusive) by `step` (default 1) --
+        # `np.arange()` already has exactly this half-open, step-based
+        # semantics, so no bespoke range logic is needed.
+        seq = data["sequence"]
+        start = format_value(seq.get("start", 0))
+        stop = format_value(seq["stop"])
+        step = format_value(seq.get("step", 1))
+        field = seq.get("as", "data")
+        return [f"{var_name} = pd.DataFrame({{{field!r}: np.arange({start}, {stop}, {step})}})"]
     if "values" in data:
         values = data["values"]
         # `format.property`: `values` itself is a JSON envelope object, not
@@ -122,12 +134,27 @@ def render_data_load(data: object, var_name: str, ignore_unsupported: bool = Fal
 def render_temporal_coercion(var_name: str, fields: list[str]) -> list[str]:
     """`pd.to_datetime()` every temporal field once, up front -- every
     downstream `.dt` accessor / comparison / timeUnit derivation assumes a
-    real `pd.Timestamp` column, not a raw JSON string."""
+    real `pd.Timestamp` column, not a raw JSON string. Guarded on the
+    column actually existing yet: `_collect_temporal_fields()` already
+    excludes a transform's own *named* output (`as`), but a `pivot`
+    transform's own output columns are literally the runtime *values* of
+    its pivot field -- unknowable at translation time -- so an encoding
+    channel reading one of those (the common case: a `repeat: {layer:
+    [...]}` template whose own repeat values happen to be exactly the
+    columns a preceding `pivot` step will produce, e.g.
+    `line_color_halo.vl.json`) would otherwise still reach this coercion
+    before the transform that creates it has run at all, `KeyError`. This
+    guard makes that a no-op instead of a crash; the field still ends up
+    coerced downstream if/when it needs to be (a plain CSV/JSON numeric
+    column already parses as a real dtype without help, and a `pivot`
+    aggregate over an already-numeric `value` field is numeric already)."""
     if not fields:
         return []
     stmts = []
     for f in fields:
-        stmts.append(f"{var_name}[{f!r}] = pd.to_datetime({var_name}[{f!r}], errors='coerce')")
+        stmts.append(
+            f"if {f!r} in {var_name}.columns: {var_name}[{f!r}] = pd.to_datetime({var_name}[{f!r}], errors='coerce')"
+        )
     return stmts
 
 
@@ -136,10 +163,15 @@ def render_quantitative_coercion(var_name: str, fields: list[str]) -> list[str]:
     up front (see `translator.py`'s own `_collect_quantitative_fields()`)
     -- a real value already numeric passes through unchanged, so this is
     only ever a no-op for the common case and a genuine fix for the rarer
-    one (a numeric-looking field whose raw JSON values are strings)."""
+    one (a numeric-looking field whose raw JSON values are strings).
+    Guarded on the column existing yet -- see `render_temporal_coercion()`'s
+    identical guard and its docstring for why (a `pivot` transform's own
+    output columns can't be known by name at translation time)."""
     if not fields:
         return []
     stmts = []
     for f in fields:
-        stmts.append(f"{var_name}[{f!r}] = pd.to_numeric({var_name}[{f!r}], errors='coerce')")
+        stmts.append(
+            f"if {f!r} in {var_name}.columns: {var_name}[{f!r}] = pd.to_numeric({var_name}[{f!r}], errors='coerce')"
+        )
     return stmts

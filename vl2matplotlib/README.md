@@ -143,7 +143,7 @@ without the argument. See `translator.py`'s and each module's own
 | `facet` operator (single field, row *or* column), `encoding.facet`/`.row`/`.column` shorthand | ✅ → a `plt.subplots()` grid, one filtered draw per panel |
 | Two-way `facet: {row, column}` grid | ❌ |
 | `concat`, `hconcat`, `vconcat` | ✅ → `plt.subplots()`, panel count known at translation time from the spec's own array length |
-| `repeat` | ❌ |
+| `repeat` (`{row, column}`, a plain array, and `{layer: [...]}`) | ✅ → a `plt.subplots()` grid (row/column/plain-array forms) or N shared-`Axes` layers (`layer` form, each a distinct palette color) |
 | Marks: `bar`, `point`, `circle`, `square`, `line`, `area`, `rule`, `tick`, `text`, `rect`, `boxplot`, `arc`, `errorbar`, `errorband` | ✅ |
 | Marks: `trail`, `geoshape`, `image` | ❌ |
 | `rect` | ✅ → a heatmap grid (categorical/binned x+y, continuous `color`, one `Rectangle` per row + colorbar), or a reference band spanning the full opposite axis (`axhspan`/`axvspan`) when only one of x/y has a field |
@@ -151,7 +151,7 @@ without the argument. See `translator.py`'s and each module's own
 | `arc` | ✅ → `ax.pie()` (`theta` size, `color` category, `innerRadius` → donut); a `radius`-encoded field (a polar bar chart, not a pie) is out of scope |
 | `errorbar`/`errorband` | ✅ → implicit per-group mean ± extent (`stdev`/`stderr`/`iqr`/`ci`, default `stderr`) computed via `pandas.groupby(...).agg(...)`, matching `vl2ggplot`'s own normal-theory `"ci"` approximation (not a real bootstrap) |
 | `x`/`y`/`x2`/`y2` (bar/rect ranges, rule/area baselines) | ✅ — a bar/rect's own thickness along a continuous position axis is data-derived (the bin span, or a proportional heuristic), not a flat default meant only for the ordinal case |
-| `xOffset`/`yOffset` (grouped/dodged bar and tick charts) | ✅ → N side-by-side sub-bars/ticks per category, shifted and narrowed at generated-code run time (the group count is only known once the real data loads); mutually exclusive with implicit stacking, matching Vega-Lite's own dodge-not-stack precedence |
+| `xOffset`/`yOffset` (grouped/dodged bar and tick charts) | ✅ → N side-by-side sub-bars/ticks per category, shifted and narrowed at generated-code run time (the group count is only known once the real data loads) over an ordinal *or* temporal category axis (a `pd.Timedelta`-valued shift/width for the latter); mutually exclusive with implicit stacking, matching Vega-Lite's own dodge-not-stack precedence |
 | `color`: categorical (one draw call per group + `label=`, `ax.legend()` for free), continuous (`Normalize` + colormap, `scheme` mapped to a matplotlib colormap name, `plt.colorbar()`), and `condition` (a computed per-row color array, e.g. a candlestick's up/down color) | ✅ |
 | `size`, `opacity`, `detail` (grouping only), basic `shape` (point marker lookup) | ✅ |
 | `order` (line/area point sequencing), `tooltip` (no-op — static image) | ✅ / n/a |
@@ -159,6 +159,7 @@ without the argument. See `translator.py`'s and each module's own
 | `pow`/`sqrt`/`symlog` custom scales | ❌ |
 | Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ — routed through `pandas.DataFrame.groupby(...).agg(...)`, genuinely N-way (not capped) |
 | 2D binning (two channels each with their own `bin`), `bin: "binned"` (pre-binned data) | ✅ `binned` / ❌ 2D |
+| `timeUnit`: `"binned" + <combined unit>` (e.g. `binnedyearmonth`), `"utc" + <unit>` (an already-pre-binned or UTC-flagged field) | ✅ → the `binned`/`utc` prefix is stripped and the base unit's own expression used (no separate timezone handling) |
 | Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `window`, `joinaggregate`, `fold` | ✅ — `window` via the shared `vl2matplotlib.runtime.vl_window()` helper (see "Shared runtime helpers" below); `joinaggregate` → `groupby(...).transform(...)`; `fold` → `DataFrame.melt()` |
 | Top-level `transform`: `pivot`, `lookup`, `stack`, `flatten`, `impute`, `density` | ❌ |
 | Aggregate ops: `count`, `sum`, `mean`/`average`, `median`, `min`, `max`, `stdev`/`stdevp`, `variance`/`variancep`, `q1`/`q3`, `ci0`/`ci1`, `distinct`, `valid`, `missing` | ✅ |
@@ -192,32 +193,39 @@ ways instead of a plain pass/fail:
   not to implement yet (an `"Unsupported: ..."` error). Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **472/633 OK, 154/633 skipped (documented
-boundaries above), 7/633 failed** against the corpus's real-world example
-specs (v1 launched at 368/249/16; v2 added `rect`/`boxplot`/`arc`/
-`errorbar`/`errorband` and fixed a bar/tick mark-orientation inference gap
-that silently produced invisible zero-height bars; this pass added
-`xOffset`/`yOffset` grouped-bar dodging, `color.condition`, nested-field
-flattening, `window`/`joinaggregate`/`fold`, and several more "renders, but
-the wrong thing" correctness fixes — see "v2: fixing marks that render but
-plot nothing" and "v2.1: grouped bars, conditional color, and a shared
-runtime module" below). The 7 residual failures are each their own narrow
-gap: a `param`/selection-bound literal or expression value used where a
-plain scalar is expected (3, incl. one requiring array-indexing into a
-bound signal), an embedded-CSV-format data source (1), geographic
-(`longitude`/`latitude`) positioning without map projection support (1),
-JS's unary `+` string-to-number coercion (1, deliberately not attempted —
-see "v2.1" below for why), and a JS string-concatenation `+` operator
-mixing a string and a number (1, matplotlib's own `waterfall_chart`
-equivalent needs it, `expr.py` doesn't attempt it for the same "too easy to
-misfire on an unrelated numeric `+`" reason as the unary case). See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full list.
+At the time of writing: **515/633 OK, 110/633 skipped (documented
+boundaries above), 8/633 failed** against the corpus's real-world example
+specs (v1 launched at 368/249/16; v2 reached 439/177/17 — new marks, and
+fixing marks that silently rendered nothing; v2.1 reached 472/154/17 —
+grouped bars, conditional color, nested fields, a shared runtime module;
+v2.2 reached 496/129/8, headlined by a working `repeat` operator — see
+"v2.2: `repeat`, and closing out the mark-orientation/ambiguous-type bug
+class" below; v2.3 reached 504/121/8 — see "v2.3: normalized/centered
+stacking, value-based color mapping, and N-way binning" below; v2.4
+reached 512/113/8 — see "v2.4: two new transforms, per-panel/child color
+sharing, and hconcat/vconcat sizing" below; this pass reached 515/110/8 —
+see "v2.5: text color, size/log scales, a new `trail` mark, and two more
+transforms" below). The residual failures are each their own narrow gap:
+a `param`/selection-bound literal or expression value used where a plain
+scalar is expected (3: `bar_bullet_expr_bind`, `param_expr`,
+`rule_params`), an embedded-CSV-format data source (1), a
+`geoshape`-with-projection map (1, distinct from the plain-scatter
+`longitude`/`latitude` fallback added in v2.3 — see below), a field name
+that is itself a SQL-expression-shaped string (1), JS's unary `+`
+string-to-number coercion (1, deliberately not attempted — see "v2.1" for
+why), and a JS string-concatenation `+` operator mixing a string and a
+number (1, the same "too easy to misfire on an unrelated numeric `+`"
+reason as the unary case). See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full list, and for
+the showcase's own best-effort (`ignore_unsupported=True`) build — a wider
+sample than this strict-mode corpus check, since it also exercises every
+fallback path — **588/633** render without error.
 
 A second harness, `tests/validate_rendering.py`, additionally executes
 every OK spec's generated code and introspects the resulting `Figure`'s own
 `Axes` children (`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) to
 catch a script that "succeeds" but silently draws nothing, or draws only
-NaN-valued geometry: **0/472 OK renders are empty or all-NaN**.
+NaN-valued geometry: **0/515 OK renders are empty or all-NaN**.
 
 ## Shared runtime helpers
 
@@ -285,6 +293,177 @@ autoscale/data-limit tracking, so a panel containing *only* text (a column
 of category labels next to a bar panel, a common small-multiples idiom)
 rendered its labels entirely off-screen against the Axes' untouched
 default `[0, 1]` view.
+
+A follow-up pass (v2.1) added `xOffset`/`yOffset` grouped-bar dodging,
+`color.condition` (a candlestick chart's own up/down color), nested/
+escaped-dot field flattening, and `window`/`joinaggregate`/`fold`; the most
+recent pass (v2.2) implemented a real `repeat` operator (previously a
+crash-prone "render the template once, unsubstituted" fallback), closed
+out the "ambiguous-type field" bug class for two more call sites
+(`ax.text()`'s own position, and `xOffset`'s dodge-shift arithmetic on a
+*temporal* axis), and normalized `timeUnit`'s own `binned`/`utc` prefixes
+down to their base unit. See `docs/ARCHITECTURE.md`'s own "v2.1"/"v2.2"
+sections for the full list.
+
+## v2.3: normalized/centered stacking, value-based color mapping, and N-way binning
+
+A round of visual-QA-driven fixes — each one found by rendering the
+showcase's own PNGs and looking at them, not by an automated check, since
+every one of these bugs produced code that ran without error but drew the
+*wrong picture*:
+
+- **`stack: "normalize"`/`"center"` were silently treated as plain
+  zero-baseline stacking.** `stack.py` previously implemented only the
+  zero-baseline `cumsum()` case; a `"normalize"` chart (each category's
+  stack rescaled to sum to 1.0) or `"center"` chart (a streamgraph
+  straddling zero) rendered as an ordinary un-normalized stack instead.
+  Both new modes are now real: `normalize` divides each value by its own
+  category's `groupby(...).transform('sum')` before cumulative-summing;
+  `center` cumulative-sums and then shifts by half the category's total.
+- **Categorical colors ignored `color.scale.range`/`.scheme`/`.domain`
+  entirely.** Every color-grouping call site (bar/tick dodge, boxplot,
+  `arc`/pie, the generic groupby-and-draw loop) was hardcoded to
+  `tab10`, regardless of what the spec asked for. `_categorical_color_lookup()`
+  now honors an explicit `range` list, a named `scheme` (mapped to the
+  closest matplotlib qualitative colormap — `category10`→`tab10`,
+  `category20`→`tab20`, `set1`/`set2`/`set3`, `accent`, `dark2`, `paired`,
+  `pastel1`/`pastel2`, `tableau10`/`tableau20`), and — when a spec gives
+  *both* `scale.domain` and `scale.range` — builds a `domain[i]→range[i]`
+  **value** mapping rather than an index-ordered palette. That distinction
+  matters whenever an `order` channel reorders draw sequence independent of
+  a category's fixed domain position; `arc`'s own `order: {field: ...}` is
+  now honored (a `sort_values()` before drawing) for exactly this reason.
+- **Only one bin channel was ever supported.** `_prepare_binned()` hard-capped
+  at a single bin channel and silently dropped/truncated a second — a chart
+  binning *both* `x` and `y` (a 2D histogram) got real binning on one axis
+  and raw, ungrouped values on the other. Generalized to loop over all bin
+  channels, each with its own uniquely-named `__edges_<field>` variable,
+  grouped by the union of every channel's bin-start/bin-end columns.
+- **`bin: {"binned": true, "step": N}` (the object-form spelling of
+  "already binned") wasn't recognized** — only the bare string `"binned"`
+  was — so already-binned data got re-binned with `np.histogram_bin_edges`'
+  default bucket count, producing entirely wrong intervals. `_is_pre_binned()`
+  now recognizes both spellings.
+- **`longitude`/`latitude` encoding channels weren't recognized as position
+  channels at all** (only `x`/`y` were), so every row fell through to the
+  "no field given" literal-`0` fallback — every point landed on the same
+  `(0, 0)` spot, visually a single dot. A translate-time spec rewrite
+  (`_fallback_geo_position()`) now renames `longitude`→`x`/`latitude`→`y`
+  in place whenever `x`/`y` aren't already given, matching `vl2ggplot`'s own
+  documented "plot as a plain unprojected x/y scatter" fallback for the
+  identical gap. (A `geoshape` mark *with* an actual map projection is a
+  separate, still-unsupported gap — see `geo_circle` above.)
+- **A legend with many categories could cover the entire plot.** A plain
+  `ax.legend(title=...)` with no location lets matplotlib choose a
+  "best fit" spot *inside* the Axes; for a legend with a dozen-plus entries
+  on a small figure, that box can end up sitting directly on top of the
+  data it's supposed to label (found on `stacked_area_normalize`, a
+  14-category chart whose underlying stacking math was already correct —
+  the chart just looked blank because its own legend filled the panel). A
+  shared `_legend_stmt()` helper now places every generated legend outside
+  the Axes (`bbox_to_anchor=(1.02, 1), loc='upper left'`).
+
+## v2.4: two new transforms, per-panel/child color sharing, and hconcat/vconcat sizing
+
+Another visual-QA-driven round, prompted by a second list of eight
+specific showcase examples still rendering wrong:
+
+- **A bar mark with only its category channel encoded** (no `x`/`x2` at
+  all) now fills the whole plot along the missing axis, instead of
+  drawing a zero-length invisible bar.
+- **An ordinal field's own categories always sorted lexicographically**,
+  even when numeric (`1, 10, 11, 12, 2, ...` instead of calendar/numeric
+  order) — a shared `ORDINAL_SORT_KEY` fixes this everywhere a category
+  list gets sorted.
+- **Two new transforms**: `density` (a real Gaussian-kernel KDE, via a new
+  `vl_density()` runtime helper) and `pivot` (`fold`'s inverse, via a new
+  `vl_pivot()` helper) — both previously unimplemented, "Unsupported
+  transform type" gaps. A related fix: `data.py`'s own coercion
+  statements now guard on the column actually existing yet, so a field
+  read before the transform that creates it has run is a no-op instead of
+  a `KeyError` (matters most for `pivot`, whose own output column names
+  are runtime-only, unknowable at translation time).
+- **A new `data: {sequence: {...}}` generator** (a synthetic numeric
+  range) and Vega's *bare* (non-`Math.`-prefixed) trig functions
+  (`sin`/`cos`/`tan`/...) in `calculate`/`filter` expressions, neither
+  previously recognized at all.
+- **Categorical color assignment indexed a palette by local draw order,
+  not the field's real domain** — silently wrong the moment a facet panel
+  or concat/hconcat/vconcat child only ever sees a filtered *subset* of
+  the field's true values (every panel's own single category landing on
+  the same first palette color). Fixed for facet panels via a shared
+  runtime domain; fixed for concat/hconcat/vconcat siblings that each
+  filter on a literal value of the shared field via a real, static domain
+  built at translation time.
+- **`repeat`'s plain-array form ignored its own top-level `columns`**,
+  always laying every value out in one row regardless.
+- **A *continuous* `color` field on `point`/`circle`/`square`** was
+  silently ignored (always the flat default color) — now uses
+  `scatter()`'s native `c=`/`cmap=`/`norm=` kwargs, mirroring `rect`'s
+  existing continuous-color support.
+- **`color.legend: null` was never honored anywhere** — every categorical
+  legend and continuous colorbar now respects it.
+- **`concat`/`hconcat`/`vconcat` children ignored their own explicit
+  `width`/`height`**, always sharing one uniform panel size — now uses
+  `gridspec_kw`'s `width_ratios`/`height_ratios` for a plain row/column.
+- **A continuous value-axis `sort: "descending"`** now inverts that axis
+  (`ax.invert_xaxis()`/`invert_yaxis()`), needed for mirrored charts like
+  population pyramids; also fixed a bar mark's own value-axis `title`
+  never rendering at all.
+
+## v2.5: text color, size/log scales, a new `trail` mark, and two more transforms
+
+A third visual-QA-driven round, prompted by a third list of six specific
+showcase examples:
+
+- **A `text` mark's own `color` field was dropped entirely**, always
+  drawing in matplotlib's own default black — fixed via the same
+  `_domain_expr` value-map convention v2.4's own facet/concat color
+  sharing introduced.
+- **A `size`-encoded point/circle/square marker used the raw field value
+  directly as matplotlib's own marker *area*** — harmless for a field
+  already in a plausible pixel range, but a raw population-in-the-tens-
+  of-millions field rendered as one solid black rectangle covering the
+  whole plot. Rescaled into a fixed, reasonable area range via a
+  square-root interpolation (area grows linearly with the data value, the
+  standard bubble-chart convention). Separately, `scale: {type: "log"}`
+  had been recognized internally since this module's own introduction but
+  never actually applied (`ax.set_xscale`/`set_yscale` was never called)
+  — both fixed together, since the same spec needed both.
+- **`mark: {type: "line", point: true}` never drew the point overlay** —
+  `mark_props` already captured it, just never consulted; now adds
+  `marker='o'` to the line's own `ax.plot()` call.
+- **The `trail` mark (a line whose own *width* varies with a `size`
+  field) was entirely unimplemented** — a documented v1 scope gap.
+  Implemented via `matplotlib.collections.LineCollection` (one segment
+  per consecutive point pair, each with its own linewidth), conditionally
+  imported like `math`/the runtime module.
+- **Two more transforms**: `quantile` (empirical quantiles, sampled at
+  evenly-spaced probabilities — a Q-Q plot's own data source) and Vega's
+  `quantileUniform`/`quantileNormal` expression functions (the inverse
+  CDF of a Uniform/Normal distribution, routed through the standard
+  library's `statistics.NormalDist`, no new dependency).
+- **`fold` dropped the fields it folded**, unlike real Vega-Lite (which
+  keeps every original field on each output row, folded ones included) —
+  invisible until a later transform read one of those fields back by
+  name. Confirmed against both `vl2d3`'s and `vl2ggplot`'s own (correct)
+  fold semantics and fixed to match. A related fix: `vl_pivot()`'s own
+  output columns now always coerce their names to `str()`, matching how a
+  later transform would refer to them regardless of the pivot field's own
+  dtype.
+- **`toNumber(...)`**, Vega's own explicit (and unambiguous, unlike a bare
+  unary `+`) string-to-number coercion, now maps to Python's `float`.
+
+The sixth reported example, `parallel_coordinate.vl.json`, was
+investigated but not fixed: its own layered "manually construct axes"
+technique mixes a data-driven `[0, 1]`-normalized position channel with
+sibling layers positioned via a literal *pixel*-space value, which only
+align in real Vega-Lite's own renderer. Reconciling the two coordinate
+spaces across independently-rendered sibling layers sharing one `Axes`
+would need new, layer-composition-level machinery — left as a known,
+narrower gap rather than a risky general heuristic. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)'s own "v2.5" section for
+the full diagnosis.
 
 ## Testing
 

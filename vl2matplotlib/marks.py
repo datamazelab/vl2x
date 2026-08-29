@@ -22,9 +22,35 @@ import re
 from .encoding import channel_value_expr, has_field
 from .expr import translate_expr
 from .literals import format_color_value, format_value
-from .scales import CATEGORICAL_PALETTE, is_quantitative, position_column, scale_type
+from .scales import CATEGORICAL_PALETTE, ORDINAL_SORT_KEY, is_quantitative, position_column, scale_type
 
 DEFAULT_COLOR = "'#4C78A8'"  # Vega-Lite's own default mark color
+
+
+def _legend_stmt(ax_var: str, title_field: str) -> str:
+    """A plain `ax.legend(title=...)`, with no location given, lets
+    matplotlib pick its own "best fit" spot *inside* the Axes -- for a
+    small panel (a common real spec shape: several small-multiples facet
+    panels, or just a compact figure size) with more than a couple of
+    legend entries, that "best fit" box can end up covering most or all of
+    the actual plotted data, which then reads as an empty/blank chart.
+    Placed just outside the right edge of the Axes instead (matplotlib's
+    own documented recipe for this exact problem), so it never overlaps
+    the data regardless of how many categories or how small the figure."""
+    return f"{ax_var}.legend(title={title_field!r}, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)"
+
+
+def _legend_hidden(color_def: object) -> bool:
+    """An explicit `color.legend: null` (distinct from the key being
+    *absent*, which means "show the default legend") is a spec author
+    deliberately suppressing it -- common on a chart whose color already
+    duplicates a panel's own title/facet value (`concat_population_
+    pyramid.vl.json`'s own per-panel gender bars) or where a colorbar
+    would be redundant/unwanted (`point_angle_windvector.vl.json`'s own
+    continuous `color`). Every categorical-legend call site in this module
+    checks this before calling `_legend_stmt()`; the continuous-color
+    colorbar branches check it too, for the same reason."""
+    return isinstance(color_def, dict) and "legend" in color_def and color_def.get("legend") is None
 
 
 def _mark_props(mark) -> dict:
@@ -134,6 +160,49 @@ def _mark_color_value(value: object, fallback: str) -> str:
     return format_color_value(value)
 
 
+def _size_scale_expr(size_def: dict, data_var: str) -> tuple[str, list[str]]:
+    """For a *quantitative* `size` field on a `point`/`circle`/`square`
+    mark: matplotlib's own `scatter(..., s=...)` treats `s` as marker
+    *area* in points^2 directly -- passing a raw data value straight
+    through (the previous behavior) is fine for a field that already
+    happens to sit in a plausible pixel-area range, but silently draws
+    absurdly oversized (or invisible) markers for anything else, e.g.
+    `circle_bubble_health_income.vl.json`'s own `size: {field:
+    "population"}` (tens of millions), which rendered as one solid black
+    rectangle covering the whole plot. Rescaled into a fixed, reasonable
+    output area range instead -- `scale.range`/`.rangeMin`/`.rangeMax`
+    win when given, else `[20, 1000]` (points^2), a plausible default
+    bubble-chart size band; `scale.domain` wins over the data's own
+    min/max, matching every other explicit-`scale` override elsewhere in
+    this project. Interpolated via a square-root fraction (`sqrt((value -
+    lo) / (hi - lo))`), not a flat linear one -- matplotlib's `s=` is
+    already an *area*, so this makes the rendered *area* grow linearly
+    with the data value (the standard, perceptually-fair bubble-chart
+    convention: a value twice as large should look twice as large by
+    area, not by radius), matching `vl2d3`'s own `d3.scaleSqrt()`-based
+    size scale."""
+    field = size_def["field"]
+    scale = size_def.get("scale") if isinstance(size_def.get("scale"), dict) else {}
+    domain = scale.get("domain")
+    range_ = scale.get("range")
+    if isinstance(range_, list) and len(range_) == 2:
+        lo_r, hi_r = format_value(range_[0]), format_value(range_[1])
+    else:
+        lo_r = format_value(scale["rangeMin"]) if "rangeMin" in scale else "20"
+        hi_r = format_value(scale["rangeMax"]) if "rangeMax" in scale else "1000"
+    if isinstance(domain, list) and len(domain) == 2:
+        lo_d, hi_d = format_value(domain[0]), format_value(domain[1])
+    else:
+        lo_d, hi_d = f"{data_var}[{field!r}].min()", f"{data_var}[{field!r}].max()"
+    var = f"__size_{data_var}"
+    stmt = (
+        f"{var} = ({lo_r}) + (({hi_r}) - ({lo_r})) * np.sqrt("
+        f"(({data_var}[{field!r}] - ({lo_d})) / max((({hi_d}) - ({lo_d})), 1e-9)).clip(lower=0)"
+        f")"
+    )
+    return var, [stmt]
+
+
 def _continuous_color_setup(color_def: dict, data_var: str, cmap: str = "viridis") -> tuple[str, list[str]]:
     """For a *continuous* (quantitative) `color` field: emits a shared
     `Normalize` + colormap pair and returns a per-row scalar color
@@ -167,6 +236,98 @@ _COLOR_SCHEME_MAP = {
     "redyellowgreen": "RdYlGn", "redyellowblue": "RdYlBu", "blueorange": "coolwarm", "redblue": "RdBu",
 }
 
+# Vega-Lite's own *categorical* (discrete) scheme names -> the nearest
+# matplotlib qualitative colormap. Distinct from `_COLOR_SCHEME_MAP` above
+# (continuous schemes for a quantitative `color`) since Vega-Lite itself
+# has separate scheme vocabularies for the two cases -- "category10" isn't
+# a valid continuous scheme name, and "viridis" isn't really a categorical
+# one (usable as one in Vega-Lite, but not a *qualitative* palette the way
+# these are).
+_CATEGORICAL_SCHEME_MAP = {
+    "category10": "tab10", "category20": "tab20", "category20b": "tab20b", "category20c": "tab20c",
+    "tableau10": "tab10", "tableau20": "tab20",
+    "accent": "Accent", "dark2": "Dark2", "paired": "Paired",
+    "pastel1": "Pastel1", "pastel2": "Pastel2", "set1": "Set1", "set2": "Set2", "set3": "Set3",
+}
+
+
+def _categorical_color_lookup(color_def: dict | None, data_var: str, stmts: list[str]) -> tuple[str, str]:
+    """A categorical `color`/`detail` grouping's own palette: an explicit
+    `color.scale.range` (a literal list of CSS colors) or `.scheme` (a
+    named qualitative colormap) always wins over the shared default
+    `CATEGORICAL_PALETTE` (matplotlib's own `tab10`) every group/dodge/
+    boxplot/pie draw loop elsewhere in this module otherwise falls back to
+    unconditionally -- previously *always* tab10, silently ignoring any
+    custom palette a spec actually asked for.
+
+    Returns `(kind, var_name)`. When `scale.domain` is *also* given
+    alongside `range` (an explicit value -> color mapping, e.g. `domain:
+    ["Sky", "Shady side"], range: ["#416D9D", "#674028"]` -- distinct from
+    a bare `range` with no `domain`, which just supplies an ordered palette
+    matched to whichever categories the data happens to produce, in
+    whatever order they're encountered), `kind` is `"map"` and `var_name`
+    names a real dict (`{domain[i]: range[i], ...}`) a caller should look
+    up by the row's own category *value*, not by draw-order index --
+    `arc_pie_pyramid.vl.json` is exactly this shape, and additionally
+    reorders its wedges via an `order` channel, so a positional/index-based
+    palette would silently mismatch a value to the wrong color the moment
+    draw order and domain order diverge. Otherwise `kind` is `"list"` and
+    `var_name` names a plain sequence (`range`, a scheme's own qualitative
+    colormap, or the shared default), meant to be indexed positionally
+    (`palette[i % len(palette)]`) by whichever integer index the caller's
+    own draw loop already has -- `__i % len(__palette_<var>)`, not a
+    hardcoded `% 10`, so a custom range shorter *or* longer than 10 both
+    still work correctly."""
+    scale = color_def.get("scale") if isinstance(color_def, dict) else None
+    scale = scale if isinstance(scale, dict) else {}
+    range_ = scale.get("range")
+    domain = scale.get("domain")
+    if isinstance(range_, list) and range_ and isinstance(domain, list) and len(domain) == len(range_):
+        pairs = ", ".join(f"{format_value(d)!s}: {format_color_value(c)}" for d, c in zip(domain, range_))
+        map_var = f"__colormap_{data_var}"
+        stmts.append(f"{map_var} = {{{pairs}}}")
+        return "map", map_var
+    domain_expr = scale.get("_domain_expr")
+    if domain_expr:
+        # An internal-only convention (never present in a real spec's own
+        # `scale` object): a *runtime* expression naming an already-computed
+        # full domain -- set by `translate_facet()`/`translate_hconcat()`
+        # etc. when a color-grouped mark is drawn once per panel/child over
+        # a data slice that's only ever a *subset* of the field's real
+        # domain (a facet panel already filtered to one category, an
+        # hconcat child already filtered to one). Indexing a plain `range`
+        # list positionally by *this panel's own* local groupby order (the
+        # `"list"` kind below) silently reassigns colors per panel --
+        # trellis_bar.vl.json's own Male panel, whose only locally-visible
+        # category is "Male", would otherwise always land on `range[0]`,
+        # the *first* color, identically to the Female panel. Building the
+        # `domain -> color` map from the *shared* full-domain expression
+        # instead of each panel's own local unique-value order fixes this
+        # for every consumer uniformly (same `"map"` kind the explicit-
+        # domain-and-range branch above already returns).
+        if isinstance(range_, list) and range_:
+            range_expr = f"[{', '.join(format_color_value(c) for c in range_)}]"
+        else:
+            scheme = scale.get("scheme")
+            cmap_name = _CATEGORICAL_SCHEME_MAP.get(scheme.lower()) if isinstance(scheme, str) else None
+            range_expr = f"plt.get_cmap({cmap_name!r}).colors" if cmap_name else CATEGORICAL_PALETTE
+        palette_var = f"__palette_{data_var}"
+        stmts.append(f"{palette_var} = {range_expr}")
+        map_var = f"__colormap_{data_var}"
+        stmts.append(
+            f"{map_var} = {{__dv: {palette_var}[__di % len({palette_var})] for __di, __dv in enumerate({domain_expr})}}"
+        )
+        return "map", map_var
+    if isinstance(range_, list) and range_:
+        expr = f"[{', '.join(format_color_value(c) for c in range_)}]"
+    else:
+        scheme = scale.get("scheme")
+        cmap_name = _CATEGORICAL_SCHEME_MAP.get(scheme.lower()) if isinstance(scheme, str) else None
+        expr = f"plt.get_cmap({cmap_name!r}).colors" if cmap_name else CATEGORICAL_PALETTE
+    palette_var = f"__palette_{data_var}"
+    stmts.append(f"{palette_var} = {expr}")
+    return "list", palette_var
+
 
 def _opacity_value(encoding: dict, mark_props: dict) -> str:
     op_def = encoding.get("opacity")
@@ -187,6 +348,26 @@ def _axis_setup_stmts(ax_var: str, channel: str, def_: dict, data_var: str) -> l
     label = axis_label(def_)
     if label:
         stmts.append(f"{ax_var}.set_{channel}label({label!r})")
+    if scale_type(def_) == "log":
+        # `scale_type()` has recognized `scale: {type: "log"}` since this
+        # module's own introduction, but nothing ever actually called
+        # `set_xscale`/`set_yscale` on it -- every log-scale spec
+        # (`circle_bubble_health_income.vl.json`'s own `x: {field:
+        # "income", scale: {type: "log"}}`) silently rendered on a plain
+        # linear axis instead, bunching every point into a tiny fraction
+        # of the plot's own width.
+        stmts.append(f"{ax_var}.set_{channel}scale('log')")
+    if def_.get("sort") == "descending" and scale_type(def_) != "ordinal":
+        # A *continuous* position channel's own `sort: "descending"` means
+        # "run this scale/axis in the opposite direction," not "reorder
+        # some discrete categories" (that's the ordinal case, handled
+        # separately below). The real-world shape this exists for is a
+        # population-pyramid-style chart (`concat_population_pyramid.vl.
+        # json`'s own Female panel): two side-by-side bar charts meant to
+        # mirror each other outward from a shared center, built by giving
+        # just one side's *value* axis a descending sort so its bars grow
+        # inward/leftward instead of outward/rightward.
+        stmts.append(f"{ax_var}.invert_{channel}axis()")
     if scale_type(def_) == "ordinal":
         cats = category_var(channel, data_var)
         ticks = f"range(len({cats}))"
@@ -249,17 +430,56 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
     cat_col, cat_stmts = position_column(cat_channel, cat_def, data_var)
     stmts += cat_stmts
     stmts += _axis_setup_stmts(ax_var, cat_channel, cat_def, data_var)
+    # The value (length) channel's own axis never went through
+    # `_axis_setup_stmts()` at all previously -- missing both its `title`
+    # (e.g. `x: {..., title: "population"}`) and, more consequentially, its
+    # own `sort: "descending"` (see `_axis_setup_stmts()`'s own docstring
+    # for the population-pyramid-mirroring use case this exists for; a bar
+    # mark is the one shape where the value axis is a *different* channel
+    # than the one already passed above). `value_def` can be an empty dict
+    # (the value channel entirely absent, `bar_1d_dimension_only.vl.json`'s
+    # own shape) -- a safe no-op for every check `_axis_setup_stmts()` does.
+    # Skipped when the value channel is itself ordinal/nominal (a rarer
+    # shape, `bar_ranged_offset_quantitative.vl.json`'s own `yOffset`-
+    # driven ranged bars, where *neither* x nor y is quantitative) --
+    # `_axis_setup_stmts()`'s ordinal branch expects an integer-position
+    # column `position_column()` already built via `category_var()`, which
+    # only ever happens for `cat_channel` above, never for `value_channel`
+    # (this renderer draws the value channel's own raw field values
+    # directly, with no such remapping); calling it here regardless would
+    # reference a `__..._cats_...` variable that was never defined.
+    if scale_type(value_def) != "ordinal":
+        stmts += _axis_setup_stmts(ax_var, value_channel, value_def, data_var)
 
     value_field = value_def.get("field")
-    top_expr = f"{data_var}[{value_field!r}]" if value_field else "0"
     companion = encoding.get(f"{value_channel}2")
-    base_expr = f"{data_var}[{companion['field']!r}]" if isinstance(companion, dict) and companion.get("field") else "0"
+    companion_field = companion.get("field") if isinstance(companion, dict) else None
+    # The continuous "length" channel is entirely absent (no field, and no
+    # `x2`/`y2` companion either) -- real-world shape: `bar_1d_dimension_
+    # only.vl.json`, a bar chart that only ever encodes the *category*
+    # channel. Vega-Lite still draws a bar per row in this case, each one
+    # spanning the *entire* plot area along the missing axis (there is no
+    # data to size it by), not a zero-length invisible one. A plain data-
+    # coordinate `left=0, width=<value>` can't express "fill the whole
+    # axes" since the value axis has no data scale at all here -- instead
+    # draw at `width=1`/`height=1` under a blended transform (data
+    # coordinates on the category axis, axes-fraction [0, 1] on the
+    # missing value axis), matplotlib's own documented way to mix the two.
+    value_field_missing = not value_field and not companion_field
+    top_expr = f"{data_var}[{value_field!r}]" if value_field else "0"
+    base_expr = f"{data_var}[{companion_field!r}]" if companion_field else "0"
 
     alpha = _opacity_value(encoding, mark_props)
     call = "barh" if horizontal else "bar"
     length_kw = "height" if horizontal else "width"
     bottom_kw = "left" if horizontal else "bottom"
-    height_expr = f"({top_expr} - ({base_expr}))" if companion else top_expr
+    if value_field_missing:
+        height_expr = "1"
+        base_expr = "0"
+        transform_kw = f", transform={ax_var}.get_{'y' if horizontal else 'x'}axis_transform()"
+    else:
+        height_expr = f"({top_expr} - ({base_expr}))" if companion_field else top_expr
+        transform_kw = ""
 
     # A bar's own thickness along the category axis: matplotlib's `align=
     # 'center'`, width=0.8 default is only correct for an ORDINAL position
@@ -282,9 +502,10 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
     # "unknown, defaulted to linear", only `is_quantitative()` can.
     cat_field = cat_def.get("field")
     cat_companion = encoding.get(f"{cat_channel}2")
+    cat_scale_type = scale_type(cat_def)
     align_kw = ""
     width_is_group_dependent = False
-    if not cat_field or not is_quantitative(cat_def) or scale_type(cat_def) == "ordinal":
+    if not cat_field or cat_scale_type == "ordinal" or (not is_quantitative(cat_def) and cat_scale_type != "temporal"):
         width_expr = "0.8"
     elif isinstance(cat_companion, dict) and cat_companion.get("field"):
         width_expr = f"({data_var}[{cat_companion['field']!r}] - {cat_col})"
@@ -298,10 +519,22 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         # embeds `data_var` as a substring (e.g. `__x_bar_width_chart_data`),
         # so blindly substituting would corrupt the variable *name* itself
         # into a reference to a name that was never defined.
+        #
+        # A *temporal* category axis (a combined/`"binned"`-prefixed
+        # `timeUnit` with no `x2`/`y2` companion of its own, e.g.
+        # `binnedyearmonth`) needs the identical heuristic, but its
+        # `.max() - .min()` naturally produces a `pd.Timedelta` (Timestamp
+        # arithmetic) rather than a plain float -- matplotlib's own
+        # `bar()`/`barh()` accept either a float or a `Timedelta` `width=`
+        # on a date axis, so the *expression* is identical either way, only
+        # the single-category fallback literal differs (a bare `0.8` added
+        # to a `pd.Timestamp` raises `TypeError`; `pd.Timedelta(days=1)` is
+        # the equivalent "at least draw something" fallback).
         width_var = f"__{cat_channel}_bar_width_{data_var}"
+        fallback = "pd.Timedelta(days=1)" if cat_scale_type == "temporal" else "0.8"
         stmts.append(
             f"{width_var} = ((({cat_col}).max() - ({cat_col}).min()) / max(({cat_col}).nunique() - 1, 1)) * 0.6 "
-            f"if ({cat_col}).nunique() > 1 else 0.8"
+            f"if ({cat_col}).nunique() > 1 else {fallback}"
         )
         width_expr = width_var
 
@@ -321,7 +554,7 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
     if dodge_field:
         group_field, fixed_color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts)
         by_color = group_field == dodge_field
-        stmts.append(f"__dodge_cats = sorted({data_var}[{dodge_field!r}].dropna().unique().tolist(), key=str)")
+        stmts.append(f"__dodge_cats = sorted({data_var}[{dodge_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
         stmts.append("__n_dodge = max(len(__dodge_cats), 1)")
         sub_width = f"(({width_expr}) / __n_dodge)"
         r_sub_width = sub_width.replace(data_var, "__drows") if width_is_group_dependent else sub_width
@@ -329,14 +562,19 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         r_height = height_expr.replace(data_var, "__drows")
         r_base = base_expr.replace(data_var, "__drows")
         shifted_cat = f"({r_cat} + (__i - (__n_dodge - 1) / 2) * ({r_sub_width}))"
-        color_expr = f"{CATEGORICAL_PALETTE}[__i % 10]" if by_color else fixed_color
+        if by_color:
+            kind, var = _categorical_color_lookup(encoding.get("color"), data_var, stmts)
+            color_expr = f"{var}.get(__dk, {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+        else:
+            color_expr = fixed_color
         stmts.append(f"for __i, __dk in enumerate(__dodge_cats):")
         stmts.append(f"    __drows = {data_var}[{data_var}[{dodge_field!r}] == __dk]")
         stmts.append(
             f"    {ax_var}.{call}({shifted_cat}, {r_height}, {length_kw}={r_sub_width}, {bottom_kw}={r_base}, "
             f"color={color_expr}, alpha={alpha}, label=str(__dk){align_kw})"
         )
-        stmts.append(f"{ax_var}.legend(title={dodge_field!r})")
+        if not (by_color and _legend_hidden(encoding.get("color"))):
+            stmts.append(_legend_stmt(ax_var, dodge_field))
         return stmts
 
     def draw(rows, color, label):
@@ -347,13 +585,13 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         label_kw = f", label={label}" if label else ""
         return [
             f"{ax_var}.{call}({r_cat}, {r_height}, {length_kw}={r_width}, {bottom_kw}={r_base}, "
-            f"color={color}, alpha={alpha}{label_kw}{align_kw})"
+            f"color={color}, alpha={alpha}{label_kw}{align_kw}{transform_kw})"
         ]
 
     stmts += _grouped_or_single(encoding, mark_props, data_var, draw, stmts=stmts)
     group_field = _color_source(encoding, mark_props)[0]
-    if group_field:
-        stmts.append(f"{ax_var}.legend(title={group_field!r})")
+    if group_field and not _legend_hidden(encoding.get("color")):
+        stmts.append(_legend_stmt(ax_var, group_field))
     return stmts
 
 
@@ -432,7 +670,10 @@ def _render_rect(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
     if isinstance(color_def, dict) and color_def.get("field") and is_quantitative(color_def):
         color_expr, color_stmts = _continuous_color_setup(color_def, data_var)
         stmts += color_stmts
-        colorbar_stmt = f"plt.colorbar(plt.cm.ScalarMappable(norm=__cnorm_{data_var}, cmap=__cmap_{data_var}), ax={ax_var})"
+        colorbar_stmt = (
+            None if _legend_hidden(color_def)
+            else f"plt.colorbar(plt.cm.ScalarMappable(norm=__cnorm_{data_var}, cmap=__cmap_{data_var}), ax={ax_var})"
+        )
     else:
         color_expr = _color_source(encoding, mark_props)[1]
         colorbar_stmt = None
@@ -514,7 +755,7 @@ def _render_boxplot(encoding, mark_props, data_var, ax_var, ignore_unsupported) 
     stmts: list[str] = []
     cat_field = cat_def.get("field")
     if cat_field:
-        stmts.append(f"__groups = sorted({data_var}[{cat_field!r}].dropna().unique().tolist(), key=str)")
+        stmts.append(f"__groups = sorted({data_var}[{cat_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
         stmts.append(
             f"__box_data = [{data_var}[{data_var}[{cat_field!r}] == __g][{value_field!r}].dropna().values for __g in __groups]"
         )
@@ -522,8 +763,10 @@ def _render_boxplot(encoding, mark_props, data_var, ax_var, ignore_unsupported) 
             f"__bp = {ax_var}.boxplot(__box_data, positions=list(range(len(__groups))), {vert_kw}, whis={whis}, patch_artist=True)"
         )
         if has_color:
+            kind, var = _categorical_color_lookup(color_def, data_var, stmts)
+            color_expr = f"{var}.get(__groups[__i], {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
             stmts.append(
-                f"for __i, __patch in enumerate(__bp['boxes']): __patch.set_facecolor({CATEGORICAL_PALETTE}[__i % 10])"
+                f"for __i, __patch in enumerate(__bp['boxes']): __patch.set_facecolor({color_expr})"
             )
         else:
             stmts.append(f"for __patch in __bp['boxes']: __patch.set_facecolor({fixed_color})")
@@ -567,10 +810,31 @@ def _render_arc(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
     wedge_kw = ", wedgeprops=dict(width=0.5)" if inner_radius else ""
 
     stmts: list[str] = []
+    order_def = encoding.get("order")
+    order_field = order_def.get("field") if isinstance(order_def, dict) else None
+    if order_field:
+        # Wedges draw in `theta_field`'s own row order by default -- an
+        # explicit `order` channel means that's *not* necessarily the
+        # data's own natural row order (`arc_pie_pyramid.vl.json`: the
+        # wedges' own visual sequence -- "Shady side," "Sunny side," "Sky"
+        # -- differs from the order the 3 rows happen to appear in the
+        # source data).
+        stmts.append(f"{data_var} = {data_var}.sort_values({order_field!r}).reset_index(drop=True)")
     if color_field:
+        kind, var = _categorical_color_lookup(color_def, data_var, stmts)
+        if kind == "map":
+            # Looked up by the row's own category *value* (via `.map()`
+            # over the whole column at once), not draw-order index -- an
+            # explicit `domain`+`range` pairing must still match the right
+            # color to the right category even when an `order` channel (a
+            # real corpus shape, `arc_pie_pyramid.vl.json`) reorders the
+            # wedges relative to the data's own row order.
+            colors_expr = f"{data_var}[{color_field!r}].map({var}).fillna({DEFAULT_COLOR}).tolist()"
+        else:
+            colors_expr = f"[{var}[__i % len({var})] for __i in range(len({data_var}))]"
         stmts.append(
             f"{ax_var}.pie({data_var}[{theta_field!r}], labels={data_var}[{color_field!r}].astype(str), "
-            f"colors=[{CATEGORICAL_PALETTE}[__i % 10] for __i in range(len({data_var}))]{wedge_kw})"
+            f"colors={colors_expr}{wedge_kw})"
         )
     else:
         fixed_color = _color_source(encoding, mark_props)[1]
@@ -711,8 +975,11 @@ def _grouped_or_single(encoding, mark_props, data_var, draw_stmt_fn, stmts: list
     instead."""
     group_field, fixed_color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts, allow_row_array=allow_row_array)
     if group_field:
-        lines = [f"for __i, (__key, __rows) in enumerate({data_var}.groupby({group_field!r})):"]
-        inner = draw_stmt_fn("__rows", f"{CATEGORICAL_PALETTE}[__i % 10]", "str(__key)")
+        lines: list[str] = []
+        kind, var = _categorical_color_lookup(encoding.get("color"), data_var, lines)
+        color_expr = f"{var}.get(__key, {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+        lines.append(f"for __i, (__key, __rows) in enumerate({data_var}.groupby({group_field!r})):")
+        inner = draw_stmt_fn("__rows", color_expr, "str(__key)")
         lines += [f"    {s}" for s in inner]
         return lines
     return draw_stmt_fn(data_var, fixed_color, None)
@@ -729,23 +996,197 @@ def _render_point(encoding, mark_props, data_var, ax_var, ignore_unsupported) ->
 
     size_def = encoding.get("size")
     size_expr = "36"
-    if isinstance(size_def, dict) and size_def.get("field"):
+    size_stmts: list[str] = []
+    # `_size_scale_expr()`'s own output, like `_trail_width_scale_expr()`'s
+    # (see its own `width_is_precomputed` docstring note in
+    # `_render_trail()`), is a scalar-per-row Series computed once over the
+    # full ungrouped `data_var` -- its generated *name* (e.g.
+    # `__size_chart_data`) embeds `data_var` as a substring, so the naive
+    # `.replace(data_var, rows)` below would corrupt the name itself
+    # instead of re-pointing it at a per-group subset.
+    size_is_precomputed = False
+    if isinstance(size_def, dict) and size_def.get("field") and is_quantitative(size_def):
+        size_expr, size_stmts = _size_scale_expr(size_def, data_var)
+        size_is_precomputed = True
+    elif isinstance(size_def, dict) and size_def.get("field"):
         size_expr = f"{data_var}[{size_def['field']!r}]"
     elif isinstance(size_def, dict) and "value" in size_def:
         size_expr = format_value(size_def["value"])
+    stmts += size_stmts
     alpha = _opacity_value(encoding, mark_props)
+
+    color_def = encoding.get("color")
+    if isinstance(color_def, dict) and color_def.get("field") and is_quantitative(color_def):
+        # A *continuous* color field (e.g. a wind-vector map's own `dir`,
+        # 0-360 mapped through a `rainbow` scheme) varies per point rather
+        # than falling into a small set of groups to draw one `scatter()`
+        # call per -- `_color_source()` deliberately excludes this case
+        # (see its own docstring), so it never reaches `_grouped_or_single()`'s
+        # categorical grouping loop below at all otherwise, silently
+        # falling back to one flat default color for every point. Handled
+        # directly here instead via `scatter()`'s own native `c=`/`cmap=`/
+        # `norm=` kwargs (a real per-point colormap lookup, vectorized, no
+        # `df.iterrows()` loop needed) -- mirrors `_render_rect()`'s
+        # identical continuous-color branch.
+        _, color_stmts = _continuous_color_setup(color_def, data_var)
+        stmts += color_stmts
+        cmap_var, norm_var = f"__cmap_{data_var}", f"__cnorm_{data_var}"
+        stmts.append(
+            f"{ax_var}.scatter({x_col}, {y_col}, s={size_expr}, c={data_var}[{color_def['field']!r}], "
+            f"cmap={cmap_var}, norm={norm_var}, alpha={alpha})"
+        )
+        if not _legend_hidden(color_def):
+            stmts.append(f"plt.colorbar(plt.cm.ScalarMappable(norm={norm_var}, cmap={cmap_var}), ax={ax_var})")
+        return stmts
 
     def draw(rows, color, label):
         rx = x_col.replace(data_var, rows) if rows != data_var else x_col
         ry = y_col.replace(data_var, rows) if rows != data_var else y_col
-        s = size_expr.replace(data_var, rows) if rows != data_var and data_var in size_expr else size_expr
+        if rows == data_var:
+            s = size_expr
+        elif size_is_precomputed:
+            s = f"{size_expr}.loc[{rows}.index]"
+        else:
+            s = size_expr.replace(data_var, rows) if data_var in size_expr else size_expr
         label_kw = f", label={label}" if label else ""
         return [f"{ax_var}.scatter({rx}, {ry}, s={s}, color={color}, alpha={alpha}{label_kw})"]
 
     stmts += _grouped_or_single(encoding, mark_props, data_var, draw, stmts=stmts)
     group_field = _color_source(encoding, mark_props)[0]
-    if group_field:
-        stmts.append(f"{ax_var}.legend(title={group_field!r})")
+    if group_field and not _legend_hidden(encoding.get("color")):
+        stmts.append(_legend_stmt(ax_var, group_field))
+    return stmts
+
+
+def _trail_width_scale_expr(size_def: dict, data_var: str) -> tuple[str, list[str]]:
+    """For a `trail` mark's own `size` field: unlike `point`/`circle`'s
+    `size` (a marker *area*, scaled via `_size_scale_expr()`'s sqrt
+    interpolation), `trail`'s `size` is a stroke *width* directly -- a
+    plain linear interpolation into a plausible width range (points), not
+    an area-preserving sqrt one. Defaults and `scale.domain`/`.range`/
+    `.rangeMin`/`.rangeMax` handling otherwise mirror `_size_scale_expr()`
+    exactly."""
+    field = size_def["field"]
+    scale = size_def.get("scale") if isinstance(size_def.get("scale"), dict) else {}
+    domain = scale.get("domain")
+    range_ = scale.get("range")
+    if isinstance(range_, list) and len(range_) == 2:
+        lo_r, hi_r = format_value(range_[0]), format_value(range_[1])
+    else:
+        lo_r = format_value(scale["rangeMin"]) if "rangeMin" in scale else "0.5"
+        hi_r = format_value(scale["rangeMax"]) if "rangeMax" in scale else "8"
+    if isinstance(domain, list) and len(domain) == 2:
+        lo_d, hi_d = format_value(domain[0]), format_value(domain[1])
+    else:
+        lo_d, hi_d = f"{data_var}[{field!r}].min()", f"{data_var}[{field!r}].max()"
+    var = f"__width_{data_var}"
+    stmt = (
+        f"{var} = ({lo_r}) + (({hi_r}) - ({lo_r})) * "
+        f"(({data_var}[{field!r}] - ({lo_d})) / max((({hi_d}) - ({lo_d})), 1e-9)).clip(lower=0, upper=1)"
+    )
+    return var, [stmt]
+
+
+def _render_trail(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> list[str]:
+    """A `trail` mark is a line whose own *width* varies along its length
+    with a `size` field (`trail_color.vl.json`'s own per-symbol stock-price
+    trail, thicker where `price` is higher) -- matplotlib's `ax.plot()` has
+    no such per-segment-width line primitive at all, so this was entirely
+    unimplemented before (a documented v1 scope gap), silently skipped
+    under `ignore_unsupported` and drawing nothing. Built instead via
+    `matplotlib.collections.LineCollection`: one line segment per
+    consecutive pair of points, each given its own linewidth (the average
+    of its two endpoints' own scaled `size` value) -- the standard
+    matplotlib recipe for a variable-width line. Position channels are
+    forced ordinal when ambiguous (`_force_nominal_if_ambiguous()`, the
+    same fix `_render_bar()`/`_render_tick()`/`_render_rect()` already
+    apply) -- `LineCollection` needs real numeric coordinates via
+    `convert_xunits`/`convert_yunits` below, which raises outright on a
+    raw string column matplotlib never got the chance to auto-register a
+    categorical unit converter for (`trail_comet.vl.json`'s own `y:
+    {field: "variety"}`, an untyped nominal field)."""
+    x_def, y_def = _force_nominal_if_ambiguous(encoding.get("x") or {}), _force_nominal_if_ambiguous(encoding.get("y") or {})
+    stmts: list[str] = []
+    x_col, x_stmts = position_column("x", x_def, data_var)
+    y_col, y_stmts = position_column("y", y_def, data_var)
+    stmts += x_stmts + y_stmts
+    stmts += _axis_setup_stmts(ax_var, "x", x_def, data_var)
+    stmts += _axis_setup_stmts(ax_var, "y", y_def, data_var)
+    # `LineCollection` is built from raw `convert_xunits`/`convert_yunits`-
+    # converted floats below (see `draw()`) rather than a real Timestamp
+    # array handed to a high-level call like `ax.plot()` -- which normally
+    # also registers that axis's own date locator/formatter as a side
+    # effect. Without an equivalent call here, a temporal position
+    # (`trail_color.vl.json`'s own `x: {field: "date", type: "temporal"}`)
+    # would still convert correctly but display raw matplotlib date-epoch
+    # floats (e.g. `11000`) as its own tick labels instead of real dates.
+    if scale_type(x_def) == "temporal":
+        stmts.append(f"{ax_var}.xaxis_date()")
+    if scale_type(y_def) == "temporal":
+        stmts.append(f"{ax_var}.yaxis_date()")
+
+    x_field_for_sort = x_def.get("field")
+    alpha = _opacity_value(encoding, mark_props)
+    size_def = encoding.get("size")
+    width_expr = "2"
+    width_stmts: list[str] = []
+    # `_trail_width_scale_expr()`'s own output is a scalar-per-row Series
+    # computed *once*, over the full (ungrouped) `data_var` -- like
+    # `_render_bar()`'s own identical `width_var` case, this must never be
+    # run through the naive `.replace(data_var, rows)` substitution below
+    # (its generated *name*, e.g. `__width_chart_data`, embeds `data_var`
+    # as a substring, so blind substitution corrupts the name itself
+    # rather than re-pointing it at the per-group subset) -- indexed by
+    # `.loc[<rows>.index]` instead, which correctly re-aligns it to
+    # whichever row subset the current draw call is for.
+    width_is_precomputed = False
+    if isinstance(size_def, dict) and size_def.get("field") and is_quantitative(size_def):
+        width_expr, width_stmts = _trail_width_scale_expr(size_def, data_var)
+        width_is_precomputed = True
+    elif isinstance(size_def, dict) and size_def.get("field"):
+        width_expr = f"{data_var}[{size_def['field']!r}]"
+    elif isinstance(size_def, dict) and "value" in size_def:
+        width_expr = format_value(size_def["value"])
+    stmts += width_stmts
+
+    def draw(rows, color, label):
+        sort_stmt = f"{rows} = {rows}.sort_values({x_field_for_sort!r})" if x_field_for_sort else None
+        rx = x_col if rows == data_var else x_col.replace(data_var, rows)
+        ry = y_col if rows == data_var else y_col.replace(data_var, rows)
+        if rows == data_var:
+            rw = width_expr
+        elif width_is_precomputed:
+            rw = f"{width_expr}.loc[{rows}.index]"
+        else:
+            rw = width_expr.replace(data_var, rows)
+        out = []
+        if sort_stmt:
+            out.append(sort_stmt)
+        # `LineCollection` needs plain float coordinates -- `convert_xunits`/
+        # `convert_yunits` (matplotlib's own conversion step, already run
+        # internally by `ax.plot()`/`ax.scatter()`) turns a temporal
+        # position (a raw `pd.Timestamp` column, e.g. `trail_color.vl.
+        # json`'s own `x: {field: "date", type: "temporal"}`) into its
+        # internal numeric representation first; a no-op for an
+        # already-plain numeric column.
+        out.append(
+            f"__pts = np.column_stack([{ax_var}.convert_xunits({rx}), {ax_var}.convert_yunits({ry})]).reshape(-1, 1, 2)"
+        )
+        out.append("__segs = np.concatenate([__pts[:-1], __pts[1:]], axis=1)")
+        out.append(f"__w = np.asarray({rw}, dtype=float)")
+        out.append(
+            f"{ax_var}.add_collection(LineCollection(__segs, linewidths=(__w[:-1] + __w[1:]) / 2, "
+            f"color={color}, alpha={alpha}))"
+        )
+        if label:
+            out.append(f"{ax_var}.plot([], [], color={color}, alpha={alpha}, label={label})")
+        return out
+
+    stmts += _grouped_or_single(encoding, mark_props, data_var, draw, allow_row_array=False)
+    stmts.append(f"{ax_var}.autoscale_view()")
+    group_field = _color_source(encoding, mark_props)[0]
+    if group_field and not _legend_hidden(encoding.get("color")):
+        stmts.append(_legend_stmt(ax_var, group_field))
     return stmts
 
 
@@ -763,6 +1204,14 @@ def _render_line_or_area(is_area: bool):
         alpha = _opacity_value(encoding, mark_props)
         y2 = encoding.get("y2")
         base_expr = f"{data_var}[{y2['field']!r}]" if isinstance(y2, dict) and y2.get("field") else "0"
+        # `mark: {type: "line", point: true}` (or a style-override object,
+        # `{point: {color: ..., size: ...}}`) overlays a marker at each of
+        # the line's own data points -- previously dropped entirely,
+        # `mark_props` (already captures every mark-object key besides
+        # `type`) was just never consulted here. `point: false`/absent
+        # (the plain default) draws no marker, matching a bare `ax.plot()`.
+        point_prop = mark_props.get("point")
+        marker_kw = ", marker='o', markersize=6, markeredgewidth=0" if (not is_area and point_prop) else ""
 
         def draw(rows, color, label):
             # Sorted by x within each group -- a line/area is drawn by
@@ -780,13 +1229,13 @@ def _render_line_or_area(is_area: bool):
                 base = base_expr if rows == data_var else base_expr.replace(data_var, rows)
                 out.append(f"{ax_var}.fill_between({rx}, {base}, {ry}, color={color}, alpha={alpha}{label_kw})")
             else:
-                out.append(f"{ax_var}.plot({rx}, {ry}, color={color}, alpha={alpha}{label_kw})")
+                out.append(f"{ax_var}.plot({rx}, {ry}, color={color}, alpha={alpha}{label_kw}{marker_kw})")
             return out
 
         stmts += _grouped_or_single(encoding, mark_props, data_var, draw, allow_row_array=False)
         group_field = _color_source(encoding, mark_props)[0]
-        if group_field:
-            stmts.append(f"{ax_var}.legend(title={group_field!r})")
+        if group_field and not _legend_hidden(encoding.get("color")):
+            stmts.append(_legend_stmt(ax_var, group_field))
         return stmts
 
     return render
@@ -868,12 +1317,16 @@ def _render_tick(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
         group_field, fixed_color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts)
         by_color = group_field == dodge_field
         cat_col = x_col if cat_channel == "x" else y_col
-        stmts.append(f"__dodge_cats = sorted({data_var}[{dodge_field!r}].dropna().unique().tolist(), key=str)")
+        stmts.append(f"__dodge_cats = sorted({data_var}[{dodge_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
         stmts.append("__n_dodge = max(len(__dodge_cats), 1)")
         r_cat = cat_col.replace(data_var, "__drows")
         shifted_cat = f"({r_cat} + (__i - (__n_dodge - 1) / 2) * (0.8 / __n_dodge))"
         half = "(0.45 / __n_dodge)"
-        color_expr = f"{CATEGORICAL_PALETTE}[__i % 10]" if by_color else fixed_color
+        if by_color:
+            kind, var = _categorical_color_lookup(encoding.get("color"), data_var, stmts)
+            color_expr = f"{var}.get(__dk, {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+        else:
+            color_expr = fixed_color
         stmts.append("for __i, __dk in enumerate(__dodge_cats):")
         stmts.append(f"    __drows = {data_var}[{data_var}[{dodge_field!r}] == __dk]")
         if horizontal:
@@ -882,7 +1335,8 @@ def _render_tick(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
         else:
             other = x_col.replace(data_var, "__drows")
             stmts.append(f"    {ax_var}.vlines({other}, {shifted_cat} - {half}, {shifted_cat} + {half}, color={color_expr}, alpha={alpha}, label=str(__dk))")
-        stmts.append(f"{ax_var}.legend(title={dodge_field!r})")
+        if not (by_color and _legend_hidden(encoding.get("color"))):
+            stmts.append(_legend_stmt(ax_var, dodge_field))
         return stmts
 
     color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts)[1]
@@ -909,7 +1363,20 @@ def _position_is_numeric_safe(def_: dict) -> bool:
 
 
 def _render_text(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> list[str]:
-    x_def, y_def = encoding.get("x") or {}, encoding.get("y") or {}
+    # Unlike `bar`/`scatter`/`plot` (which all accept a raw string position
+    # and matplotlib auto-establishes a categorical axis for it),
+    # `ax.text()` does *not* -- a bare ambiguous-typed (no explicit `type`,
+    # nothing implying `quantitative`) field passed straight through
+    # crashes outright (`ConversionError: Failed to convert value(s) to
+    # axis units`), not just for a standalone text mark but also (the
+    # shape that actually surfaces this in the corpus) when a `text` layer
+    # shares its `Axes` with a `bar` sibling layer that already coerced the
+    # identical field to an ordinal integer position -- the mismatch alone
+    # is enough to break the shared axis. Always forced here (unlike
+    # `_render_bar()`/`_render_tick()`'s identical fix, gated on a dodge
+    # being present) since there's no matplotlib-native fallback for text
+    # the way there is for those.
+    x_def, y_def = _force_nominal_if_ambiguous(encoding.get("x") or {}), _force_nominal_if_ambiguous(encoding.get("y") or {})
     text_def = encoding.get("text")
     if not isinstance(text_def, dict) or not text_def.get("field"):
         if ignore_unsupported:
@@ -922,10 +1389,56 @@ def _render_text(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
     stmts += _axis_setup_stmts(ax_var, "x", x_def, data_var)
     stmts += _axis_setup_stmts(ax_var, "y", y_def, data_var)
     field = text_def["field"]
-    stmts.append(
-        f"for __x, __y, __t in zip({x_col}, {y_col}, {data_var}[{field!r}]): "
-        f"{ax_var}.text(__x, __y, str(__t), ha='center', va='center', fontsize=9)"
-    )
+    # `text` draws via one `df.iterrows()`-adjacent `zip()` loop, not
+    # `_grouped_or_single()`'s own one-call-per-group idiom every other
+    # mark uses for a categorical `color` -- so `encoding.color` was never
+    # even looked at here at all, every label always drawing in
+    # matplotlib's own default (black) text color regardless of the spec
+    # (`text_scatterplot_colored.vl.json`'s own `color: {field: "Origin"}`,
+    # dropped entirely). A continuous color field reuses
+    # `_continuous_color_setup()`'s shared cmap/norm pair, evaluated
+    # per-row; a categorical one needs a real `value -> color` map (there's
+    # no natural per-row "draw order index" the way a grouped loop has) --
+    # built via `_categorical_color_lookup()`'s existing `_domain_expr`
+    # convention (see `_share_color_domain()`'s own docstring in
+    # `translator.py`), pointed at this field's own sorted unique values
+    # since text never spans multiple already-filtered panels the way a
+    # facet/concat child does.
+    color_def = encoding.get("color")
+    color_stmts: list[str] = []
+    if isinstance(color_def, dict) and color_def.get("field") and is_quantitative(color_def):
+        _, color_stmts = _continuous_color_setup(color_def, data_var)
+        cmap_var, norm_var = f"__cmap_{data_var}", f"__cnorm_{data_var}"
+        color_expr = f"{cmap_var}({norm_var}(__c))"
+        color_col = f"{data_var}[{color_def['field']!r}]"
+    elif isinstance(color_def, dict) and color_def.get("field"):
+        color_field = color_def["field"]
+        lookup_def = dict(color_def)
+        lookup_scale = dict(color_def.get("scale") or {})
+        lookup_scale.setdefault("_domain_expr", f"sorted({data_var}[{color_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
+        lookup_def["scale"] = lookup_scale
+        _, var = _categorical_color_lookup(lookup_def, data_var, color_stmts)
+        color_expr = f"{var}.get(__c, {DEFAULT_COLOR})"
+        color_col = f"{data_var}[{color_field!r}]"
+    else:
+        # `text`'s own Vega-Lite default color is black, distinct from
+        # every other mark's own default blue (`DEFAULT_COLOR`) --
+        # `_color_source()`'s own fallback parameter lets this differ
+        # without changing the shared default every other renderer relies
+        # on.
+        color_expr = _color_source(encoding, mark_props, fallback="'black'")[1]
+        color_col = None
+    stmts += color_stmts
+    if color_col:
+        stmts.append(
+            f"for __x, __y, __t, __c in zip({x_col}, {y_col}, {data_var}[{field!r}], {color_col}): "
+            f"{ax_var}.text(__x, __y, str(__t), ha='center', va='center', fontsize=9, color={color_expr})"
+        )
+    else:
+        stmts.append(
+            f"for __x, __y, __t in zip({x_col}, {y_col}, {data_var}[{field!r}]): "
+            f"{ax_var}.text(__x, __y, str(__t), ha='center', va='center', fontsize=9, color={color_expr})"
+        )
     # `ax.text()`, unlike `scatter`/`plot`/`bar`, never participates in
     # matplotlib's own autoscale/data-limit tracking -- without this, a
     # panel containing *only* text marks (e.g. a column of category labels
@@ -943,7 +1456,17 @@ def _render_text(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
     # URL column), which `update_datalim` can't handle -- skipped here
     # rather than crashing the whole script over a cosmetic view-range nudge.
     if _position_is_numeric_safe(x_def) and _position_is_numeric_safe(y_def):
-        stmts.append(f"{ax_var}.update_datalim(list(zip({x_col}, {y_col})))")
+        # `update_datalim()` itself requires already-numeric (float) data --
+        # a raw `pd.Timestamp` column (a `temporal` position, which counts
+        # as "numeric-safe" above since it's never a raw string) fails
+        # `np.isfinite()` outright. `ax.convert_xunits()`/`convert_yunits()`
+        # is matplotlib's own conversion step (already run internally by
+        # `ax.text()`/`ax.bar()`/... themselves) that turns a date into its
+        # internal float representation first; a no-op for an already-plain
+        # numeric column (no unit converter registered for it).
+        stmts.append(
+            f"{ax_var}.update_datalim(list(zip({ax_var}.convert_xunits({x_col}), {ax_var}.convert_yunits({y_col}))))"
+        )
         stmts.append(f"{ax_var}.autoscale_view()")
     return stmts
 
@@ -963,4 +1486,5 @@ _RENDERERS = {
     "arc": _render_arc,
     "errorbar": _render_errorbar,
     "errorband": _render_errorband,
+    "trail": _render_trail,
 }

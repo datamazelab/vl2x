@@ -13,6 +13,9 @@ DataFrame constructor not properly called!
 ===== rule_params.vl.json =====
 unhashable type: 'dict'
 
+===== time_parse_binnedutc_with_escaped_field.vl.json =====
+"monthly(date_trunc(\\'day\\', date))"
+
 ===== waterfall_chart.vl.json =====
 can only concatenate str (not "int") to str
 

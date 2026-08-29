@@ -25,6 +25,7 @@ from .data import render_data_load, render_quantitative_coercion, render_tempora
 from .literals import try_black_format
 from .marks import render_mark
 from .prepare import prepare_encoding
+from .scales import ORDINAL_SORT_KEY, is_quantitative
 from .stack import apply_stacking_to_encoding, plan_stacking, render_stacking_statements
 from .timeunit import timeunit_expr
 from .transforms import render_transforms
@@ -42,6 +43,17 @@ class Emitter:
         self._counts: dict[str, int] = {}
         self.include_source_paths = include_source_paths
         self.uses_math = False
+        # `trail` mark support (`marks.py`'s `_render_trail()`) is the only
+        # generated-code shape that needs `matplotlib.collections.
+        # LineCollection` (a variable-width line, which `ax.plot()` can't
+        # draw at all) -- detected the same way `uses_math` is, so a
+        # script that never draws a `trail` never imports it.
+        self.uses_line_collection = False
+        # `quantileNormal(...)` (see `expr.py`'s own `_rewrite_quantile_funcs()`)
+        # is the only generated-code shape that needs the standard
+        # library's `statistics` module -- detected and conditionally
+        # imported the same way.
+        self.uses_statistics = False
         # Every `vl2matplotlib.runtime` helper function (`vl_window`, ...)
         # a generated statement actually calls -- auto-detected the same
         # way `uses_math` is, so `spec_to_code()`'s own header only ever
@@ -61,6 +73,10 @@ class Emitter:
         self.lines.append(line)
         if "math." in line:
             self.uses_math = True
+        if "LineCollection(" in line:
+            self.uses_line_collection = True
+        if "statistics.NormalDist(" in line:
+            self.uses_statistics = True
         self.uses_runtime.update(_RUNTIME_CALL_RE.findall(line))
 
 
@@ -107,6 +123,16 @@ def _derived_field_names(transform_list: list) -> set[str]:
             names.add(t["as"])
         elif isinstance(t.get("as"), list):
             names.update(a for a in t["as"] if isinstance(a, str))
+        elif "density" in t:
+            # `density`'s own `as` defaults to `["value", "density"]` when
+            # omitted (see `transforms.py`'s `_render_density()`) -- unlike
+            # every other transform type here, its *field names* aren't
+            # spelled out anywhere in the spec unless `as` is given
+            # explicitly, so this default has to be duplicated here too or
+            # an encoding channel reading the default output name (the
+            # overwhelmingly common case, e.g. `area_density.vl.json`) gets
+            # coerced before the transform that creates it has even run.
+            names.update(("value", "density"))
         for key in ("aggregate", "window", "joinaggregate"):
             for item in t.get(key) or []:
                 if isinstance(item, dict) and isinstance(item.get("as"), str):
@@ -278,6 +304,34 @@ def _panel_size(spec: dict) -> tuple[float, float]:
     )
 
 
+def _share_color_domain(template: dict, shared_field: str, domain_var: str) -> None:
+    """When a facet/hconcat/vconcat panel's own `color` channel reads the
+    *same* field the panel was itself split on (e.g. `trellis_bar.vl.json`:
+    `row: {field: "gender"}`, `color: {field: "gender"}`), each panel only
+    ever sees a *subset* of that field's real values (a "Male" panel's own
+    data has no "Female" rows in it at all) -- so `_categorical_color_
+    lookup()`'s normal "list, indexed by this panel's own local groupby
+    order" fallback silently reassigns colors per panel instead of sharing
+    one consistent assignment (both panels' own single, locally-unique
+    category lands on `range[0]`, the *same* color). Threads the shared,
+    already-known-at-that-point full domain (`domain_var`, e.g.
+    `__facet_vals` -- computed from the *pre-split* data, before any panel
+    filtering) into the panel template's own `color.scale` as the internal
+    `_domain_expr` convention `_categorical_color_lookup()` checks first,
+    so every panel builds the identical `value -> color` map instead."""
+    encoding = template.get("encoding")
+    if not isinstance(encoding, dict):
+        return
+    color = encoding.get("color")
+    if not isinstance(color, dict) or color.get("field") != shared_field:
+        return
+    scale = color.get("scale")
+    if not isinstance(scale, dict):
+        scale = {}
+        color["scale"] = scale
+    scale["_domain_expr"] = domain_var
+
+
 def translate_facet(node: dict, emitter: Emitter, hint: str, ignore_unsupported: bool = False, path: str = "") -> str:
     facet_def = node["facet"]
     if not isinstance(facet_def, dict) or not facet_def.get("field"):
@@ -302,14 +356,19 @@ def translate_facet(node: dict, emitter: Emitter, hint: str, ignore_unsupported:
                 emitter.add_stmt(s)
 
     if facet_def is None:
-        # ignore_unsupported fallback: draw the template once, unsplit.
+        # ignore_unsupported fallback: draw the template once, unsplit --
+        # reusing `data_var` (already loaded + transformed above, same as
+        # the real single-field-facet path below) via `data_param`, not a
+        # fresh, empty `pd.DataFrame()` the child would otherwise load on
+        # its own (its own `data`/`transform` are typically absent --
+        # inherited from the facet wrapper instead, exactly the data/
+        # transform already handled above).
         fig_v = emitter.new_var("fig")
         ax_v = emitter.new_var("ax")
         w, h = _panel_size(node["spec"])
         emitter.add_stmt(f"{fig_v}, {ax_v} = plt.subplots(figsize=({w}, {h}))")
         emitter.add_stmt("# vl2matplotlib: unsupported facet shape, rendering the template unsplit (ignore_unsupported)")
-        child = _merge_down(node["spec"], {"data": None, "transform": None})
-        _draw_unit_or_layer(child, emitter, hint, ax_v, ignore_unsupported, f"{path}spec.")
+        _draw_unit_or_layer(node["spec"], emitter, hint, ax_v, ignore_unsupported, f"{path}spec.", data_param=data_var)
         return fig_v
 
     field = facet_def["field"]
@@ -320,7 +379,7 @@ def translate_facet(node: dict, emitter: Emitter, hint: str, ignore_unsupported:
         field = out
 
     cats_var = emitter.new_var("__facet_vals")
-    emitter.add_stmt(f"{cats_var} = sorted({data_var}[{field!r}].dropna().unique().tolist(), key=str)")
+    emitter.add_stmt(f"{cats_var} = sorted({data_var}[{field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
     columns = node.get("columns")
     ncols_expr = str(columns) if isinstance(columns, int) else f"len({cats_var})"
     fig_v = emitter.new_var("fig")
@@ -337,6 +396,7 @@ def translate_facet(node: dict, emitter: Emitter, hint: str, ignore_unsupported:
     template = _merge_down(node["spec"], {})
     template.pop("data", None)
     template.pop("transform", None)
+    _share_color_domain(template, field, cats_var)
 
     fi = emitter.new_var("__fi")
     fv = emitter.new_var("__fv")
@@ -353,6 +413,10 @@ def translate_facet(node: dict, emitter: Emitter, hint: str, ignore_unsupported:
         emitter.lines.append("    " + line)
     if inner.uses_math:
         emitter.uses_math = True
+    if inner.uses_line_collection:
+        emitter.uses_line_collection = True
+    if inner.uses_statistics:
+        emitter.uses_statistics = True
     emitter.uses_runtime.update(inner.uses_runtime)
     emitter.add_stmt(f"{fig_v}.tight_layout()")
 
@@ -424,38 +488,130 @@ def translate_repeat(node: dict, emitter: Emitter, hint: str, ignore_unsupported
     if isinstance(repeat_def, dict):
         rows = repeat_def.get("row") or [None]
         cols = repeat_def.get("column") or [None]
+        panels = [(rv, cv) for rv in rows for cv in cols]
+        nrows, ncols = len(rows), len(cols)
+        positions = [(ri, ci) for ri in range(nrows) for ci in range(ncols)]
     else:
-        rows, cols = [None], list(repeat_def)
+        # The plain-array `repeat: [...]` form has no `row`/`column` split
+        # of its own -- Vega-Lite instead wraps it into a grid using the
+        # spec's own top-level `columns` (exactly `concat`'s own `columns`
+        # convention, see `translate_multi()`'s identical `-(-n //
+        # columns), columns` math), defaulting to one panel per row when
+        # `columns` is absent. Previously this always laid every repeat
+        # value out in a single row regardless of `columns`, ignoring it
+        # outright (`repeat_histogram.vl.json`'s own `"columns": 2`, a
+        # 4-value repeat meant to land as a 2x2 grid, rendered as 1x4).
+        values = list(repeat_def)
+        columns = node.get("columns")
+        ncols = columns if isinstance(columns, int) and columns > 0 else len(values)
+        nrows = -(-len(values) // ncols)
+        panels = [(None, v) for v in values]
+        positions = [divmod(i, ncols) for i in range(len(values))]
 
-    nrows, ncols = len(rows), len(cols)
     w, h = _panel_size(template)
     fig_v = emitter.new_var("fig")
     axes_v = emitter.new_var("axes")
     emitter.add_stmt(f"{fig_v}, {axes_v} = plt.subplots({nrows}, {ncols}, figsize=({w * ncols}, {h * nrows}), squeeze=False)")
 
-    for ri, rv in enumerate(rows):
-        for ci, cv in enumerate(cols):
-            repeat_values = {}
-            if rv is not None:
-                repeat_values["row"] = rv
-            if cv is not None:
-                repeat_values["column" if isinstance(repeat_def, dict) else "repeat"] = cv
-            child = _substitute_repeat_refs(template, repeat_values)
-            merged = _merge_down(child, {"data": node.get("data"), "transform": node.get("transform")})
-            ax_v = f"{axes_v}[{ri}][{ci}]"
-            if "concat" in merged or "hconcat" in merged or "vconcat" in merged or "facet" in merged or "repeat" in merged:
-                if ignore_unsupported:
-                    emitter.add_stmt(f"# vl2matplotlib: unsupported nested composition inside 'repeat', skipped (ignore_unsupported)")
-                    continue
-                raise ValueError("Unsupported: a nested composition inside 'repeat' is not yet supported by vl2matplotlib")
-            _draw_unit_or_layer(merged, emitter, f"{hint}{ri}_{ci}", ax_v, ignore_unsupported, f"{path}repeat[{ri}][{ci}].")
+    for (rv, cv), (ri, ci) in zip(panels, positions):
+        repeat_values = {}
+        if rv is not None:
+            repeat_values["row"] = rv
+        if cv is not None:
+            repeat_values["column" if isinstance(repeat_def, dict) else "repeat"] = cv
+        child = _substitute_repeat_refs(template, repeat_values)
+        merged = _merge_down(child, {"data": node.get("data"), "transform": node.get("transform")})
+        ax_v = f"{axes_v}[{ri}][{ci}]"
+        if "concat" in merged or "hconcat" in merged or "vconcat" in merged or "facet" in merged or "repeat" in merged:
+            if ignore_unsupported:
+                emitter.add_stmt(f"# vl2matplotlib: unsupported nested composition inside 'repeat', skipped (ignore_unsupported)")
+                continue
+            raise ValueError("Unsupported: a nested composition inside 'repeat' is not yet supported by vl2matplotlib")
+        _draw_unit_or_layer(merged, emitter, f"{hint}{ri}_{ci}", ax_v, ignore_unsupported, f"{path}repeat[{ri}][{ci}].")
 
     emitter.add_stmt(f"{fig_v}.tight_layout()")
     return fig_v
 
 
+_NO_LITERAL = object()
+
+
+def _filter_equal_literal(child: dict, field: str) -> object:
+    """The literal value a child's own `transform` filters this field down
+    to (`{"filter": {"field": ..., "equal": ...}}`), or `_NO_LITERAL` if it
+    doesn't filter that field this way at all. Used only by
+    `_share_categorical_color_domain()` below."""
+    for t in child.get("transform") or []:
+        pred = t.get("filter") if isinstance(t, dict) else None
+        if isinstance(pred, dict) and pred.get("field") == field and "equal" in pred:
+            return pred["equal"]
+    return _NO_LITERAL
+
+
+def _share_categorical_color_domain(children: list) -> None:
+    """`concat`/`hconcat`/`vconcat` children are otherwise translated
+    completely independently -- each one's own `color` field gets its own
+    locally-computed palette (see `_categorical_color_lookup()`), assigned
+    by whichever order that CHILD's own data happens to produce. When two
+    or more siblings color by the *same* field, each one already filtered
+    down to a single distinct value of it (`concat_population_pyramid.vl.
+    json`'s own Female/Male panels, each `{"filter": {"field": "gender",
+    "equal": "Female"|"Male"}}`), that per-child independence means every
+    one of them lands on the *same* first palette color (each panel's own
+    local domain is a single value, always index 0) -- Female matches its
+    own explicit `range[0]`, but Male (no `range` of its own at all) also
+    gets the *global default* palette's own first color, not the second
+    entry of Female's `range` the way a real shared Vega-Lite color scale
+    would resolve it.
+
+    Detectable and fixable entirely at translation time here (unlike the
+    identical problem for `facet` panels, fixed via `_share_color_domain()`
+    -- a runtime `_domain_expr` was needed there because a facet panel's
+    real domain values aren't known until the data loads): every
+    participating child's own single value is already a literal `equal`
+    right there in the spec, so this can just set a real, literal
+    `scale.domain` on every participating child directly -- no runtime
+    plumbing needed, `_categorical_color_lookup()`'s existing
+    domain-and-range "map" kind already does the rest."""
+    by_field: dict[str, list[int]] = {}
+    for i, child in enumerate(children):
+        color = (child.get("encoding") or {}).get("color")
+        if not isinstance(color, dict) or not isinstance(color.get("field"), str) or is_quantitative(color):
+            continue
+        scale = color.get("scale")
+        if isinstance(scale, dict) and isinstance(scale.get("domain"), list):
+            continue
+        by_field.setdefault(color["field"], []).append(i)
+
+    for field, idxs in by_field.items():
+        if len(idxs) < 2:
+            continue
+        literals = [_filter_equal_literal(children[i], field) for i in idxs]
+        if any(v is _NO_LITERAL for v in literals) or len(set(map(str, literals))) != len(literals):
+            continue
+        range_ = next(
+            (
+                ((children[i].get("encoding") or {}).get("color") or {}).get("scale", {}).get("range")
+                for i in idxs
+                if isinstance(((children[i].get("encoding") or {}).get("color") or {}).get("scale"), dict)
+                and ((children[i].get("encoding") or {}).get("color") or {}).get("scale", {}).get("range")
+            ),
+            None,
+        )
+        for i in idxs:
+            color = children[i]["encoding"]["color"]
+            scale = color.get("scale")
+            if not isinstance(scale, dict):
+                scale = {}
+                color["scale"] = scale
+            scale["domain"] = literals
+            if range_ is not None and not scale.get("range"):
+                scale["range"] = range_
+
+
 def translate_multi(node: dict, emitter: Emitter, hint: str, key: str, ignore_unsupported: bool = False, path: str = "") -> str:
     children = node[key]
+    _share_categorical_color_domain(children)
     direction = "row" if key == "vconcat" else "col" if key == "hconcat" else "grid"
     n = len(children)
     columns = node.get("columns")
@@ -471,7 +627,34 @@ def translate_multi(node: dict, emitter: Emitter, hint: str, key: str, ignore_un
     h = max((s[1] for s in sizes), default=4.0)
     fig_v = emitter.new_var("fig")
     axes_v = emitter.new_var("axes")
-    emitter.add_stmt(f"{fig_v}, {axes_v} = plt.subplots({nrows}, {ncols}, figsize=({w * ncols}, {h * nrows}), squeeze=False)")
+    # A child's own explicit `width`/`height` (not just the shared default
+    # every panel would otherwise get) matters for `hconcat`/`vconcat`
+    # specifically -- a real, common shape: a narrow "label column" panel
+    # sandwiched between two normal-width ones (`concat_population_
+    # pyramid.vl.json`'s own middle age-label panel, `"width": 20` next to
+    # two full-width bar panels either side). Previously every panel in the
+    # row/column got the *same* share of the figure regardless, so a
+    # deliberately-narrow panel rendered exactly as wide as its neighbors.
+    # `gridspec_kw`'s own `width_ratios`/`height_ratios` is matplotlib's
+    # documented way to give `subplots()` unequal panel sizes -- only
+    # applied for a plain single row (`hconcat`) or column (`vconcat`),
+    # not a general multi-row/column `concat` grid, where a per-cell size
+    # would need both ratios reconciled across every row *and* column
+    # sharing a track, a bigger change than this narrower, common case.
+    if direction == "col" and len(set(s[0] for s in sizes)) > 1:
+        widths = [s[0] for s in sizes]
+        emitter.add_stmt(
+            f"{fig_v}, {axes_v} = plt.subplots({nrows}, {ncols}, figsize=({sum(widths)}, {h}), "
+            f"squeeze=False, gridspec_kw={{'width_ratios': {widths!r}}})"
+        )
+    elif direction == "row" and len(set(s[1] for s in sizes)) > 1:
+        heights = [s[1] for s in sizes]
+        emitter.add_stmt(
+            f"{fig_v}, {axes_v} = plt.subplots({nrows}, {ncols}, figsize=({w}, {sum(heights)}), "
+            f"squeeze=False, gridspec_kw={{'height_ratios': {heights!r}}})"
+        )
+    else:
+        emitter.add_stmt(f"{fig_v}, {axes_v} = plt.subplots({nrows}, {ncols}, figsize=({w * ncols}, {h * nrows}), squeeze=False)")
 
     for i, child in enumerate(children):
         merged = _merge_down(child, {"data": node.get("data"), "transform": node.get("transform")})
@@ -552,8 +735,37 @@ def _unescape_field_refs(node: object) -> None:
             _unescape_field_refs(item)
 
 
+def _fallback_geo_position(node: object) -> None:
+    """Geographic positioning (`longitude`/`latitude`, real corpus usage)
+    has no map-projection support in this project at all -- rather than
+    leaving both channels silently unrecognized (every row's position then
+    defaults to the same literal `(0, 0)` broadcast `position_column()`
+    falls back to for a channel with no field at all, collapsing an entire
+    scatter into what looks like a single overlapping dot), `longitude`/
+    `latitude` are renamed to `x`/`y` in place wherever `x`/`y` aren't
+    already given -- the same "plot as a plain unprojected x/y scatter"
+    fallback `vl2ggplot`'s own geo handling already uses: real, distinct
+    positions, just without a map projection warping them. Walked
+    recursively (mirroring `_unescape_field_refs()`'s identical traversal)
+    since an `encoding` can live at any depth -- a unit view, a layer
+    child, a facet/repeat template."""
+    if isinstance(node, dict):
+        encoding = node.get("encoding")
+        if isinstance(encoding, dict):
+            if "longitude" in encoding and "x" not in encoding:
+                encoding["x"] = encoding.pop("longitude")
+            if "latitude" in encoding and "y" not in encoding:
+                encoding["y"] = encoding.pop("latitude")
+        for v in node.values():
+            _fallback_geo_position(v)
+    elif isinstance(node, list):
+        for item in node:
+            _fallback_geo_position(item)
+
+
 def translate_top(root: dict, emitter: Emitter, hint: str, ignore_unsupported: bool = False) -> str:
     _unescape_field_refs(root)
+    _fallback_geo_position(root)
     shorthand = _rewrite_encoding_facet_shorthand(root)
     if shorthand is not None:
         return translate_facet(shorthand, emitter, hint, ignore_unsupported)
@@ -608,6 +820,10 @@ def spec_to_code(
     imports = ["import matplotlib.pyplot as plt", "import pandas as pd", "import numpy as np"]
     if emitter.uses_math:
         imports.append("import math")
+    if emitter.uses_line_collection:
+        imports.append("from matplotlib.collections import LineCollection")
+    if emitter.uses_statistics:
+        imports.append("import statistics")
     if emitter.uses_runtime:
         names = ", ".join(sorted(emitter.uses_runtime))
         imports.append(f"from vl2matplotlib.runtime import {names}")

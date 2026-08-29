@@ -42,6 +42,17 @@ _ALL_CHANNELS = [
 ]
 
 
+def _is_pre_binned(bin_val: object) -> bool:
+    """Vega-Lite's own "this field is already pre-binned" convention has
+    two spellings: the bare string `"binned"`, or the object form
+    `{"binned": true, ...}` (which can carry a `step`/other bin-config
+    alongside the flag -- `bar_binned_data.vl.json`'s own
+    `{"binned": true, "step": 2}` is exactly this shape)."""
+    if bin_val == "binned":
+        return True
+    return isinstance(bin_val, dict) and bin_val.get("binned") is True
+
+
 def _timeunit_out_name(field: str, unit) -> str:
     name = unit["unit"] if isinstance(unit, dict) else unit
     return sanitize_identifier(f"{name}_{field}")
@@ -60,14 +71,17 @@ def prepare_encoding(encoding: dict, data_var: str, ignore_unsupported: bool = F
     }
     bin_channels = {
         ch: d for ch, d in encoding.items()
-        # `bin: "binned"` (as opposed to `true`/`{maxbins: ...}`) is Vega-
-        # Lite's own "this field is already pre-binned real data -- don't
-        # re-bin it" convention: the field IS the bin start, and its own
-        # `x2`/`y2` companion (already present in the spec, untouched) is
-        # the bin end. Excluded here so it falls through unprepared (no
-        # `np.histogram_bin_edges`/`pd.cut` at all) rather than re-binning
-        # already-binned data into a different, wrong set of edges.
-        if ch in _ALL_CHANNELS and isinstance(d, dict) and d.get("bin") and d.get("bin") != "binned" and not d.get("aggregate")
+        # `bin: "binned"` *or* `bin: {"binned": true, ...}` (as opposed to
+        # `true`/`{maxbins: ...}`) is Vega-Lite's own "this field is
+        # already pre-binned real data -- don't re-bin it" convention: the
+        # field IS the bin start, and its own `x2`/`y2` companion (already
+        # present in the spec, untouched) is the bin end. Excluded here so
+        # it falls through unprepared (no `np.histogram_bin_edges`/`pd.cut`
+        # at all) rather than re-binning already-binned data into a
+        # different, wrong set of edges -- `bar_binned_data.vl.json`'s own
+        # `{"binned": true, "step": 2}` is the dict form of this, easy to
+        # miss if only the bare string `"binned"` shorthand is checked for.
+        if ch in _ALL_CHANNELS and isinstance(d, dict) and d.get("bin") and not _is_pre_binned(d.get("bin")) and not d.get("aggregate")
     }
 
     if not agg_channels and not bin_channels:
@@ -195,28 +209,31 @@ def _prepare_aggregated(encoding: dict, agg_channels: dict, data_var: str, ignor
 
 
 def _prepare_binned(encoding: dict, bin_channels: dict, agg_channels: dict, data_var: str, ignore_unsupported: bool) -> tuple[list[str], dict]:
-    if len(bin_channels) > 1:
-        if not ignore_unsupported:
-            raise ValueError("Unsupported: binning on more than one channel at once (2D binning) is not yet supported by vl2matplotlib")
-        bin_channels = dict(list(bin_channels.items())[:1])
-
     stmts: list[str] = []
     rewritten = dict(encoding)
-    (bin_ch, bin_def), = bin_channels.items()
-    field = bin_def["field"]
-    max_bins = bin_def["bin"].get("maxbins", 10) if isinstance(bin_def.get("bin"), dict) else 10
-    start_col, end_col = _bin_out_names(field)
+    group_keys: list[str] = []
 
-    stmts.append(f"__edges = np.histogram_bin_edges({data_var}[{field!r}].dropna(), bins={max_bins})")
-    stmts.append(
-        f"{data_var}[{start_col!r}] = pd.cut({data_var}[{field!r}], bins=__edges, include_lowest=True).apply(lambda iv: iv.left if pd.notna(iv) else float('nan')).astype(float)"
-    )
-    stmts.append(
-        f"{data_var}[{end_col!r}] = pd.cut({data_var}[{field!r}], bins=__edges, include_lowest=True).apply(lambda iv: iv.right if pd.notna(iv) else float('nan')).astype(float)"
-    )
-    rewritten[bin_ch] = {**bin_def, "field": start_col, "bin": None, "type": "quantitative"}
-    companion_ch = f"{bin_ch}2"
-    rewritten[companion_ch] = {"field": end_col, "type": "quantitative"}
+    for bin_ch, bin_def in bin_channels.items():
+        field = bin_def["field"]
+        max_bins = bin_def["bin"].get("maxbins", 10) if isinstance(bin_def.get("bin"), dict) else 10
+        start_col, end_col = _bin_out_names(field)
+        # One `__edges` variable *per* bin channel (not a shared name) --
+        # 2D binning (e.g. `circle_binned.vl.json`'s own x *and* y both
+        # binned) needs two independent edge sets computed from two
+        # different fields; a single shared name would have the second
+        # channel's own `np.histogram_bin_edges()` call silently overwrite
+        # the first's before it's done being used.
+        edges_var = f"__edges_{sanitize_identifier(field)}"
+        stmts.append(f"{edges_var} = np.histogram_bin_edges({data_var}[{field!r}].dropna(), bins={max_bins})")
+        stmts.append(
+            f"{data_var}[{start_col!r}] = pd.cut({data_var}[{field!r}], bins={edges_var}, include_lowest=True).apply(lambda iv: iv.left if pd.notna(iv) else float('nan')).astype(float)"
+        )
+        stmts.append(
+            f"{data_var}[{end_col!r}] = pd.cut({data_var}[{field!r}], bins={edges_var}, include_lowest=True).apply(lambda iv: iv.right if pd.notna(iv) else float('nan')).astype(float)"
+        )
+        rewritten[bin_ch] = {**bin_def, "field": start_col, "bin": None, "type": "quantitative"}
+        rewritten[f"{bin_ch}2"] = {"field": end_col, "type": "quantitative"}
+        group_keys += [start_col, end_col]
 
     if agg_channels:
         # Any OTHER channel with its own field but no aggregate of its own
@@ -228,12 +245,12 @@ def _prepare_binned(encoding: dict, bin_channels: dict, agg_channels: dict, data
         # per-color-group draw loop in `marks.py`) with a `KeyError`.
         extra_groupby_fields = []
         for ch in _ALL_CHANNELS:
-            if ch == bin_ch or ch in agg_channels:
+            if ch in bin_channels or ch in agg_channels:
                 continue
             d = encoding.get(ch)
             if isinstance(d, dict) and d.get("field") and d["field"] not in extra_groupby_fields:
                 extra_groupby_fields.append(d["field"])
-        group_keys = [start_col, end_col] + extra_groupby_fields
+        group_keys += extra_groupby_fields
 
         agg_pairs = []
         for ch, d in agg_channels.items():

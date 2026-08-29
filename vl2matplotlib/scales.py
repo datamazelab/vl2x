@@ -89,6 +89,18 @@ def scale_type(def_: dict) -> str:
     return "linear"
 
 
+# Vega-Lite's default ordinal sort is the field's own natural order --
+# numeric comparison for numbers, lexical for strings. A plain `key=str`
+# instead sorts *every* category lexicographically, which is silently wrong
+# for a numeric-valued ordinal field (most commonly a cyclic `timeUnit` like
+# `"month"`, whose extracted values are plain ints 1-12: `key=str` produces
+# 1, 10, 11, 12, 2, 3, ... instead of calendar order). This key sorts
+# numbers before strings, numerically among themselves, and falls back to
+# `str()` only for genuinely non-numeric values -- safe for the common case
+# where a single field's own unique values are all one type or the other.
+ORDINAL_SORT_KEY = "lambda v: (0, v) if isinstance(v, (int, float)) else (1, str(v))"
+
+
 def category_var(channel: str, data_var: str) -> str:
     return f"__{channel}_cats_{data_var}"
 
@@ -115,7 +127,7 @@ def position_column(channel: str, def_: dict, data_var: str) -> tuple[str, list[
     cats = category_var(channel, data_var)
     pos_col = f"__{channel}_pos"
     stmts = [
-        f"{cats} = sorted({data_var}[{field!r}].dropna().unique().tolist(), key=str)",
+        f"{cats} = sorted({data_var}[{field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})",
         f"{data_var}[{pos_col!r}] = pd.Categorical({data_var}[{field!r}], categories={cats}).codes.astype(float)",
         f"{data_var}.loc[{data_var}[{pos_col!r}] < 0, {pos_col!r}] = float('nan')",
     ]
