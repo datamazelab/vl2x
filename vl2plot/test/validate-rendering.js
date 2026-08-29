@@ -103,7 +103,14 @@ function inspectRendering(node) {
   let brokenCount = 0;
   const brokenTags = new Set();
   for (const tag of [...Object.keys(GEOMETRY_ATTRS), 'path', 'text']) {
-    const els = [...node.querySelectorAll(tag)];
+    // A legend's own swatch `<rect>` (added by Plot for any legendable
+    // channel with `legend: true`) commonly sizes itself with a relative
+    // `width="100%" height="100%"` inside its own small nested `<svg>`,
+    // not the absolute pixel geometry a real mark-drawn shape always
+    // uses -- `Number("100%")` is `NaN`, a false positive here, not a
+    // real broken shape (mirrors the very same class of false alarm the
+    // `<text>`-via-`transform` special-case above already exists for).
+    const els = [...node.querySelectorAll(tag)].filter(el => !el.closest('[class*="swatch"]'));
     if (els.length === 0) continue;
     shapeCounts[tag] = els.length;
     for (const el of els) {

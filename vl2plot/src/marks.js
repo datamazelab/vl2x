@@ -377,7 +377,7 @@ function renderArc(encoding, markProps, dataVar, ignoreUnsupported) {
     if (ignoreUnsupported) {
       return {statements: [`// vl2plot: unsupported arc mark without a theta encoding, skipped (--ignore-unsupported)`], markExpr: null};
     }
-    throw new Error('"arc" mark requires a theta encoding');
+    throw new Error('Unsupported: an "arc" mark with no theta *encoding* channel (e.g. a mark-level theta bound to a param expression instead) is not yet supported by vl2plot');
   }
   if (hasField(encoding.radius)) {
     if (ignoreUnsupported) {

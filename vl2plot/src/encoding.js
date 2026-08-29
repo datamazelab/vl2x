@@ -43,6 +43,26 @@ export function hasField(def) {
   return def && typeof def === 'object' && typeof def.field === 'string';
 }
 
+// A literal `value`/`datum` string is genuinely ambiguous to Plot itself
+// -- it applies its own "does this look like a CSS color" heuristic to
+// decide whether a bare string channel option is a literal or a column
+// name to read, and (confirmed empirically) keeps applying that same
+// heuristic even *inside* an explicit `{value: "..."}` wrapper, which one
+// might otherwise expect to force literal treatment unconditionally. A
+// string that happens to coincide with a real column name in the data
+// (e.g. a `repeat`-substituted category label like `"a"`, coincidentally
+// also a field name on that very row) is silently read as that column's
+// own per-row value instead of the constant it was meant to be --
+// splitting a single line into one broken segment per distinct value,
+// not a crash. A function accessor (`() => "a"`) sidesteps the ambiguity
+// entirely: Plot never applies the string-vs-column heuristic to a
+// function's own return value, so this is always safe, for a literal
+// that happens to look like a valid CSS color too.
+function literalChannelExpr(value) {
+  if (typeof value !== 'string') return formatValue(value);
+  return `() => ${formatValue(value)}`;
+}
+
 // The Plot mark-option *value* for one channel: a field-name string (for a
 // real `field` reference -- Plot treats any string matching a data column
 // as an accessor automatically), a JS literal (for `value`), or `null` when
@@ -53,8 +73,8 @@ export function hasField(def) {
 export function channelValue(def, {asCode = true} = {}) {
   if (!def || typeof def !== 'object') return null;
   if (typeof def.field === 'string') return asCode ? formatValue(unescapeFieldName(def.field)) : unescapeFieldName(def.field);
-  if ('value' in def) return asCode ? formatValue(def.value) : def.value;
-  if ('datum' in def) return asCode ? formatValue(def.datum) : def.datum;
+  if ('value' in def) return asCode ? literalChannelExpr(def.value) : def.value;
+  if ('datum' in def) return asCode ? literalChannelExpr(def.datum) : def.datum;
   return null;
 }
 

@@ -243,15 +243,37 @@ test('nested facet (facet within facet) throws a clear "Unsupported: ..." error'
   );
 });
 
-test('repeat composition throws a clear "Unsupported: ..." error', () => {
+test('repeat: {layer: [...]} expands into a real, correctly-substituted layer composition', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{x: 1, a: 10, b: 20}, {x: 2, a: 15, b: 25}]},
+    repeat: {layer: ['a', 'b']},
+    spec: {mark: 'line', encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: {repeat: 'layer'}, type: 'quantitative'}, color: {datum: {repeat: 'layer'}, type: 'nominal'}}},
+  });
+  assert.equal(marksOf(document, 'path').length, 2);
+});
+
+test('a bare-array repeat: [...] with columns expands into a real grid of independent panels', async () => {
+  const {container} = await renderSpec({
+    repeat: ['a', 'b', 'c'],
+    columns: 2,
+    spec: {
+      data: {values: [{v: 1}, {v: 2}, {v: 3}]},
+      mark: 'bar',
+      encoding: {x: {field: {repeat: 'repeat'}, type: 'ordinal'}, y: {aggregate: 'count'}},
+    },
+  });
+  assert.equal(container.querySelectorAll('svg').length, 3);
+});
+
+test('a 2D (row and column together) repeat throws a clear "Unsupported: ..." error', () => {
   assert.throws(
     () =>
       vegaLiteToPlotCode({
         data: {values: [{a: 1, b: 2}]},
-        repeat: {layer: ['a', 'b']},
-        spec: {mark: 'point', encoding: {x: {field: {repeat: 'layer'}, type: 'quantitative'}}},
+        repeat: {row: ['a'], column: ['b']},
+        spec: {mark: 'point', encoding: {x: {field: {repeat: 'column'}, type: 'quantitative'}, y: {field: {repeat: 'row'}, type: 'quantitative'}}},
       }),
-    /Unsupported top-level composition: 'repeat'/
+    /Unsupported: a 2D \(row and column together\) 'repeat'/
   );
 });
 

@@ -1,3 +1,0 @@
-===== arc_params.vl.json [TRANSLATE] =====
-"arc" mark requires a theta encoding
-

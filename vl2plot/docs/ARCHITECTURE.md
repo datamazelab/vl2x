@@ -351,6 +351,156 @@ previously-undetected bugs, all fixed:
   stacking on top of it would discard that explicit range and substitute
   a wrong one. `planStack()` now checks for this and returns `null`.
 
+## A second correctness pass: legends, arc/pie, faceting, repeat, window
+
+A follow-up review — spot-checking real showcase output against known
+problem specs from other siblings' own bug reports, plus a systematic
+look for "renders, but not what Vega-Lite would draw" — found a further
+batch of real bugs and gaps, all fixed:
+
+- **No chart ever showed a legend.** Vega-Lite shows a legend by default
+  for any field-encoded legendable channel (`color`, `opacity`, `size`,
+  `shape`) unless explicitly turned off — Plot has no equivalent default
+  of its own: *every* mark renders with no legend at all unless `legend:
+  true` is set explicitly on that channel's own top-level scale options,
+  confirmed by testing a plain `Plot.dot(...)` with a `fill` channel and
+  no explicit legend option. `scales.js`'s `buildScaleOptions()` now
+  defaults `legend: true` for exactly those four channels whenever the
+  spec gives them a real field (not just a static value) and doesn't
+  explicitly disable it — this is a broad, previously-invisible-in-every-
+  single-chart gap, not a narrow one.
+- **A legend's own gradient swatch crashes under jsdom without the
+  optional `canvas` package.** A *continuous* (not categorical) color
+  legend renders as a gradient ramp, which Plot draws via an offscreen
+  `<canvas>` — jsdom's own `getContext()` returns `null` without the
+  optional native `canvas` npm package installed, and Plot then throws
+  setting `ctx.fillStyle`. This only ever surfaced once legends were
+  actually enabled (above); a real browser (what the showcase's own live
+  viewers use) has no such limitation at all, so `canvas` is now a
+  `devDependency` purely so this project's own *test/validation*
+  environment can exercise the exact same code path a real browser
+  would, rather than a production requirement.
+- **A legend's own swatch geometry isn't real absolute pixel positions,
+  and its own `<rect>`s got miscounted as chart marks.** A swatch
+  commonly sizes itself with a relative `width="100%" height="100%"`
+  inside its own small nested `<svg>` (`Number("100%")` is `NaN`) — the
+  same false-positive-NaN class `<text>`'s own `transform`-based
+  positioning already required a special case for (see below), needing
+  the identical treatment (`validate-rendering.js`'s own geometry check,
+  and the unit suite's own `marksOf()` helper, both now also exclude
+  anything inside a `[class*="swatch"]` container).
+- **`sort: {"op": ..., "field": ..., "order": ...}` on a position channel
+  did nothing at all.** Only a plain `sort: "descending"` string or an
+  explicit array were handled; a full sort-spec object (Vega-Lite's own
+  "reorder this axis by an aggregate of some field" form, e.g. "put the
+  most common category first") silently fell through to no-op, leaving
+  the axis in first-appearance order. Maps onto Plot's own mark-level
+  `sort: {[categoryChannel]: "-valueChannel"}` option (confirmed
+  empirically — a bare `sort: "-y"` at the top of a mark's own options
+  object does *not* work; it must be nested under the channel key being
+  reordered) — only handled when the sort spec's own `field` is absent
+  (an op like `"count"` needs none) or matches the channel already
+  carrying the mark's own value, the overwhelmingly common real pattern;
+  sorting by an unrelated third field would need a synthetic hidden
+  channel, not attempted.
+- **A chart-level `title` was dropped entirely.** Never threaded through
+  at all — `panelSize()` now also extracts `title`/`subtitle` (a bare
+  string or a `{"text": ..., "subtitle": ...}` object) and
+  `buildPlotCallSource()` passes them straight through to Plot's own
+  matching top-level options.
+- **A static `mark: {"color": ..., "opacity": ..., "size": ...}` property
+  (as opposed to an `encoding` channel) was dropped for every mark except
+  `rule` (which already had its own `strokeWidth` fallback).** A mark
+  relying solely on its own constant styling — no color/opacity/size
+  *field* at all, a common real pattern for e.g. a single-series
+  reference line drawn in a fixed color — silently rendered in Plot's own
+  default styling instead. `commonChannels()` now falls back to
+  `markProps.color`/`opacity` when the matching encoding channel is
+  absent (an encoding channel still always wins when both are present,
+  matching Vega-Lite's own rule); `renderLineOrArea()` gained the same
+  fallback for `strokeWidth` (from `markProps.strokeWidth` *or*
+  `markProps.size`, Vega-Lite's own line-width alias) that `renderRule()`
+  already had.
+- **A literal `value`/`datum` string that happens to coincide with a real
+  column name got read as that column, not the constant it was meant to
+  be.** Plot's own "does this look like a CSS color" disambiguation
+  between a literal string and a column-name accessor keeps applying even
+  *inside* an explicit `{value: "..."}` wrapper — confirmed empirically
+  across three separate reproductions, including with the channel's
+  scale-participation entirely turned off. A `color: {"datum": {"repeat":
+  "layer"}}`-style repeated categorical label (e.g. `"a"`, coincidentally
+  also a real field name in that exact row) silently read that column's
+  own per-row *values* instead, splitting one line into as many broken
+  one-point segments as there were distinct values — not a crash, and easy
+  to miss without checking the actual segment count. `channelValue()` now
+  renders any string `value`/`datum` as a function accessor (`() =>
+  "literal"`) instead of a bare string spliced into the options object —
+  Plot never applies its own string-vs-column heuristic to a function's
+  *return* value, so this is unconditionally safe (including for a
+  literal that does happen to look like a valid CSS color).
+- **Observable Plot has no built-in arc/pie mark at all** (confirmed
+  absent from its own mark index) — `VlArc` (`runtime.js`) is a real one,
+  not an approximation, built on `d3.pie()`/`d3.arc()` (the same
+  primitives `vl2d3`'s own hand-built arc renderer uses) but implemented
+  as a genuine Plot `Mark` subclass rather than raw post-hoc SVG
+  injection, specifically so its own `fill` channel still participates in
+  Plot's shared color scale *and legend* resolution like any built-in
+  mark's channel would. One non-obvious pitfall building it: a custom
+  Mark's own `values` object (received by `render()`) already holds
+  *post-scale* output for a `{scale: "color"}`-declared channel (a final
+  color string, e.g. `"#4269d0"`), not the raw domain value — calling
+  `scales.color(...)` on it a second time looks up an already-a-color
+  string as if it were a domain value, silently resolving to no fill at
+  all (not a crash). v1 scope: a plain quantitative `theta` (Vega-Lite's
+  own implicit per-mark stacking, matching `d3.pie()`'s own default
+  ordering), `color`, an optional `tooltip`, `order` (reorders the
+  wedges before construction, honored by `d3.pie()`'s natural array
+  order), `mark.innerRadius`/`outerRadius` (donut vs. pie), and an
+  explicit `theta.scale.range` override (a truncated/rotated circle, via
+  `d3.pie()`'s own `startAngle`/`endAngle`). A *non-quantitative* `theta`
+  (equal-sized wedges per category) or a per-row-varying `radius` channel
+  are real gaps, not attempted — both need genuine additional scale
+  machinery this v1 doesn't have yet.
+- **`row`/`column` as plain *encoding* channels (not a `facet: {...},
+  spec: {...}` composition) were silently dropped entirely.** Vega-Lite
+  lets `row`/`column` appear directly in `encoding` on any unit or layer
+  view (shared across every layer for the layer case) as a more common-
+  in-practice alternative spelling of faceting to the explicit
+  composition form — confirmed as the root cause behind a real corpus
+  spec (`trellis_bar`) rendering as an overlaid mess (every age × gender
+  combination layered on one shared set of axes) instead of a trellis:
+  `row`/`column` aren't real mark channels at all, so the field was
+  dropped with no error. `extractEncodingFacet()` now normalizes this
+  shape into the exact node `translateFacet()` itself already expects
+  before `translateNode()`'s own dispatch, reusing all of its existing
+  logic (including its own `ignoreUnsupported` fallbacks for a layered
+  template) rather than duplicating any of it.
+- **`repeat` unconditionally rendered an empty panel, even for the
+  common, cleanly-expandable shapes.** Re-examined after the `row`/
+  `column` facet fix above suggested the same "expand into an equivalent
+  ordinary composition" approach would work here too: `repeat: {layer:
+  [...]}` (repeat *as layers* sharing one panel) now expands into a plain
+  `layer: [...]`; `repeat: {row: [...]}` / a bare array shorthand
+  `repeat: [...]` (Vega-Lite's own default meaning for the array form —
+  confirmed via a real corpus spec pairing it with a sibling top-level
+  `columns: N`, wrapping it into a genuine grid rather than one long row)
+  expand into `vconcat`/`concat`. Each of `translateFacet()`'s/
+  `translateMulti()`'s own existing machinery (merge-down, per-child
+  fallbacks, ...) is reused by construction. The one shape still not
+  attempted: `row` *and* `column` together (a genuine 2D grid, e.g. a
+  scatterplot matrix) — each cell would need its own *pair* of
+  substituted fields, not just one single-axis substitution pass.
+- **The top-level `window` transform is now implemented**, not just a
+  documented gap — a real SQL-window-function-style computation
+  (`row_number`/`rank`/`dense_rank`/`lag`/`lead`, and a `frame`-bounded
+  `sum`/`mean`/`count`/`min`/`max`/`median`/`distinct`), adapted from
+  `vl2d3`'s own proven implementation but rewritten self-contained (no
+  `d3` dependency needed at all, unlike `vl2d3`'s own `d3.group`/`d3.sum`-
+  based version) as `vlWindow()` in `runtime.js`. Fixes a real corpus
+  spec (`layer_line_rolling_mean_point_raw`, a 30-day rolling mean
+  overlaid on raw daily values) that previously rendered only the raw-
+  value points, with the rolling-mean line silently absent (referencing a
+  field the skipped transform never computed).
 ## Validation methodology
 
 Like `vl2d3`, `vl2plot` targets a lower-level toolkit than `vl2altair`/
@@ -364,8 +514,8 @@ ways rather than a plain pass/fail:
   Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing (`test/validate-examples.js`, strict mode): **465/633
-OK, 168/633 skipped, 0/633 failed**.
+At the time of writing (`test/validate-examples.js`, strict mode): **495/633
+OK, 138/633 skipped, 0/633 failed**.
 
 A second, stricter harness (`test/validate-rendering.js`) runs the same
 corpus the way the showcase actually does — `{ignoreUnsupported: true}` —
@@ -376,18 +526,17 @@ elements, not a crash) — though it took a real showcase-image review, not
 this harness alone, to catch the *other* silent-correctness bugs the
 section above describes (a group transform that renders a plausible-looking
 but numerically wrong result, or one broken mark that still leaves a
-plausible chart, doesn't always look empty): **564/633 render with real,
-finite-geometry shapes**, 0/633 have `NaN`-positioned geometry, 66/633
+plausible chart, doesn't always look empty): **589/633 render with real,
+finite-geometry shapes**, 0/633 have `NaN`-positioned geometry, 40/633
 execute but draw nothing (almost entirely the documented mark/composition
 gaps under best-effort mode — e.g. an unsupported mark type is simply
-omitted from `marks: [...]`, leaving valid-but-empty output), and 3/633
-fail outright —
-each a narrow, out-of-scope combination: a live-selection filter param
-(`{"and": ["index.date", {"param": "index"}]}`), TopoJSON/GeoJSON
-`format`-typed data (`{"format": {"type": "topojson", ...}}`, loaded as a
-topology object, not a row array — geo support generally is a documented
-v1 gap), and one call to `quantileUniform()`, a niche statistical function
-specific to QQ-plot specs.
+omitted from `marks: [...]`, leaving valid-but-empty output), and 4/633
+fail outright — each a narrow, out-of-scope combination: two different
+live-selection filter/lookup params (`data('brush_store')`, `{"and":
+["index.date", {"param": "index"}]}`), TopoJSON/GeoJSON `format`-typed
+data (loaded as a topology object, not a row array — geo support
+generally is a documented v1 gap), and one call to `quantileUniform()`, a
+niche statistical function specific to QQ-plot specs.
 
 One SVG-geometry-check detail worth noting for anyone extending
 `validate-rendering.js`: unlike `vl2d3`'s own hand-rolled D3 code (which
@@ -401,5 +550,5 @@ Plot output produces a wall of false-positive "NaN" detections (`Number
 
 The showcase build (`showcase_build/run_plot.mjs`, `{ignoreUnsupported:
 true, includeSourcePaths: true}`, matching every other sibling's own
-showcase-generation options) reports **630/633 ok** — the same 3 narrow
+showcase-generation options) reports **629/633 ok** — the same 4 narrow
 failures above.

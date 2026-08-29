@@ -74,8 +74,11 @@ installed alongside it.
 npm install
 ```
 
-installs the `devDependencies` (`@observablehq/plot`, `d3`, `jsdom`) used by
-the test suite; a consumer of the *generated* code only needs
+installs the `devDependencies` (`@observablehq/plot`, `d3`, `jsdom`, `canvas`)
+used by the test suite (`canvas` only so a continuous color legend's own
+gradient ramp — drawn via an offscreen `<canvas>` — doesn't throw under
+jsdom, which has no `<canvas>` support without it; a real browser needs no
+such thing) — a consumer of the *generated* code only needs
 `@observablehq/plot` itself (plus `d3` when the generated file imports it).
 
 ## Usage
@@ -151,18 +154,22 @@ without the flag. See `src/translator.js`'s module docstring and
 | Single unit view (`mark` + `encoding`) | ✅ |
 | `layer` (including nested layer-of-layers) | ✅ — one shared `Plot.plot()`, one `marks` array |
 | `hconcat`, `vconcat`, `concat` | ✅ — independent `Plot.plot()` calls in a flex/grid wrapper (Plot has no native multi-plot layout) |
-| `facet` (single-dimension, plain-unit template) | ✅ — Plot's own native `facet: {data, x, y}` option, no hand-built grid |
+| `facet` (single-dimension, plain-unit template), and `row`/`column` as plain *encoding* channels (a more common-in-practice alternative spelling) | ✅ — Plot's own native `facet: {data, x, y}` option, no hand-built grid |
 | `facet` (nested facet-within-facet, or faceting a layered template) | ❌ |
-| `repeat` | ❌ |
-| Marks: `point`/`circle`/`square`, `bar`, `line`, `area`, `rule`, `tick`, `text`, `rect`/`cell`, `boxplot` | ✅ |
-| Marks: `arc`, `trail`, `errorbar`, `errorband`, `geoshape`, `image` | ❌ |
-| `x`/`y`/`x2`/`y2` (including a continuous bin-interval category axis, e.g. a log-scaled histogram) | ✅ |
-| `color` (categorical and continuous), `size`, `opacity`, `shape` | ✅ — Plot's own scale type inference handles both categorical and continuous color without a hand-rolled dual path |
+| `repeat`: `{layer: [...]}`, `{row: [...]}`/`{column: [...]}`, and the bare array shorthand (with a sibling `columns: N`) | ✅ — each expands into the equivalent ordinary `layer`/`vconcat`/`concat` composition (reusing all of that composition's own logic) after substituting every `{"repeat": key}` token |
+| `repeat`: `row` *and* `column` together (a 2D grid, e.g. a scatterplot matrix) | ❌ |
+| Marks: `point`/`circle`/`square`, `bar`, `line`, `area`, `rule`, `tick`, `text`, `rect`/`cell`, `boxplot`, `arc` | ✅ — `arc` via a custom Plot `Mark` subclass built on `d3.pie()`/`d3.arc()` (Plot has no native arc/pie mark at all), covering a plain quantitative `theta` + `color`; a non-quantitative `theta` or a per-row `radius` channel aren't attempted |
+| Marks: `trail`, `errorbar`, `errorband`, `geoshape`, `image` | ❌ |
+| `x`/`y`/`x2`/`y2` (including a continuous bin-interval category axis, e.g. a log-scaled histogram, and a pre-computed `bin: {"binned": true}` interval) | ✅ |
+| `color` (categorical and continuous), `size`, `opacity`, `shape` | ✅ — Plot's own scale type inference handles both categorical and continuous color without a hand-rolled dual path; a legend shows by default for any of these, matching Vega-Lite's own convention (Plot itself has no such default) |
 | `detail` (→ Plot's own `z` channel), `order` (→ Plot's own `sort` mark option), `tooltip` (→ Plot's own `title` channel, a real native tooltip) | ✅ |
+| `sort: {"op": ..., "field": ..., "order": ...}` on a position channel | ✅ — when the sort spec's own `field` matches (or is absent, e.g. `"count"`) the channel already carrying the mark's own value; an unrelated third field isn't attempted |
+| A chart-level `title`/`subtitle` | ✅ — Plot's own matching top-level options |
+| A static `mark: {"color"/"opacity"/"size": ...}` property (as opposed to an `encoding` channel) | ✅ |
 | Inline `aggregate`/`bin`/`timeUnit` on an encoding channel | ✅ — routed through `Plot.binX`/`Plot.groupX` (etc.) wrapper calls |
 | Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`), plus an explicit `stack` on a `text` label overlaid on one | ✅ — Plot's own native `offset: "normalize"/"center"` for bar/area; `text` stacks only when `stack` is set explicitly (no Vega-Lite convention auto-stacks a label) |
-| Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `stack`, `density` | ✅ — `stack`/`density` via a shared runtime helper (`src/runtime.js`), since neither has a native Plot *data-array* transform equivalent (`density` is a real Gaussian-kernel KDE, not an approximation) |
-| Top-level `transform`: `window`, `joinaggregate`, `fold`, `pivot`, `lookup`, `flatten`, `sort`, `impute` | ❌ |
+| Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `stack`, `density`, `window` | ✅ — `stack`/`density`/`window` via a shared runtime helper (`src/runtime.js`), since none has a native Plot *data-array* transform equivalent (`density` is a real Gaussian-kernel KDE, `window` a real SQL-window-function-style computation, neither an approximation) |
+| Top-level `transform`: `joinaggregate`, `fold`, `pivot`, `lookup`, `flatten`, `sort`, `impute` | ❌ |
 | Vega expression strings (`filter`/`calculate`) | ⚠️ best-effort: `datum` → row var, `Math.*` functions, date-component extraction, `length()`/`substring()`/`indexof()`/`format()`/`isValid()`/`if()`; anything else passes through as literal text and fails loudly at chart-render time rather than silently miscalculating |
 | `params`/`selection` (live interactivity) | ❌ |
 
@@ -182,16 +189,16 @@ a plain pass/fail:
   not to implement yet. Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **465/633 OK, 168/633 skipped (documented
+At the time of writing: **495/633 OK, 138/633 skipped (documented
 boundaries above), 0/633 failed**. A second, stricter harness
 (`test/validate-rendering.js`) additionally inspects the *rendered SVG
 geometry* of every `--ignore-unsupported` run (not just whether
-translation+execution threw): **564/633 render with real, finite-geometry
-shapes** (0/633 have `NaN`-positioned geometry, 66/633 execute but draw
+translation+execution threw): **589/633 render with real, finite-geometry
+shapes** (0/633 have `NaN`-positioned geometry, 40/633 execute but draw
 nothing — almost entirely the documented mark/composition gaps above under
-best-effort mode — 3/633 fail outright, each a narrow, out-of-scope
-combination: live-selection filter params, TopoJSON/GeoJSON `format`-typed
-data, and one niche statistical expression function). See
+best-effort mode — 4/633 fail outright, each a narrow, out-of-scope
+combination: live-selection filter/lookup params, TopoJSON/GeoJSON
+`format`-typed data, and one niche statistical expression function). See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full methodology.
 
 One design choice worth calling out explicitly:
@@ -255,9 +262,11 @@ src/
     data.js                      data-loading code (inline values / url fetch)
     runtime.js                     shared helpers a spec's generated code
                                     imports by name (`vlStack`, `vlDensity`,
-                                    `vlFlattenOneLevel`) when a transform is
-                                    complex enough that re-deriving it inline
-                                    every time would be error-prone
+                                    `vlWindow`, `vlFlattenOneLevel`, the
+                                    `VlArc` custom mark class) when a
+                                    transform (or mark) is complex enough
+                                    that re-deriving it inline every time
+                                    would be error-prone
     literals.js                     JSON value -> JavaScript literal source
                                      pretty-printer
 bin/
