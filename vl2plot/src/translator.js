@@ -17,6 +17,7 @@ import {renderMark} from './marks.js';
 import {extractDateFunctionFields} from './expr.js';
 import {collectTemporalFields as collectEncodingTemporalFields} from './prepare.js';
 import {buildScaleOptions, renderScaleBlock} from './scales.js';
+import {formatValue} from './literals.js';
 
 const UNSUPPORTED_COMPOSITIONS = ['repeat'];
 
@@ -180,7 +181,15 @@ function translateLayerOrUnit(node, ctx, path) {
 function panelSize(node) {
   const w = typeof node.width === 'number' ? node.width : null;
   const h = typeof node.height === 'number' ? node.height : null;
-  return {w, h};
+  // A chart `title` can be a bare string or `{"text": ..., "subtitle":
+  // ...}` -- matches `build_site.py`'s own identical extraction for the
+  // page's own description field. Plot's own top-level `title` option
+  // renders it directly above the plot; `subtitle` maps onto Plot's own
+  // matching option the same way.
+  const titleDef = node.title;
+  const title = typeof titleDef === 'string' ? titleDef : titleDef && typeof titleDef === 'object' ? titleDef.text : null;
+  const subtitle = titleDef && typeof titleDef === 'object' ? titleDef.subtitle : null;
+  return {w, h, title: Array.isArray(title) ? title.join(' ') : title, subtitle: Array.isArray(subtitle) ? subtitle.join(' ') : subtitle};
 }
 
 // Renders `Plot.plot({...})` source text (indented `indent` levels) from an
@@ -192,6 +201,8 @@ function buildPlotCallSource(markExprs, scaleOptions, size, facet, indent) {
   const pad = '  '.repeat(indent);
   const inner = '  '.repeat(indent + 1);
   const lines = ['Plot.plot({', `${inner}document: container.ownerDocument,`];
+  if (size.title) lines.push(`${inner}title: ${formatValue(size.title)},`);
+  if (size.subtitle) lines.push(`${inner}subtitle: ${formatValue(size.subtitle)},`);
   if (size.w) lines.push(`${inner}width: ${size.w},`);
   if (size.h) lines.push(`${inner}height: ${size.h},`);
   if (facet) {

@@ -120,6 +120,27 @@ function prepareMark(encoding, dataVar, ignoreUnsupported) {
   return {statements, encoding: enc, orient: orientation(enc)};
 }
 
+// Vega-Lite's `sort: {"op": ..., "field": ..., "order": ...}` form (sort
+// an ordinal position channel's own domain by an aggregate of some field,
+// e.g. "put the tallest bar first") -- as opposed to the simpler `sort:
+// "descending"` / an explicit array (handled in `scales.js`'s own scale-
+// level `reverse`/`domain`). Maps onto Plot's own mark-level `sort:
+// {[catCh]: "-otherCh"}` option (a leading "-" reverses), which can only
+// reference an *already-encoded* channel name, not an arbitrary raw field
+// -- so this only fires when the sort spec's own `field` is absent (an
+// op like `"count"` needs none) or matches the value channel's own field,
+// the overwhelmingly common real case ("sort by the bar's own value").
+function sortMarkOption(encoding, catCh, valueCh) {
+  const catDef = encoding[catCh];
+  const sortSpec = catDef && typeof catDef === 'object' ? catDef.sort : null;
+  if (!sortSpec || typeof sortSpec !== 'object' || Array.isArray(sortSpec)) return undefined;
+  const valueDef = encoding[valueCh];
+  const matchesValueChannel = !sortSpec.field || (valueDef && valueDef.field === sortSpec.field);
+  if (!matchesValueChannel) return undefined;
+  const sign = sortSpec.order === 'descending' ? '-' : '';
+  return formatValue({[catCh]: `${sign}${valueCh}`});
+}
+
 function commonChannels(encoding, markType, markProps) {
   const colorDef = encoding.color || encoding.fill || encoding.stroke;
   const colorCh = colorChannelName(markType, markProps);
@@ -173,6 +194,7 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
         [catCh, val(enc[catCh])],
         [valueCh, val(enc[valueCh])],
         [valueCompanionCh, val(enc[valueCompanionCh])],
+        ['sort', sortMarkOption(enc, catCh, valueCh)],
         ...commonChannels(enc, 'bar', markProps),
       ];
   const transformPlan = planTransform(enc, ignoreUnsupported);

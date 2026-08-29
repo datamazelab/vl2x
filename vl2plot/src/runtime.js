@@ -1,9 +1,69 @@
-// Shared helpers for a transform whose logic is substantial enough that
-// re-deriving it inline in every generated file would be error-prone --
-// mirrors `vl2d3`'s own `runtime.js` role exactly (currently just
-// `vlStack()`, the top-level `transform: [{"stack": ...}]` form). Imported
-// by name -- `import {vlStack} from "./vl2plot-runtime.js"` -- only when a
-// spec actually needs it (see `translator.js`'s `specToCode()`).
+// Shared helpers for a transform (or, below, a whole mark type) whose
+// logic is substantial enough that re-deriving it inline in every
+// generated file would be error-prone -- mirrors `vl2d3`'s own
+// `runtime.js` role exactly. Imported by name -- `import {vlStack} from
+// "./vl2plot-runtime.js"` -- only when a spec actually needs it (see
+// `translator.js`'s `specToCode()`).
+
+import * as Plot from '@observablehq/plot';
+import * as d3 from 'd3';
+
+// Observable Plot has no built-in arc/pie mark at all (confirmed absent
+// from its own mark index) -- this is a real one, not an approximation,
+// built directly on `d3.pie()`/`d3.arc()` (the same primitives `vl2d3`'s
+// own hand-built arc renderer uses) but wrapped as a genuine Plot `Mark`
+// subclass rather than raw post-hoc SVG injection, specifically so it
+// still gets Plot's own color-scale *and legend* resolution for free (a
+// `fill` channel declared with `scale: "color"` here participates in
+// exactly the same shared color scale/legend every other mark's own
+// `fill`/`color` channel does).
+//   - `theta` sizes each wedge (Vega-Lite's own implicit per-mark
+//     `stack: true` on `theta` -- every arc mark stacks by default, so
+//     this needs no separate stack step, just d3.pie()'s own running
+//     partition of the input array in order).
+//   - `fill` colors each wedge (omitted: a single default color).
+//   - `innerRadius`/`outerRadius` (VL mark properties, not encoding
+//     channels) -- `innerRadius > 0` makes a donut; `outerRadius`
+//     defaults to half the smaller plot dimension.
+//   - `startAngle`/`endAngle` (radians) override the default full circle
+//     (0 to 2*PI) -- Vega-Lite's own equivalent is an explicit
+//     `theta.scale.range` override.
+//   - Row order in `data` determines stacking order (sort the data
+//     array by an `order` field, if any, *before* constructing this mark
+//     -- see `marks.js`'s own `renderArc()`).
+export class VlArc extends Plot.Mark {
+  constructor(data, options = {}) {
+    const {theta, fill, title, innerRadius = 0, outerRadius = null, startAngle = 0, endAngle = 2 * Math.PI} = options;
+    const channels = {theta: {value: theta, scale: null}};
+    if (fill != null) channels.fill = {value: fill, scale: 'color'};
+    if (title != null) channels.title = {value: title, optional: true};
+    super(data, channels, options, {ariaLabel: 'arc'});
+    this.innerRadius = innerRadius;
+    this.outerRadius = outerRadius;
+    this.startAngle = startAngle;
+    this.endAngle = endAngle;
+  }
+  render(index, scales, values, dimensions, context) {
+    const {width, height, marginTop = 0, marginRight = 0, marginBottom = 0, marginLeft = 0} = dimensions;
+    const plotWidth = width - marginLeft - marginRight;
+    const plotHeight = height - marginTop - marginBottom;
+    const cx = marginLeft + plotWidth / 2;
+    const cy = marginTop + plotHeight / 2;
+    const outerRadius = this.outerRadius ?? Math.min(plotWidth, plotHeight) / 2;
+    const pie = d3.pie().value(i => values.theta[i]).sort(null).startAngle(this.startAngle).endAngle(this.endAngle);
+    const arcs = pie(index);
+    const arcGen = d3.arc().innerRadius(this.innerRadius).outerRadius(outerRadius);
+    const g = d3.select(context.document.createElementNS('http://www.w3.org/2000/svg', 'g')).attr('transform', `translate(${cx},${cy})`);
+    const paths = g
+      .selectAll('path')
+      .data(arcs)
+      .join('path')
+      .attr('d', arcGen)
+      .attr('fill', values.fill ? d => scales.color(values.fill[d.data]) : '#4269d1');
+    if (values.title) paths.append('title').text(d => values.title[d.data]);
+    return g.node();
+  }
+}
 
 // Vega-Lite's *explicit* stack transform: given a value `field` and a
 // `groupby` field list, computes a cumulative running sum of `field`
