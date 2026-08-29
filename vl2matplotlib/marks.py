@@ -26,6 +26,23 @@ from .scales import CATEGORICAL_PALETTE, ORDINAL_SORT_KEY, is_quantitative, posi
 
 DEFAULT_COLOR = "'#4C78A8'"  # Vega-Lite's own default mark color
 
+# Vega-Lite's own shape names -> the closest matplotlib marker symbol.
+_SHAPE_MARKER_MAP = {
+    "circle": "o", "square": "s", "cross": "P", "diamond": "D",
+    "triangle-up": "^", "triangle-down": "v", "triangle-right": ">", "triangle-left": "<",
+    "arrow": "^", "wedge": "^", "triangle": "^", "stroke": "_",
+}
+# Vega-Lite's own default categorical shape range (`config.point.shape` /
+# the built-in ordinal shape scheme), used when a `shape` field has no
+# explicit `scale.range` of its own.
+_DEFAULT_SHAPE_ORDER = [
+    "circle", "square", "cross", "diamond", "triangle-up", "triangle-down", "triangle-right", "triangle-left",
+]
+
+
+def _shape_marker(name: object) -> str:
+    return _SHAPE_MARKER_MAP.get(name, "o") if isinstance(name, str) else "o"
+
 
 def _legend_stmt(ax_var: str, title_field: str) -> str:
     """A plain `ax.legend(title=...)`, with no location given, lets
@@ -277,7 +294,18 @@ def _categorical_color_lookup(color_def: dict | None, data_var: str, stmts: list
     (`palette[i % len(palette)]`) by whichever integer index the caller's
     own draw loop already has -- `__i % len(__palette_<var>)`, not a
     hardcoded `% 10`, so a custom range shorter *or* longer than 10 both
-    still work correctly."""
+    still work correctly. `kind` can also be `"raw"` (`var_name` unused,
+    `None`) when `scale` is explicitly `null` -- Vega-Lite's own "disable
+    scale" convention for a color channel: the field's own raw values
+    *are* literal CSS color specs already (`bar_color_disabled_scale.vl.
+    json`'s own `color: {field: "color", scale: null}`, a column of
+    `"red"`/`"green"`/`"blue"` strings), used directly rather than mapped
+    through a categorical palette -- previously indistinguishable from
+    `scale` being *absent* entirely (both fell through to `{}`), so the
+    real color names were silently discarded in favor of an arbitrary
+    tab10 assignment."""
+    if isinstance(color_def, dict) and "scale" in color_def and color_def.get("scale") is None:
+        return "raw", None
     scale = color_def.get("scale") if isinstance(color_def, dict) else None
     scale = scale if isinstance(scale, dict) else {}
     range_ = scale.get("range")
@@ -357,6 +385,16 @@ def _axis_setup_stmts(ax_var: str, channel: str, def_: dict, data_var: str) -> l
         # linear axis instead, bunching every point into a tiny fraction
         # of the plot's own width.
         stmts.append(f"{ax_var}.set_{channel}scale('log')")
+    axis_cfg = def_.get("axis")
+    axis_fmt = axis_cfg.get("format") if isinstance(axis_cfg, dict) else None
+    if axis_fmt and scale_type(def_) == "temporal":
+        # An explicit `axis.format` on a temporal channel (a real strftime-
+        # compatible pattern in the common case, e.g. `window_impute_null.
+        # vl.json`'s own `"%d %b"`) was previously never applied at all --
+        # every date axis fell back to matplotlib's own default tick
+        # formatter, which (for a dense daily series) renders full
+        # `YYYY-MM-DD`-shaped labels crammed together and unreadable.
+        stmts.append(f"{ax_var}.{channel}axis.set_major_formatter(mdates.DateFormatter({axis_fmt!r}))")
     if def_.get("sort") == "descending" and scale_type(def_) != "ordinal":
         # A *continuous* position channel's own `sort: "descending"` means
         # "run this scale/axis in the opposite direction," not "reorder
@@ -562,9 +600,60 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         r_height = height_expr.replace(data_var, "__drows")
         r_base = base_expr.replace(data_var, "__drows")
         shifted_cat = f"({r_cat} + (__i - (__n_dodge - 1) / 2) * ({r_sub_width}))"
+        color_def = encoding.get("color")
+        stack_field = (
+            color_def["field"]
+            if isinstance(color_def, dict) and color_def.get("field") and not by_color and not is_quantitative(color_def)
+            else None
+        )
+        if stack_field:
+            # Grouped (`xOffset`) *and* stacked (`color`, a genuinely
+            # DIFFERENT field) at once -- `bar_grouped_stacked.vl.json`'s
+            # own shape: dodge by Origin, and within each dodge slot,
+            # stack by year-of-Year. Previously dropped: color/stacking
+            # were only ever wired up when `color` happened to share the
+            # *same* field as the dodge channel (the far more common
+            # "grouped, not also stacked" shape) -- a genuinely different
+            # color field fell back to a flat default color, with every
+            # color's own bar drawn *unstacked* and overlapping at the
+            # identical dodge position (only the tallest one visible, and
+            # monochrome even then). Stacked here the same way `stack.py`'s
+            # own zero-baseline formula does (`groupby(category).cumsum()`),
+            # just computed per dodge-slot subset (`__drows`) instead of
+            # over the whole frame; colored via the same `_domain_expr`
+            # value-map convention `_render_text()`/`_render_rect()` use,
+            # so each color's own assignment is consistent across every
+            # dodge slot regardless of which years happen to appear in it.
+            lookup_def = dict(color_def)
+            lookup_scale = dict(color_def.get("scale") or {})
+            lookup_scale.setdefault("_domain_expr", f"sorted({data_var}[{stack_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
+            lookup_def["scale"] = lookup_scale
+            _, var = _categorical_color_lookup(lookup_def, data_var, stmts)
+            stmts.append(f"for __i, __dk in enumerate(__dodge_cats):")
+            stmts.append(
+                f"    __drows = {data_var}[{data_var}[{dodge_field!r}] == __dk].sort_values([{cat_field!r}, {stack_field!r}])"
+            )
+            stmts.append(f"    __seg_top = __drows.groupby({cat_field!r})[{value_field!r}].cumsum()")
+            stmts.append(f"    __seg_bottom = __seg_top - __drows[{value_field!r}]")
+            stmts.append(
+                f"    {ax_var}.{call}({shifted_cat}, __seg_top - __seg_bottom, {length_kw}={r_sub_width}, "
+                f"{bottom_kw}=__seg_bottom, color=__drows[{stack_field!r}].map({var}).fillna({DEFAULT_COLOR}), "
+                f"alpha={alpha}{align_kw})"
+            )
+            if not _legend_hidden(color_def):
+                stmts.append(
+                    f"{ax_var}.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=__c) for __c in {var}.values()], "
+                    f"labels=[str(__k) for __k in {var}.keys()], title={stack_field!r}, "
+                    f"bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)"
+                )
+            return stmts
         if by_color:
             kind, var = _categorical_color_lookup(encoding.get("color"), data_var, stmts)
-            color_expr = f"{var}.get(__dk, {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+            color_expr = (
+                "str(__dk)" if kind == "raw"
+                else f"{var}.get(__dk, {DEFAULT_COLOR})" if kind == "map"
+                else f"{var}[__i % len({var})]"
+            )
         else:
             color_expr = fixed_color
         stmts.append(f"for __i, __dk in enumerate(__dodge_cats):")
@@ -577,18 +666,42 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
             stmts.append(_legend_stmt(ax_var, dodge_field))
         return stmts
 
+    # A *continuous* color field (`bar_invalid_color_show_override.vl.
+    # json`'s own `color: {field: "c", type: "quantitative"}`) was
+    # previously dropped entirely -- `_color_source()` deliberately
+    # excludes it (by design, see its own docstring), and unlike
+    # `rect`/`point`, `_render_bar()` never had a continuous-color branch
+    # of its own to catch it, so every bar fell back to the flat default
+    # color regardless. `ax.bar()`'s own `color=` accepts a *per-bar*
+    # array, not just a single color, so this reuses `_continuous_color_
+    # setup()`'s shared cmap/norm pair with a vectorized `cmap(norm(array))`
+    # expression instead of its own default per-row one.
+    color_def = encoding.get("color")
+    continuous_color_col = None
+    colorbar_stmt = None
+    if isinstance(color_def, dict) and color_def.get("field") and is_quantitative(color_def):
+        _, color_setup_stmts = _continuous_color_setup(color_def, data_var)
+        stmts += color_setup_stmts
+        cmap_var, norm_var = f"__cmap_{data_var}", f"__cnorm_{data_var}"
+        continuous_color_col = f"{cmap_var}({norm_var}({data_var}[{color_def['field']!r}]))"
+        if not _legend_hidden(color_def):
+            colorbar_stmt = f"plt.colorbar(plt.cm.ScalarMappable(norm={norm_var}, cmap={cmap_var}), ax={ax_var})"
+
     def draw(rows, color, label):
         r_cat = cat_col if rows == data_var else cat_col.replace(data_var, rows)
         r_height = height_expr if rows == data_var else height_expr.replace(data_var, rows)
         r_base = base_expr if rows == data_var else base_expr.replace(data_var, rows)
         r_width = width_expr if (rows == data_var or not width_is_group_dependent) else width_expr.replace(data_var, rows)
         label_kw = f", label={label}" if label else ""
+        r_color = continuous_color_col if continuous_color_col is not None else color
         return [
             f"{ax_var}.{call}({r_cat}, {r_height}, {length_kw}={r_width}, {bottom_kw}={r_base}, "
-            f"color={color}, alpha={alpha}{label_kw}{align_kw}{transform_kw})"
+            f"color={r_color}, alpha={alpha}{label_kw}{align_kw}{transform_kw})"
         ]
 
     stmts += _grouped_or_single(encoding, mark_props, data_var, draw, stmts=stmts)
+    if colorbar_stmt:
+        stmts.append(colorbar_stmt)
     group_field = _color_source(encoding, mark_props)[0]
     if group_field and not _legend_hidden(encoding.get("color")):
         stmts.append(_legend_stmt(ax_var, group_field))
@@ -657,7 +770,24 @@ def _force_nominal_if_ambiguous(def_: dict) -> dict:
 
 
 def _render_rect(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> list[str]:
-    x_def, y_def = _force_nominal_if_ambiguous(encoding.get("x") or {}), _force_nominal_if_ambiguous(encoding.get("y") or {})
+    # `_force_nominal_if_ambiguous()` is skipped for a channel that has its
+    # own `x2`/`y2` companion -- a `field`+companion pair is a genuine
+    # numeric *span* (bin edges, or a start/end timeline range, e.g.
+    # `wheat_wages.vl.json`'s own `x: {field: "start"}, x2: {field:
+    # "end"}` monarchs-reign timeline, neither typed at all) almost always,
+    # never a categorical label pair; `_rect_extent()`'s own companion
+    # branch already assumes numeric row-to-row arithmetic
+    # (`row[x] - row[companion]`) regardless. Forcing nominal here anyway
+    # turned each span's own real numeric position into a tiny ordinal
+    # integer code while its companion stayed a real (much larger) year
+    # value, producing one absurdly wide rectangle per row instead of a
+    # real, correctly-sized span.
+    x_def = encoding.get("x") or {}
+    y_def = encoding.get("y") or {}
+    if not (isinstance(encoding.get("x2"), dict) and encoding["x2"].get("field")):
+        x_def = _force_nominal_if_ambiguous(x_def)
+    if not (isinstance(encoding.get("y2"), dict) and encoding["y2"].get("field")):
+        y_def = _force_nominal_if_ambiguous(y_def)
     x_has_field, y_has_field = bool(x_def.get("field")), bool(y_def.get("field"))
     if not x_has_field and not y_has_field:
         if ignore_unsupported:
@@ -674,6 +804,28 @@ def _render_rect(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
             None if _legend_hidden(color_def)
             else f"plt.colorbar(plt.cm.ScalarMappable(norm=__cnorm_{data_var}, cmap=__cmap_{data_var}), ax={ax_var})"
         )
+    elif isinstance(color_def, dict) and color_def.get("field"):
+        # A *categorical* `color` field -- `rect` draws via one shared
+        # `df.iterrows()` loop (both branches below, the 2D-grid Rectangle
+        # case and the single-axis span case), not `_grouped_or_single()`'s
+        # own one-call-per-group idiom every other mark's categorical color
+        # support is built on, so `_color_source()` (which only ever
+        # returns a *group field name* for this case, not a usable color)
+        # was never actually consulted for an actual color here at all --
+        # every row silently fell back to the same flat default
+        # (`layer_falkensee.vl.json`'s own Nazi-Rule/GDR background bands,
+        # meant to be two different colors, rendered identically). Built
+        # the same way `_render_text()`'s own per-row color map is: a
+        # `value -> color` map via `_categorical_color_lookup()`'s
+        # `_domain_expr` convention, looked up per row.
+        color_field = color_def["field"]
+        lookup_def = dict(color_def)
+        lookup_scale = dict(color_def.get("scale") or {})
+        lookup_scale.setdefault("_domain_expr", f"sorted({data_var}[{color_field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})")
+        lookup_def["scale"] = lookup_scale
+        _, var = _categorical_color_lookup(lookup_def, data_var, stmts)
+        color_expr = f"{var}.get(row[{color_field!r}], {DEFAULT_COLOR})"
+        colorbar_stmt = None
     else:
         color_expr = _color_source(encoding, mark_props)[1]
         colorbar_stmt = None
@@ -764,7 +916,11 @@ def _render_boxplot(encoding, mark_props, data_var, ax_var, ignore_unsupported) 
         )
         if has_color:
             kind, var = _categorical_color_lookup(color_def, data_var, stmts)
-            color_expr = f"{var}.get(__groups[__i], {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+            color_expr = (
+                "str(__groups[__i])" if kind == "raw"
+                else f"{var}.get(__groups[__i], {DEFAULT_COLOR})" if kind == "map"
+                else f"{var}[__i % len({var})]"
+            )
             stmts.append(
                 f"for __i, __patch in enumerate(__bp['boxes']): __patch.set_facecolor({color_expr})"
             )
@@ -822,7 +978,9 @@ def _render_arc(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         stmts.append(f"{data_var} = {data_var}.sort_values({order_field!r}).reset_index(drop=True)")
     if color_field:
         kind, var = _categorical_color_lookup(color_def, data_var, stmts)
-        if kind == "map":
+        if kind == "raw":
+            colors_expr = f"{data_var}[{color_field!r}].astype(str).tolist()"
+        elif kind == "map":
             # Looked up by the row's own category *value* (via `.map()`
             # over the whole column at once), not draw-order index -- an
             # explicit `domain`+`range` pairing must still match the right
@@ -977,7 +1135,11 @@ def _grouped_or_single(encoding, mark_props, data_var, draw_stmt_fn, stmts: list
     if group_field:
         lines: list[str] = []
         kind, var = _categorical_color_lookup(encoding.get("color"), data_var, lines)
-        color_expr = f"{var}.get(__key, {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+        color_expr = (
+            "str(__key)" if kind == "raw"
+            else f"{var}.get(__key, {DEFAULT_COLOR})" if kind == "map"
+            else f"{var}[__i % len({var})]"
+        )
         lines.append(f"for __i, (__key, __rows) in enumerate({data_var}.groupby({group_field!r})):")
         inner = draw_stmt_fn("__rows", color_expr, "str(__key)")
         lines += [f"    {s}" for s in inner]
@@ -1200,10 +1362,39 @@ def _render_line_or_area(is_area: bool):
         stmts += _axis_setup_stmts(ax_var, "x", x_def, data_var)
         stmts += _axis_setup_stmts(ax_var, "y", y_def, data_var)
 
-        x_field_for_sort = x_def.get("field")
+        # An area/line mark's own orientation was previously always assumed
+        # vertical (x = domain/sequence, y = value) -- wrong the moment x is
+        # the *quantitative* channel and y is the domain one instead
+        # (`area_vertical.vl.json`'s own `x: {aggregate: "sum", field:
+        # "Weight_in_lbs"}, y: {timeUnit: "year", field: "Year"}`, an area
+        # chart running sideways). This affects two things: which field the
+        # rows get sorted by before drawing (a line/area connects points
+        # *in order* -- sorting by the wrong axis produces a scrambled
+        # zigzag instead of a smooth curve/fill), and, for `area`
+        # specifically, `fill_betweenx()` (fills horizontally, at each y
+        # position) instead of `fill_between()` (fills vertically, at each
+        # x position) -- the two are not interchangeable.
+        #
+        # A plain `is_quantitative()` check on both channels (`_render_bar()`'s
+        # own orientation heuristic) isn't enough here: a bare, *single*
+        # `timeUnit` like `"year"` reduces to a plain int (this project's
+        # own cyclic-timeUnit convention -- see `timeunit.py`'s own module
+        # docstring), which `is_quantitative()` correctly reports as
+        # quantitative too, making *both* channels look quantitative in
+        # this exact spec. A `timeUnit`-bearing channel is excluded from
+        # counting as the "value" channel here specifically -- a temporal
+        # sequence, even one reduced to a bare cyclic integer, is
+        # overwhelmingly the domain/sequence axis, essentially never the
+        # thing actually being measured.
+        def _is_value_channel(d: dict) -> bool:
+            return is_quantitative(d) and not d.get("timeUnit") and not d.get("_was_timeunit")
+
+        horizontal = _is_value_channel(x_def) and not _is_value_channel(y_def)
+        domain_field_for_sort = y_def.get("field") if horizontal else x_def.get("field")
         alpha = _opacity_value(encoding, mark_props)
-        y2 = encoding.get("y2")
-        base_expr = f"{data_var}[{y2['field']!r}]" if isinstance(y2, dict) and y2.get("field") else "0"
+        value_channel = "x" if horizontal else "y"
+        companion = encoding.get(f"{value_channel}2")
+        base_expr = f"{data_var}[{companion['field']!r}]" if isinstance(companion, dict) and companion.get("field") else "0"
         # `mark: {type: "line", point: true}` (or a style-override object,
         # `{point: {color: ..., size: ...}}`) overlays a marker at each of
         # the line's own data points -- previously dropped entirely,
@@ -1214,11 +1405,12 @@ def _render_line_or_area(is_area: bool):
         marker_kw = ", marker='o', markersize=6, markeredgewidth=0" if (not is_area and point_prop) else ""
 
         def draw(rows, color, label):
-            # Sorted by x within each group -- a line/area is drawn by
-            # connecting points *in order*, and grouping by color/detail
-            # doesn't itself guarantee the rows within one group already
-            # arrived in x order (e.g. after a `groupby()` regrouping).
-            sort_stmt = f"{rows} = {rows}.sort_values({x_field_for_sort!r})" if x_field_for_sort else None
+            # Sorted by the domain axis within each group -- a line/area is
+            # drawn by connecting points *in order*, and grouping by
+            # color/detail doesn't itself guarantee the rows within one
+            # group already arrived in that order (e.g. after a
+            # `groupby()` regrouping).
+            sort_stmt = f"{rows} = {rows}.sort_values({domain_field_for_sort!r})" if domain_field_for_sort else None
             rx = x_col if rows == data_var else x_col.replace(data_var, rows)
             ry = y_col if rows == data_var else y_col.replace(data_var, rows)
             label_kw = f", label={label}" if label else ""
@@ -1227,7 +1419,10 @@ def _render_line_or_area(is_area: bool):
                 out.append(sort_stmt)
             if is_area:
                 base = base_expr if rows == data_var else base_expr.replace(data_var, rows)
-                out.append(f"{ax_var}.fill_between({rx}, {base}, {ry}, color={color}, alpha={alpha}{label_kw})")
+                if horizontal:
+                    out.append(f"{ax_var}.fill_betweenx({ry}, {base}, {rx}, color={color}, alpha={alpha}{label_kw})")
+                else:
+                    out.append(f"{ax_var}.fill_between({rx}, {base}, {ry}, color={color}, alpha={alpha}{label_kw})")
             else:
                 out.append(f"{ax_var}.plot({rx}, {ry}, color={color}, alpha={alpha}{label_kw}{marker_kw})")
             return out
@@ -1236,6 +1431,26 @@ def _render_line_or_area(is_area: bool):
         group_field = _color_source(encoding, mark_props)[0]
         if group_field and not _legend_hidden(encoding.get("color")):
             stmts.append(_legend_stmt(ax_var, group_field))
+        # `mark: {invalid: null}` means "don't filter invalid rows" (unlike
+        # the default, `"filter"`, which drops them before the scale's own
+        # domain is even computed) -- so, unlike the default case, the
+        # *other* channel's own null values must not shrink the drawn
+        # extent's domain axis: `area_invalid_null.vl.json`'s own edge rows
+        # (`x: -1, y: null` / `x: 10, y: null`) have a perfectly real `x`,
+        # only `y` is null, but `fill_between()`'s own internal masking
+        # excludes a NaN-`y` row from its bounding box entirely, silently
+        # cropping the visible x-axis range to only the *valid* rows'
+        # extent (missing real Vega-Lite's own -1..10 domain).
+        # `update_datalim`/`autoscale_view()` extends (not overwrites) the
+        # existing view to include the domain field's own full range.
+        if "invalid" in mark_props and mark_props.get("invalid") is None:
+            domain_col = y_col if horizontal else x_col
+            lim_fn = "set_ylim" if horizontal else "set_xlim"
+            cur_fn = "get_ylim" if horizontal else "get_xlim"
+            stmts.append(
+                f"{ax_var}.{lim_fn}(min({ax_var}.{cur_fn}()[0], ({domain_col}).min()), "
+                f"max({ax_var}.{cur_fn}()[1], ({domain_col}).max()))"
+            )
         return stmts
 
     return render
@@ -1324,7 +1539,11 @@ def _render_tick(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
         half = "(0.45 / __n_dodge)"
         if by_color:
             kind, var = _categorical_color_lookup(encoding.get("color"), data_var, stmts)
-            color_expr = f"{var}.get(__dk, {DEFAULT_COLOR})" if kind == "map" else f"{var}[__i % len({var})]"
+            color_expr = (
+                "str(__dk)" if kind == "raw"
+                else f"{var}.get(__dk, {DEFAULT_COLOR})" if kind == "map"
+                else f"{var}[__i % len({var})]"
+            )
         else:
             color_expr = fixed_color
         stmts.append("for __i, __dk in enumerate(__dodge_cats):")
@@ -1388,6 +1607,24 @@ def _render_text(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
     stmts += xs + ys
     stmts += _axis_setup_stmts(ax_var, "x", x_def, data_var)
     stmts += _axis_setup_stmts(ax_var, "y", y_def, data_var)
+    # `bandPosition` (most often paired with an implicit-stacking `x2`/`y2`
+    # companion `stack.py`'s own `apply_stacking_to_encoding()` adds --
+    # `stacked_bar_h_normalized_labeled.vl.json`'s own label layer, meant
+    # to sit centered within each stacked segment rather than pinned to
+    # its own end) blends the position with its companion instead of using
+    # the position channel's own field alone -- `0.5` (the common case)
+    # lands exactly at the segment's midpoint.
+    for channel, col in (("x", x_col), ("y", y_col)):
+        def_ = x_def if channel == "x" else y_def
+        band = def_.get("bandPosition")
+        companion = encoding.get(f"{channel}2")
+        if isinstance(band, (int, float)) and isinstance(companion, dict) and companion.get("field"):
+            companion_col = f"{data_var}[{companion['field']!r}]"
+            blended = f"({companion_col} + {band!r} * ({col} - {companion_col}))"
+            if channel == "x":
+                x_col = blended
+            else:
+                y_col = blended
     field = text_def["field"]
     # `text` draws via one `df.iterrows()`-adjacent `zip()` loop, not
     # `_grouped_or_single()`'s own one-call-per-group idiom every other

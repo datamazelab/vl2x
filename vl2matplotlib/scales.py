@@ -126,8 +126,22 @@ def position_column(channel: str, def_: dict, data_var: str) -> tuple[str, list[
         return f"{data_var}[{field!r}]", []
     cats = category_var(channel, data_var)
     pos_col = f"__{channel}_pos"
+    # An explicit `sort: null` (distinct from the key being *absent*,
+    # which means "sort ascending," `ORDINAL_SORT_KEY`'s own default)
+    # is a spec author deliberately asking to keep the data's own
+    # original row order instead -- `waterfall_chart.vl.json`'s own `x:
+    # {field: "label", sort: null}`, whose whole narrative (Begin -> Jan
+    # -> Feb -> ... -> Dec -> End) depends on NOT being re-sorted
+    # alphabetically. `.unique()` already returns values in first-
+    # occurrence order, so this only needs to skip the `sorted(...)` call.
+    sort_is_null = "sort" in def_ and def_.get("sort") is None
+    cats_expr = (
+        f"{data_var}[{field!r}].dropna().unique().tolist()"
+        if sort_is_null
+        else f"sorted({data_var}[{field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})"
+    )
     stmts = [
-        f"{cats} = sorted({data_var}[{field!r}].dropna().unique().tolist(), key={ORDINAL_SORT_KEY})",
+        f"{cats} = {cats_expr}",
         f"{data_var}[{pos_col!r}] = pd.Categorical({data_var}[{field!r}], categories={cats}).codes.astype(float)",
         f"{data_var}.loc[{data_var}[{pos_col!r}] < 0, {pos_col!r}] = float('nan')",
     ]

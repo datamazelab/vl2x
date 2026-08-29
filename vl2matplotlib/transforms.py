@@ -20,7 +20,7 @@ from .expr import translate_expr
 from .literals import format_value, sanitize_identifier
 from .timeunit import is_supported_timeunit, timeunit_expr
 
-SUPPORTED_TRANSFORM_KEYS = {"filter", "calculate", "aggregate", "bin", "timeUnit", "window", "joinaggregate", "fold", "density", "pivot", "quantile"}
+SUPPORTED_TRANSFORM_KEYS = {"filter", "calculate", "aggregate", "bin", "timeUnit", "window", "joinaggregate", "fold", "density", "pivot", "quantile", "stack"}
 
 
 def render_transforms(transform_list: list, data_var: str, ignore_unsupported: bool = False) -> list[str]:
@@ -59,6 +59,8 @@ def _render_one(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
         return _render_pivot(t, data_var, ignore_unsupported)
     if "quantile" in t:
         return _render_quantile(t, data_var, ignore_unsupported)
+    if "stack" in t:
+        return _render_stack_transform(t, data_var, ignore_unsupported)
     key = next(iter(t), "<unknown>")
     if ignore_unsupported:
         return [f"# vl2matplotlib: skipped unsupported transform type {key!r} (ignore_unsupported)"]
@@ -139,11 +141,21 @@ def _render_aggregate(t: dict, data_var: str, ignore_unsupported: bool) -> list[
             if ignore_unsupported:
                 continue
             raise ValueError(f"Unsupported aggregate op: {op!r}")
-        out = sanitize_identifier(a.get("as") or (op if op == "count" else f"{op}_{a.get('field')}"))
+        # `true_out` is the spec's own literal `as` name -- what a later
+        # transform/encoding will always refer to it by (`rect_mosaic_
+        # simple.vl.json`'s own `as: "count_*"`, then read back by a `stack`
+        # transform's own `stack: "count_*"`). `out` (`sanitize_identifier()`)
+        # is only needed for pandas' own named-aggregation *keyword-arg*
+        # syntax below (`.agg(out=(src, func))` requires a valid Python
+        # identifier); when the two differ, the resulting column is renamed
+        # back to `true_out` afterward so nothing downstream ever sees the
+        # sanitized name.
+        true_out = a.get("as") or (op if op == "count" else f"{op}_{a.get('field')}")
+        out = sanitize_identifier(true_out)
         if op == "count":
-            agg_pairs.append((out, None, "'size'"))
+            agg_pairs.append((out, true_out, None, "'size'"))
         else:
-            agg_pairs.append((out, a["field"], agg_expr(op)))
+            agg_pairs.append((out, true_out, a["field"], agg_expr(op)))
 
     # Two aggregate entries with the same explicit/derived `as` name would
     # otherwise repeat a keyword arg (named-agg case) or a dict key
@@ -158,19 +170,22 @@ def _render_aggregate(t: dict, data_var: str, ignore_unsupported: bool) -> list[
 
     if groupby:
         stmts = []
-        if any(src is None for _, src, _ in unique_agg_pairs):
+        if any(src is None for _, _, src, _ in unique_agg_pairs):
             stmts.append(f"{data_var}['__count__'] = 1")
-        named = ", ".join(f"{out}=({(src or '__count__')!r}, {func})" for out, src, func in unique_agg_pairs)
+        named = ", ".join(f"{out}=({(src or '__count__')!r}, {func})" for out, _, src, func in unique_agg_pairs)
         group_key = groupby[0] if len(groupby) == 1 else groupby
         stmts.append(f"{data_var} = {data_var}.groupby({group_key!r}, as_index=False).agg({named})")
+        renames = {out: true_out for out, true_out, _, _ in unique_agg_pairs if out != true_out}
+        if renames:
+            stmts.append(f"{data_var} = {data_var}.rename(columns={renames!r})")
         return stmts
 
     parts = []
-    for out, src, func in unique_agg_pairs:
+    for _, true_out, src, func in unique_agg_pairs:
         if src is None:
-            parts.append(f"{out!r}: len({data_var})")
+            parts.append(f"{true_out!r}: len({data_var})")
         else:
-            parts.append(f"{out!r}: {data_var}[{src!r}].agg({func})")
+            parts.append(f"{true_out!r}: {data_var}[{src!r}].agg({func})")
     return [f"{data_var} = pd.DataFrame([{{{', '.join(parts)}}}])"]
 
 
@@ -206,7 +221,12 @@ def _render_joinaggregate(t: dict, data_var: str, ignore_unsupported: bool) -> l
             if ignore_unsupported:
                 continue
             raise ValueError(f"Unsupported aggregate op: {op!r}")
-        out = sanitize_identifier(a.get("as") or (op if op == "count" else f"{op}_{a.get('field')}"))
+        # Unlike `_render_aggregate()`'s own named-aggregation keyword-arg
+        # syntax, a plain `data_var[out] = ...` bracket assignment (below)
+        # never needs `out` to be a valid Python identifier at all -- it's
+        # just a string key -- so the spec's own literal `as` name is used
+        # directly here, with no `sanitize_identifier()` detour to undo.
+        out = a.get("as") or (op if op == "count" else f"{op}_{a.get('field')}")
         field = a.get("field")
         if op == "count" and not field:
             needs_count_col = True
@@ -264,6 +284,21 @@ def _render_quantile(t: dict, data_var: str, ignore_unsupported: bool) -> list[s
     return [
         f"{data_var} = vl_quantile({data_var}, {field!r}, groupby={format_value(t.get('groupby') or [])}, "
         f"step={step!r}, as_names=({as_names[0]!r}, {as_names[1]!r}))"
+    ]
+
+
+def _render_stack_transform(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
+    # An *explicit* version of `stack.py`'s own implicit per-mark
+    # stacking, computed here as real `as` columns instead
+    # (`stacked_bar_population_transform.vl.json`'s own shape). Delegated
+    # to the shared `vl_stack()` runtime helper -- see its own docstring.
+    field = t["stack"]
+    as_names = t["as"] if isinstance(t.get("as"), list) and len(t["as"]) == 2 else [f"{field}_start", f"{field}_end"]
+    offset = t.get("offset") or "zero"
+    return [
+        f"{data_var} = vl_stack({data_var}, {field!r}, groupby={format_value(t.get('groupby') or [])}, "
+        f"sort={format_value(t.get('sort') or [])}, offset={offset!r}, "
+        f"as_names=({as_names[0]!r}, {as_names[1]!r}))"
     ]
 
 

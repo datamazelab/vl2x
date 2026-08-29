@@ -137,7 +137,19 @@ def _prepare_aggregated(encoding: dict, agg_channels: dict, data_var: str, ignor
             expr = timeunit_expr(unit, f"row[{field!r}]")
             stmts.append(f"{data_var}[{out!r}] = {data_var}.apply(lambda row: {expr}, axis=1)")
             field = out
-            rewritten[ch] = {**d, "field": field, "timeUnit": None, "type": _rewritten_type(d)}
+            # `_was_timeunit` is an internal-only marker (never a real
+            # Vega-Lite encoding key) surviving this rewrite specifically
+            # so a downstream consumer can still tell "this field was
+            # originally a `timeUnit`, even a *cyclic* single-component one
+            # `_rewritten_type()` above had to bake in as plain
+            # `"quantitative"` for orientation-inference purposes" -- used
+            # by `marks.py`'s own `_render_line_or_area()` to tell a
+            # genuine value channel (an `aggregate`) apart from a
+            # domain/sequence one that merely happens to read as
+            # quantitative too (`area_vertical.vl.json`'s own bare
+            # `timeUnit: "year"`, which reduces to a plain int -- see
+            # `timeunit.py`'s own module docstring).
+            rewritten[ch] = {**d, "field": field, "timeUnit": None, "type": _rewritten_type(d), "_was_timeunit": True}
         if field not in groupby_fields:
             groupby_fields.append(field)
         groupby_channels.append(ch)

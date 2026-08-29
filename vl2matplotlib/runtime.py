@@ -35,21 +35,33 @@ def vl_window(
     "descending"}` dicts. `frame` is a `(start, end)` pair of row offsets
     *relative to the current row* (Vega-Lite's own convention) -- `None`
     for either end means unbounded in that direction; `frame=None`
-    (nothing specified at all) means the whole partition, matching
-    Vega-Lite's own default when no `frame` is given.
+    (nothing specified at all) means `(None, 0)` -- every row up to and
+    including the current one, i.e. a running/cumulative aggregate, Vega-
+    Lite's own real default (*not* the whole partition, an earlier,
+    unverified assumption this docstring used to make: a real corpus
+    example, `waterfall_chart.vl.json`'s own `window: [{op: "sum", field:
+    "amount", as: "sum"}]` with no `frame` given at all, only makes sense
+    as a running total -- each bar's own top is the cumulative sum *up to
+    that point*, not the grand total repeated identically on every row,
+    which is what the whole-partition assumption produced).
 
-    Supported ops: `row_number`, `rank`, `dense_rank`, `count`, `sum`,
-    `mean`/`average`, `min`, `max`, `distinct`. Ops this doesn't implement
-    (`lag`/`lead`/`first_value`/`last_value`/`percent_rank`/`cume_dist`/
-    `ntile`, `median`/`stdev`/`variance`/`q1`/`q3`/`ci0`/`ci1`) fall back to
-    the row's own `field` value unchanged -- a documented simplification,
-    not a silent wrong answer masquerading as a real one.
+    Supported ops: `row_number`, `rank`, `dense_rank`, `lag`, `lead`,
+    `count`, `sum`, `mean`/`average`, `min`, `max`, `distinct`. `lag`/`lead`
+    take an optional `param` (default 1, matching Vega-Lite's own default)
+    -- the row exactly that many positions before/after the current one in
+    partition order, ignoring `frame` entirely (used together with a
+    `calculate` step to impute a null value from its neighbors,
+    `window_impute_null.vl.json`'s own shape). Ops this doesn't implement
+    (`first_value`/`last_value`/`percent_rank`/`cume_dist`/`ntile`,
+    `median`/`stdev`/`variance`/`q1`/`q3`/`ci0`/`ci1`) fall back to the
+    row's own `field` value unchanged -- a documented simplification, not
+    a silent wrong answer masquerading as a real one.
     """
     groupby = groupby or []
     sort = sort or []
     order_fields = [s["field"] if isinstance(s, dict) else s for s in sort]
     order_ascending = [not (isinstance(s, dict) and s.get("order") == "descending") for s in sort]
-    lo_off, hi_off = frame if frame is not None else (None, None)
+    lo_off, hi_off = frame if frame is not None else (None, 0)
 
     def _process_partition(g: "pd.DataFrame") -> "pd.DataFrame":
         if order_fields:
@@ -61,8 +73,36 @@ def vl_window(
             if op == "row_number":
                 g[out] = range(1, n + 1)
             elif op in ("rank", "dense_rank"):
-                key = g[order_fields[0]] if order_fields else pd.Series(range(n))
-                g[out] = key.rank(method="min" if op == "rank" else "dense").astype(int)
+                # Ranked on the *full* `sort` order (every field, in
+                # order, as a tiebreaker) -- not just the first sort
+                # field, which silently ranked ties wrong the moment a
+                # second field mattered (`window_rank.vl.json`'s own
+                # `sort: [{field: "point", ...}, {field: "diff", ...}]`:
+                # two teams tied on `point` alone need `diff` to break the
+                # tie correctly). `g` is already fully sorted by every
+                # `order_fields` column above, so this only needs to find
+                # each row where that whole sort-key tuple first differs
+                # from the previous row (SQL's own `RANK()`/`DENSE_RANK()`
+                # definition applied to an already-ordered partition).
+                if order_fields:
+                    key_df = g[order_fields]
+                    changed = (key_df != key_df.shift()).any(axis=1)
+                    changed.iloc[0] = True
+                else:
+                    changed = pd.Series([True] * n)
+                if op == "dense_rank":
+                    g[out] = changed.cumsum().astype(int)
+                else:
+                    positions = pd.Series(range(1, n + 1))
+                    g[out] = positions.where(changed).ffill().astype(int)
+            elif op in ("lag", "lead"):
+                # Unlike every other op here, `lag`/`lead` ignore `frame`
+                # entirely (Vega-Lite's own semantics: always exactly one
+                # specific row, `param` positions before/after the current
+                # one, never a range) -- a single vectorized `.shift()`,
+                # not the generic per-row frame loop below.
+                offset = spec.get("param", 1) if isinstance(spec.get("param"), int) else 1
+                g[out] = g[field].shift(offset if op == "lag" else -offset)
             else:
                 vals = g[field] if field else None
                 col = []
@@ -262,3 +302,58 @@ def vl_quantile(
     if not parts:
         return pd.DataFrame(columns=[prob_name, value_name, *groupby])
     return pd.concat(parts, ignore_index=True)
+
+
+def vl_stack(
+    df: "pd.DataFrame",
+    field: str,
+    groupby: list[str] | None = None,
+    sort: list[dict] | None = None,
+    offset: str = "zero",
+    as_names: tuple[str, str] = ("stack_start", "stack_end"),
+) -> "pd.DataFrame":
+    """Vega-Lite's top-level `stack` transform: an *explicit* version of
+    the implicit per-mark stacking `stack.py`'s own `plan_stacking()`/
+    `render_stacking_statements()` already compute for a plain `color`/
+    `detail`-grouped bar/area -- same `"zero"`/`"normalize"`/`"center"`
+    offset math, but produced as real `as_names` columns by a `transform`
+    entry instead of inferred from the mark's own encoding
+    (`stacked_bar_population_transform.vl.json`'s own shape: computing
+    `v1`/`v2` explicitly so `y`/`y2` can reference them directly, rather
+    than leaving Vega-Lite to stack `y` on its own).
+
+    For each `groupby` partition, rows are ordered by `sort` (a list of
+    Vega-Lite `{"field": ..., "order": "ascending"|"descending"}` dicts,
+    defaulting to the data's own row order when omitted) before
+    cumulative-summing `field`."""
+    start_name, end_name = as_names
+    groupby = groupby or []
+    sort = sort or []
+    sort_fields = [s["field"] if isinstance(s, dict) else s for s in sort]
+    sort_ascending = [not (isinstance(s, dict) and s.get("order") == "descending") for s in sort]
+
+    def _stack_group(g: "pd.DataFrame") -> "pd.DataFrame":
+        if sort_fields:
+            g = g.sort_values(sort_fields, ascending=sort_ascending, kind="mergesort")
+        cum = g[field].cumsum()
+        total = g[field].sum()
+        if offset == "normalize":
+            denom = total if total else 1
+            end = cum / denom
+            start = end - g[field] / denom
+        elif offset == "center":
+            half = total / 2
+            end = cum - half
+            start = end - g[field]
+        else:
+            end = cum
+            start = end - g[field]
+        g[start_name] = start
+        g[end_name] = end
+        return g
+
+    if groupby:
+        result = df.groupby(groupby, group_keys=False, dropna=False).apply(_stack_group)
+    else:
+        result = _stack_group(df)
+    return result.reset_index(drop=True)

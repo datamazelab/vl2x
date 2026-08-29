@@ -54,6 +54,10 @@ class Emitter:
         # library's `statistics` module -- detected and conditionally
         # imported the same way.
         self.uses_statistics = False
+        # An explicit `axis.format` on a temporal channel (`marks.py`'s own
+        # `_axis_setup_stmts()`) is the only generated-code shape that
+        # needs `matplotlib.dates` -- conditionally imported the same way.
+        self.uses_mdates = False
         # Every `vl2matplotlib.runtime` helper function (`vl_window`, ...)
         # a generated statement actually calls -- auto-detected the same
         # way `uses_math` is, so `spec_to_code()`'s own header only ever
@@ -77,6 +81,8 @@ class Emitter:
             self.uses_line_collection = True
         if "statistics.NormalDist(" in line:
             self.uses_statistics = True
+        if "mdates." in line:
+            self.uses_mdates = True
         self.uses_runtime.update(_RUNTIME_CALL_RE.findall(line))
 
 
@@ -270,10 +276,20 @@ def translate_layer(node: dict, emitter: Emitter, hint: str, ax_var: str, ignore
 
 
 def _merge_down(child: dict, wrapper: dict) -> dict:
+    # A wrapper's own top-level `transform` is written against the
+    # wrapper's own dataset's fields -- only meaningful for a child that
+    # actually *inherits* that dataset. A child with its own explicit
+    # `data` (a real corpus shape: `wheat_wages.vl.json`'s own monarchs.json
+    # layers, siblings of the main wheat/wages ones sharing the wrapper's
+    # `calculate: "+datum.year + 5"`) has completely different fields --
+    # force-prepending the wrapper's transform onto it anyway crashed with
+    # a `KeyError` the moment that transform referenced a field the
+    # child's own data doesn't have at all.
+    child_has_own_data = "data" in child
     child = dict(child)
-    if "data" not in child and wrapper.get("data") is not None:
+    if not child_has_own_data and wrapper.get("data") is not None:
         child["data"] = wrapper["data"]
-    if wrapper.get("transform"):
+    if wrapper.get("transform") and not child_has_own_data:
         child["transform"] = list(wrapper["transform"]) + list(child.get("transform", []))
     if "encoding" in wrapper:
         merged_enc = dict(wrapper["encoding"])
@@ -417,6 +433,8 @@ def translate_facet(node: dict, emitter: Emitter, hint: str, ignore_unsupported:
         emitter.uses_line_collection = True
     if inner.uses_statistics:
         emitter.uses_statistics = True
+    if inner.uses_mdates:
+        emitter.uses_mdates = True
     emitter.uses_runtime.update(inner.uses_runtime)
     emitter.add_stmt(f"{fig_v}.tight_layout()")
 
@@ -824,6 +842,8 @@ def spec_to_code(
         imports.append("from matplotlib.collections import LineCollection")
     if emitter.uses_statistics:
         imports.append("import statistics")
+    if emitter.uses_mdates:
+        imports.append("import matplotlib.dates as mdates")
     if emitter.uses_runtime:
         names = ", ".join(sorted(emitter.uses_runtime))
         imports.append(f"from vl2matplotlib.runtime import {names}")

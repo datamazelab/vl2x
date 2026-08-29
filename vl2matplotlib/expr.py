@@ -376,12 +376,193 @@ def _rewrite_bare_math_funcs(expr: str) -> str:
     return expr
 
 
+_UNARY_PLUS_PREV_CHARS = set("(,?:+-*/%<>=!&|")
+
+
+def _rewrite_unary_plus(expr: str) -> str:
+    """A leading (unambiguously *unary*, not binary addition) `+`
+    immediately followed by a `row[...]` bracket access or a parenthesized
+    group -- JS's own unary `+` string-to-number coercion
+    (`wheat_wages.vl.json`'s own `"+datum.year + 5"`,
+    `"+datum.start + (+datum.end - +datum.start)/2"`). A `+` counts as
+    unary here only when the previous non-whitespace character (if any) is
+    one that can never end a value expression -- start-of-string, an
+    operator, `(`, `,`, `?`, `:` -- distinguishing it from an ordinary
+    *binary* `+` (addition), which this project deliberately does *not*
+    auto-coerce (see `_MATH_FUNCS`'s own docstring for why: with no
+    reliable way to tell "two numbers" from "a string and a number" from
+    the expression text alone, guessing wrong there risks silently
+    stringifying data that was never meant to be a string). Unary `+` has
+    no such ambiguity -- it always means "coerce this one operand to a
+    number" -- so only the immediately-following primary expression is
+    wrapped in `float(...)`, matching JS's own unary-operator precedence
+    (binds tighter than the binary `+`/`-` that commonly follows it in the
+    same expression). Run *before* `_LOGICAL_REPLACEMENTS`/`_rewrite_ternary()`,
+    while `&&`/`||`/`?`/`:` are still their own literal JS characters (not
+    yet `and`/`or`/`if`/`else` words), so the single-character
+    `_UNARY_PLUS_PREV_CHARS` lookback stays valid."""
+    out = []
+    i, n = 0, len(expr)
+    prev = ""
+    while i < n:
+        ch = expr[i]
+        if ch in "'\"":
+            j = expr.find(ch, i + 1)
+            j = n - 1 if j == -1 else j
+            out.append(expr[i : j + 1])
+            prev = expr[j]
+            i = j + 1
+            continue
+        if ch == "+" and (prev == "" or prev in _UNARY_PLUS_PREV_CHARS):
+            k = i + 1
+            while k < n and expr[k].isspace():
+                k += 1
+            operand_end = None
+            if expr[k : k + 4] == "row[":
+                m, depth = k + 4, 1
+                while m < n and depth > 0:
+                    if expr[m] in "'\"":
+                        q = expr.find(expr[m], m + 1)
+                        m = (q + 1) if q != -1 else n
+                        continue
+                    if expr[m] == "[":
+                        depth += 1
+                    elif expr[m] == "]":
+                        depth -= 1
+                    m += 1
+                operand_end = m
+            elif k < n and expr[k] == "(":
+                m, depth = k, 0
+                while m < n:
+                    if expr[m] in "'\"":
+                        q = expr.find(expr[m], m + 1)
+                        m = (q + 1) if q != -1 else n
+                        continue
+                    if expr[m] == "(":
+                        depth += 1
+                    elif expr[m] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            m += 1
+                            break
+                    m += 1
+                operand_end = m
+            if operand_end is not None:
+                out.append(f"float({expr[k:operand_end]})")
+                prev = ")"
+                i = operand_end
+                continue
+        out.append(ch)
+        if not ch.isspace():
+            prev = ch
+        i += 1
+    return "".join(out)
+
+
+def _split_top_level_plus(expr: str) -> list[str]:
+    """Split `expr` on depth-0 `+` characters (skipping quoted strings and
+    bracketed groups), returning each term with surrounding whitespace
+    stripped. Used by `_rewrite_string_concat()` below -- run *after*
+    `_rewrite_ternary()`, so every `?:` has already become an `if`/`else`
+    expression with no bare `+`/`-` characters of its own to worry about."""
+    terms = []
+    depth = 0
+    start = 0
+    i, n = 0, len(expr)
+    while i < n:
+        ch = expr[i]
+        if ch in "'\"":
+            j = expr.find(ch, i + 1)
+            i = (j + 1) if j != -1 else n
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and ch == "+":
+            terms.append(expr[start:i].strip())
+            start = i + 1
+        i += 1
+    terms.append(expr[start:].strip())
+    return terms
+
+
+_QUOTED_STRING_RE = re.compile(r"^['\"].*['\"]$")
+_TERNARY_SHAPE_RE = re.compile(r"^\((.*)\)\s+if\s+\(.*\)\s+else\s+\((.*)\)$")
+
+
+def _strip_matching_outer_parens(term: str) -> str:
+    """`((A) if (B) else (C))` -> `(A) if (B) else (C)` -- a ternary's own
+    *original* JS-source parens (`(cond ? a : b)`, preserved literally by
+    `_rewrite_ternary_in_groups()`) wrap the *already*-parenthesized `(A)
+    if (B) else (C)` shape `_rewrite_ternary()` itself produces, one layer
+    deeper than `_TERNARY_SHAPE_RE` expects. Strips *only* a genuinely
+    redundant outer pair -- one whose opening paren's own matching close is
+    the string's last character, not some other unrelated closing paren
+    that merely happens to be there."""
+    while term.startswith("(") and term.endswith(")"):
+        depth = 0
+        matches_at_end = True
+        for idx, ch in enumerate(term):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and idx != len(term) - 1:
+                    matches_at_end = False
+                    break
+        if not matches_at_end:
+            break
+        term = term[1:-1].strip()
+    return term
+
+
+def _looks_like_string_literal(term: str) -> bool:
+    """Whether `term` (already `_rewrite_ternary()`-processed Python) is
+    *definitely* a string -- a bare quoted literal, or a ternary (`(A) if
+    (B) else (C)`, `_rewrite_ternary()`'s own output shape) whose both
+    branches are. Used only to decide when `_rewrite_string_concat()` can
+    safely coerce the *other* side of a `+` to a string too."""
+    term = _strip_matching_outer_parens(term.strip())
+    if _QUOTED_STRING_RE.match(term):
+        return True
+    m = _TERNARY_SHAPE_RE.match(term)
+    if m:
+        return _looks_like_string_literal(m.group(1)) and _looks_like_string_literal(m.group(2))
+    return False
+
+
+def _rewrite_string_concat(expr: str) -> str:
+    """JS's `+` silently does string concatenation (coercing the *other*
+    operand to a string) the moment either side is already a string --
+    Python's `+` raises `TypeError` on a `str`/non-`str` mix instead. Only
+    rewritten when a term is *unambiguously* a string (a literal, or a
+    ternary whose both branches are literals -- the common `(cond ? '+' :
+    '') + value` "sign prefix" idiom, e.g. `waterfall_chart.vl.json`'s own
+    `text_amount` calculation): a bare field reference might be numeric or
+    a string, unknowable from the expression text alone, so that case is
+    left untouched entirely -- same reasoning `_MATH_FUNCS`'s own docstring
+    already gives for why a bare unary `+` stays unimplemented."""
+    if "+" not in expr:
+        return expr
+    terms = _split_top_level_plus(expr)
+    if len(terms) < 2:
+        return expr
+    changed = False
+    for i in range(len(terms) - 1):
+        if _looks_like_string_literal(terms[i]) and not _looks_like_string_literal(terms[i + 1]):
+            terms[i + 1] = f"str({terms[i + 1]})"
+            changed = True
+    return " + ".join(terms) if changed else expr
+
+
 def translate_expr(expr: str) -> str:
     """Translate a single Vega expression string into a Python expression,
     assumed to run inside `lambda row: <result>` (or an f-string/format call
     for a `calculate` transform's own assignment)."""
     out = expr.strip()
     out = _rewrite_datum_refs(out)
+    out = _rewrite_unary_plus(out)
     out = _rewrite_date_components(out)
     out = _rewrite_if_calls(out)
     out = _rewrite_substring(out)
@@ -395,6 +576,7 @@ def translate_expr(expr: str) -> str:
         out = out.replace(js_name, py_name)
     out = _rewrite_bare_math_funcs(out)
     out = _rewrite_ternary(out)
+    out = _rewrite_string_concat(out)
     return out
 
 
