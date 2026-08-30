@@ -193,7 +193,28 @@ def render_stacking_statements(data_var: str, plan: dict) -> list[str]:
         stmts.append(f"{data_var}[{end_col!r}] = {data_var}.groupby({cat!r})[{field!r}].cumsum() - {half_total}")
         stmts.append(f"{data_var}[{start_col!r}] = {data_var}[{end_col!r}] - {data_var}[{field!r}]")
     else:
-        stmts.append(f"{data_var}[{end_col!r}] = {data_var}.groupby({cat!r})[{field!r}].cumsum()")
+        # Real Vega-Lite's own "zero" stack accumulates POSITIVE and
+        # NEGATIVE values SEPARATELY within each category (confirmed
+        # against the real compiler's own output, and mirroring vl2d3's
+        # own identical fix for the same shape) -- a naive single running
+        # cumsum blends the two together in whatever row order they
+        # happen to arrive in, which is wrong the moment a category's own
+        # rows straddle zero (bar_diverging_stack_population_pyramid.vl
+        # .json's own shape: a signed "signed_people" value, negative for
+        # one gender and positive for the other at the SAME age/category
+        # -- a genuine population-pyramid diverging bar, not a same-
+        # signed stack). Vectorized rather than a per-row loop: each
+        # row's own running total is the POSITIVE-only cumsum through
+        # that row if its own value is >= 0, or the NEGATIVE-only cumsum
+        # otherwise -- the other sign's own contributions are zeroed out
+        # of that row's own running column entirely, so they never mix.
+        pos_col = f"__{field}_stack_pos"
+        neg_col = f"__{field}_stack_neg"
+        stmts.append(f"{data_var}[{pos_col!r}] = {data_var}[{field!r}].clip(lower=0)")
+        stmts.append(f"{data_var}[{neg_col!r}] = {data_var}[{field!r}].clip(upper=0)")
+        pos_cum = f"{data_var}.groupby({cat!r})[{pos_col!r}].cumsum()"
+        neg_cum = f"{data_var}.groupby({cat!r})[{neg_col!r}].cumsum()"
+        stmts.append(f"{data_var}[{end_col!r}] = np.where({data_var}[{field!r}] >= 0, {pos_cum}, {neg_cum})")
         stmts.append(f"{data_var}[{start_col!r}] = {data_var}[{end_col!r}] - {data_var}[{field!r}]")
 
     return stmts

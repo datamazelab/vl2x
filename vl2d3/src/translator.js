@@ -554,7 +554,14 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
   const defaultMarginTop = defaultHeight <= 50 ? Math.max(1, Math.round(defaultHeight * 0.3)) : 20;
   const defaultMarginBottom = defaultHeight <= 50 ? Math.max(1, Math.round(defaultHeight * 0.4)) : 30;
   const defaultMarginLeft = defaultWidth <= 80 ? Math.max(1, Math.round(defaultWidth * 0.3)) : 50;
-  const defaultMarginRight = defaultWidth <= 80 ? Math.max(1, Math.round(defaultWidth * 0.1)) : 20;
+  // `resolve: {scale: {y: "independent"}}` (the "dual axis" case, see
+  // this function's own scale-building section below) draws a second
+  // y-axis on the RIGHT edge -- the ordinary default right margin (20px,
+  // just enough for a bit of breathing room past the last tick) has no
+  // room at all for a whole second axis's own ticks/labels/title, which
+  // would otherwise render clipped against/past the SVG's own edge.
+  const hasIndependentY = Boolean(root.layer) && root.resolve && root.resolve.scale && root.resolve.scale.y === 'independent';
+  const defaultMarginRight = (defaultWidth <= 80 ? Math.max(1, Math.round(defaultWidth * 0.1)) : 20) + (hasIndependentY ? 50 : 0);
   b(`const marginTop = options.marginTop ?? ${formatValue(defaultMarginTop)};`);
   b(`const marginRight = options.marginRight ?? ${formatValue(defaultMarginRight)};`);
   b(`const marginBottom = options.marginBottom ?? ${formatValue(defaultMarginBottom)};`);
@@ -685,10 +692,30 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
 
   const allDataExpr = prepared.length > 1 ? `[${prepared.map(p => `...${p.dataVar}`).join(', ')}]` : prepared[0].dataVar;
 
+  // `resolve: {scale: {y: "independent"}}` on a `layer` composition (e.g.
+  // layer_dual_axis.vl.json) is Vega-Lite's own "dual axis" chart --
+  // every layer past the first gets its OWN y scale, sharing only the x
+  // axis with the first. Scoped to the common real-world shape (exactly
+  // this: the first layer keeps the ordinary shared-scale treatment
+  // below unchanged; every OTHER layer shares one single additional
+  // scale instead of one each) rather than a fully general N-way
+  // resolution-group partition. Previously `resolve` was never read at
+  // all, so every layer shared the SAME y scale/domain regardless -- a
+  // second layer on a much smaller magnitude (this spec's own
+  // precipitation-inches line next to a temperature-in-Celsius area)
+  // rendered squashed flat near zero instead of using its own scale.
+  const yIndependent = hasIndependentY;
+  const independentGroup = yIndependent ? prepared.slice(1) : [];
+  const primaryGroup = yIndependent ? prepared.slice(0, 1) : prepared;
+
   // -- shared scales --
   const scales = {};
 
-  for (const channel of ['x', 'y']) {
+  // Extracted so a second, INDEPENDENT y scale (the "dual axis" case,
+  // `yIndependent` above) can build itself the exact same way, just
+  // scoped to its own subset of `prepared` and its own combined data
+  // expression, instead of duplicating this whole derivation by hand.
+  function buildPositionScale(channel, subset, dataExpr, varNameOverride) {
     // `.find(d => d && (d.field || d.datum !== undefined))`, not `.find(Boolean)`: the first layer
     // declaring this channel at all commonly binds it to a literal
     // `{"value": ...}` instead of a real field (e.g.
@@ -700,8 +727,8 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
     // the whole chart, silently leaving the later layer's own real field
     // unscaled (its raw field value spliced in as a color/size/etc
     // literal instead).
-    const def = prepared.map(p => p.encoding[channel]).find(d => d && (d.field || d.datum !== undefined));
-    if (!def || 'value' in def) continue;
+    const def = subset.map(p => p.encoding[channel]).find(d => d && (d.field || d.datum !== undefined));
+    if (!def || 'value' in def) return null;
     // Layers sharing this scale can each declare the channel against a
     // *different* source field (e.g. a reference-band layer's own `x:
     // {field: "start"}` sharing an axis with the main series' `x: {field:
@@ -714,7 +741,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
     // is mapped down to its own values *before* combining, so the
     // resulting domain always spans every layer correctly regardless of
     // whether their field names happen to match.
-    const declaringChildren = prepared.filter(p => p.encoding[channel] && p.encoding[channel].field);
+    const declaringChildren = subset.filter(p => p.encoding[channel] && p.encoding[channel].field);
     // A stacked child's own field is the stack *top* -- for zero/normalize
     // stacking that alone still bounds the domain correctly (the baseline
     // never goes below 0, already covered by zeroBaseline below), but a
@@ -767,7 +794,7 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
     // in turn wrongly exclude a plain, un-ranged area/bar's actual value
     // axis too, e.g. this same spec's `area`-marked wages layer, which has
     // no y2 either but still needs its own zero baseline).
-    const zeroBaseline = prepared.some(p => {
+    const zeroBaseline = subset.some(p => {
       if (!isBarOrArea(p.mark) || !p.encoding[channel] || p.encoding[`${channel}2`]) return false;
       const xIsValue = p.encoding.x && p.encoding.x.type === 'quantitative';
       const yIsValue = p.encoding.y && p.encoding.y.type === 'quantitative';
@@ -790,22 +817,41 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
     // all).
     const categoryPadding =
       def.type === 'temporal' &&
-      !prepared.some(p => p.encoding[`${channel}2`]) &&
-      prepared.some(p => {
+      !subset.some(p => p.encoding[`${channel}2`]) &&
+      subset.some(p => {
         if (!isBarOrArea(p.mark) || !p.encoding[channel]) return false;
         const otherChannel = channel === 'x' ? 'y' : 'x';
         return p.encoding[otherChannel] && p.encoding[otherChannel].type === 'quantitative';
       });
     const scale = resolvePositionScale(channel, def, {
-      dataVar: allDataExpr,
+      dataVar: dataExpr,
       rangeExpr: dims[`${channel}RangeExpr`],
       zeroBaseline: zeroBaseline && def.type === 'quantitative',
       ignoreUnsupported,
       combinedValuesExpr,
       categoryPadding,
+      varName: varNameOverride,
     });
     b(scale.decl);
-    scales[channel] = scale;
+    return scale;
+  }
+
+  for (const channel of ['x', 'y']) {
+    const subset = channel === 'y' && yIndependent ? primaryGroup : prepared;
+    const dataExpr =
+      channel === 'y' && yIndependent
+        ? primaryGroup.length > 1
+          ? `[${primaryGroup.map(p => `...${p.dataVar}`).join(', ')}]`
+          : primaryGroup[0].dataVar
+        : allDataExpr;
+    const scale = buildPositionScale(channel, subset, dataExpr);
+    if (scale) scales[channel] = scale;
+  }
+  if (yIndependent && independentGroup.length) {
+    const dataExprB =
+      independentGroup.length > 1 ? `[${independentGroup.map(p => `...${p.dataVar}`).join(', ')}]` : independentGroup[0].dataVar;
+    const scaleB = buildPositionScale('y', independentGroup, dataExprB, 'yRight');
+    if (scaleB) scales.yRight = scaleB;
   }
   for (const [channel, resolver] of [
     ['color', resolveColorScale],
@@ -984,6 +1030,29 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
     }
     lines.push('');
   }
+  // The second ("dual axis") y scale's own RIGHT-edge axis -- mirrors the
+  // left one above exactly, just `d3.axisRight()` positioned at the
+  // opposite edge, and its own label/title read off `independentGroup`'s
+  // own first y-bearing layer instead of the primary one.
+  if (scales.yRight) {
+    const yRightDef = independentGroup.map(p => p.encoding.y).find(Boolean);
+    const yRightLabelDef = independentGroup.map(p => p.originalEncoding.y).find(Boolean);
+    if (!(yRightDef && yRightDef.axis === null)) {
+      b('svg.append("g")');
+      b('    .attr("transform", `translate(${width - marginRight},0)`)');
+      b('    .call(d3.axisRight(yRight));');
+      const label = yRightLabelDef && (yRightLabelDef.title || yRightLabelDef.field);
+      if (label) {
+        b('svg.append("text")');
+        b('    .attr("x", width - 6)');
+        b('    .attr("y", marginTop - 6)');
+        b('    .attr("text-anchor", "end")');
+        b('    .attr("font-size", "11px")');
+        b(`    .text(${formatValue(label)});`);
+      }
+      lines.push('');
+    }
+  }
 
   // -- marks --
   for (const p of prepared) {
@@ -1002,7 +1071,15 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
       typeof p.mark === 'string'
         ? {type: p.mark, ...configDefaults}
         : {...configDefaults, ...p.mark, ...resolveMarkPropExprs(p.mark, paramValues)};
-    let markCode = renderMark(mark, p.encoding, scales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
+    // A layer in the "dual axis" independent group (see this function's
+    // own scale-building section above) draws against its own separate
+    // `scales.yRight`, not the primary `scales.y` every other layer
+    // shares -- swapped in here as a plain substitute `y` entry so every
+    // mark renderer (which only ever reads `scales.y` by name, with no
+    // awareness of "which" y scale a layer belongs to) just works
+    // unmodified.
+    const markScales = yIndependent && independentGroup.includes(p) && scales.yRight ? {...scales, y: scales.yRight} : scales;
+    let markCode = renderMark(mark, p.encoding, markScales, dims, p.dataVar, ignoreUnsupported, p.extentParams);
     if (!/[;}]\s*$/.test(markCode)) markCode += ';';
     if (includeSourcePaths) {
       // The mark-drawing code below reads every one of this child's own

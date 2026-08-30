@@ -750,9 +750,185 @@ translate_spec <- function(spec, emitter, hint = "chart", ignore_unsupported = F
     return(translate_repeat(spec, emitter, hint, ignore_unsupported))
   }
   if (!is.null(spec$layer)) {
+    if (is_simple_dual_axis_layer(spec)) {
+      return(translate_dual_axis_layer(spec, emitter, hint, ignore_unsupported, path))
+    }
     return(translate_layer(spec, emitter, hint, ignore_unsupported, path))
   }
   translate_unit(spec, emitter, hint, ignore_unsupported, path)
+}
+
+# `resolve: {scale: {y: "independent"}}` ("dual axis"): every layer past
+# the first gets its OWN y-scale/domain, conventionally drawn on a SECOND
+# axis, while x stays fully shared -- matching the identical resolve
+# semantics already implemented for vl2d3 (a hand-rolled second D3 scale)
+# and vl2matplotlib (native `ax.twinx()`). Scoped to the exact two-group
+# shape this project's own corpus actually exercises (layer_dual_axis.vl
+# .json): exactly one primary + one secondary layer, neither faceted,
+# offset, or an arc mark -- combined with a dual axis these are rare
+# enough that falling back to the ordinary (single shared scale) layer
+# rendering is preferable to extending this further for cases no real
+# spec exercises.
+is_simple_dual_axis_layer <- function(spec) {
+  if (!identical(spec$resolve$scale$y, "independent")) return(FALSE)
+  if (!is.list(spec$layer) || length(spec$layer) != 2) return(FALSE)
+  if (!is.null(spec$facet) || !is.null(extract_facet_channels(spec$encoding %||% list()))) return(FALSE)
+  primary_child <- spec$layer[[1]]
+  secondary_child <- spec$layer[[2]]
+  if (!is.null(primary_child$layer) || !is.null(secondary_child$layer)) return(FALSE)
+  primary_mark <- if (is.character(primary_child$mark)) primary_child$mark else primary_child$mark$type
+  secondary_mark <- if (is.character(secondary_child$mark)) secondary_child$mark else secondary_child$mark$type
+  if (identical(primary_mark, "arc") || identical(secondary_mark, "arc")) return(FALSE)
+  wrapper_offset_channel <- intersect(names(spec$encoding %||% list()), c("xOffset", "yOffset"))
+  if (length(wrapper_offset_channel) > 0) return(FALSE)
+  !is.null(primary_child$encoding$y$field) && !is.null(secondary_child$encoding$y$field)
+}
+
+# The primary y-range for the dual-axis rescale below: an explicit
+# `scale.domain` wins (matching layer_dual_axis.vl.json's own primary
+# layer, `scale: {domain: [0, 30]}`); otherwise computed at RUNTIME (a
+# URL-sourced dataset's own real values aren't known at code-generation
+# time) from that field's own (and, for a ranged mark, its y2 companion's)
+# raw data -- an approximation of the true rendered range (an exact one
+# would mean re-deriving whatever groupby/stat ggplot2's own stat_summary()
+# computes internally, not otherwise exposed to this code), close enough
+# for a linear rescale whose only purpose is visual alignment, not exact
+# pixel-for-pixel parity with the other tools' own genuinely independent
+# scales.
+resolve_dual_axis_range <- function(def, data_var, fields) {
+  domain <- def$scale[["domain"]]
+  if (!is.null(domain) && is.null(names(domain)) && length(domain) == 2) {
+    return(list(lo = format_value(domain[[1]]), hi = format_value(domain[[2]])))
+  }
+  refs <- vapply(fields, function(f) sprintf("%s[[%s]]", data_var, render_string(unescape_field_path(f))), character(1))
+  combined <- sprintf("c(%s)", paste(refs, collapse = ", "))
+  list(lo = sprintf("min(%s, na.rm = TRUE)", combined), hi = sprintf("max(%s, na.rm = TRUE)", combined))
+}
+
+translate_dual_axis_layer <- function(spec, emitter, hint, ignore_unsupported = FALSE, path = "") {
+  base_hint <- if (identical(hint, "chart")) "layer" else hint
+  plot_var <- new_var(emitter, hint)
+  wrapper_encoding <- spec$encoding %||% list()
+
+  primary_child <- spec$layer[[1]]
+  secondary_child <- spec$layer[[2]]
+
+  wrapper_data_var <- new_var(emitter, paste0(base_hint, "_data"))
+  emit(emitter, render_data_load(spec$data, wrapper_data_var, ignore_unsupported))
+  temporal_fields <- collect_temporal_fields(wrapper_encoding, spec$transform %||% list())
+  subday_fields <- collect_subday_temporal_fields(wrapper_encoding, spec$transform %||% list())
+  coercion <- render_temporal_coercion(wrapper_data_var, temporal_fields, subday_fields)
+  if (length(coercion)) emit(emitter, coercion)
+  quantitative_coercion <- render_quantitative_coercion(wrapper_data_var, collect_quantitative_fields(wrapper_encoding, spec$transform %||% list()))
+  if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
+  if (!is.null(spec$transform)) {
+    if (length(spec$transform) > 0) emit_from(emitter, paste0(path, "transform"))
+    emit(emitter, render_transforms(spec$transform, wrapper_data_var, ignore_unsupported))
+  }
+  wrapper_extent_params <- collect_extent_params(spec$transform %||% list())
+
+  # An aggregated y with no explicit "type" at all (e.g. layer_dual_axis.vl
+  # .json's own `{"aggregate": "average", "field": "temp_max", ...}`) is
+  # always quantitative by Vega-Lite's own inference rules -- axis_kind()
+  # (scales.R) requires a real type to be present, unlike the normal
+  # per-channel loop in apply_common(), which simply skips a typeless
+  # channel entirely rather than defaulting it.
+  primary_y <- primary_child$encoding$y
+  primary_y$type <- primary_y$type %||% "quantitative"
+  secondary_y <- secondary_child$encoding$y
+  primary_range <- resolve_dual_axis_range(primary_y, wrapper_data_var, c(primary_y$field, primary_child$encoding$y2$field))
+  secondary_range <- resolve_dual_axis_range(secondary_y, wrapper_data_var, secondary_y$field)
+
+  # Rescale the secondary field's own raw values onto the primary range,
+  # into a new synthetic column -- the geom below never sees the field's
+  # real values, only its rescaled position; sec_axis's own inverse
+  # transform (built alongside the shared y scale, further down) undoes
+  # this same rescale for its own tick labels.
+  rescaled_field <- paste0("__dualaxis_", unescape_field_path(secondary_y$field))
+  mutate_expr <- sprintf(
+    "%s + (%s - %s) / (%s - %s) * (%s - %s)",
+    primary_range$lo, field_ref(secondary_y$field), secondary_range$lo,
+    secondary_range$hi, secondary_range$lo, primary_range$hi, primary_range$lo
+  )
+  emit(emitter, sprintf("%s <- dplyr::mutate(%s, %s = %s)", wrapper_data_var, wrapper_data_var, render_name(rescaled_field), mutate_expr))
+  secondary_child_rescaled <- secondary_child
+  secondary_child_rescaled$encoding$y$field <- rescaled_field
+
+  emit(emitter, sprintf("%s <- ggplot2::ggplot(%s)", plot_var, wrapper_data_var))
+
+  encodings_for_scales <- list()
+  layer_param_values <- resolve_static_params(spec$params)
+  for (child_info in list(list(child = primary_child, i = 1), list(child = secondary_child_rescaled, i = 2))) {
+    child <- child_info$child
+    i <- child_info$i
+    child_path <- paste0(path, "layer[", i - 1, "].")
+    emit_from(emitter, paste0(path, "layer[", i - 1, "]"))
+    prepared <- prepare_unit(
+      child, emitter, sprintf("%s%d", base_hint, i),
+      inherited_data_var = wrapper_data_var, inherited_encoding = wrapper_encoding,
+      ignore_unsupported = ignore_unsupported, path = child_path
+    )
+    data_arg <- prepared$data_var
+    resolved_mark <- if (is.character(prepared$mark)) prepared$mark else resolve_mark_prop_exprs(prepared$mark, layer_param_values)
+    geom <- render_geom_layer(
+      resolved_mark, prepared$encoding, data_arg,
+      list(extra_fixed = prepared$extra_fixed, extra_aes = prepared$extra_aes, use_histogram = prepared$use_histogram, aggregated = prepared$aggregated, standalone = FALSE, invalid_run_field = prepared$invalid_run_field),
+      ignore_unsupported,
+      prepared$data_var %||% wrapper_data_var,
+      merge_named(wrapper_extent_params, prepared$extent_params)
+    )
+    emit(emitter, geom$notes)
+    mark_path <- paste0(child_path, "mark")
+    enc_paths <- vapply(names(prepared$original_encoding %||% list()), function(ch) paste0(child_path, "encoding.", ch), character(1))
+    emit_from(emitter, paste(c(mark_path, enc_paths), collapse = ", "))
+    emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, geom$code))
+
+    mark_type_i <- if (is.character(prepared$mark)) prepared$mark else prepared$mark$type
+    enc <- prepared$encoding
+    attr(enc, "mark_type") <- mark_type_i
+    attr(enc, "mark_props") <- if (is.character(resolved_mark)) list() else resolved_mark[names(resolved_mark) != "type"]
+    encodings_for_scales[[length(encodings_for_scales) + 1]] <- enc
+  }
+
+  # The shared y scale, built explicitly (rather than through the generic
+  # apply_common() loop below) with sec_axis folded in -- ggplot2 only
+  # ever keeps the LAST scale_y_*() call added for a given aesthetic, so a
+  # follow-up call wouldn't merge with an already-emitted one, it would
+  # silently replace it and drop the secondary axis entirely.
+  # ggplot2's own default y-axis label picks up whichever layer's aes()
+  # literally maps a bare "y" (an ymin/ymax-only ribbon layer, like the
+  # primary layer here, doesn't count) -- for this shape that's the
+  # SECONDARY layer's own (synthetic, `__dualaxis_...`-named) field, an
+  # internal name that would otherwise leak straight into the visible
+  # axis label. `name=` is set explicitly on both sides of the scale
+  # here (general encoding-title support doesn't exist elsewhere in this
+  # project, but both titles are already in hand at this exact point) to
+  # avoid exposing it.
+  primary_title <- if (is.character(primary_y$title) && length(primary_y$title) == 1) primary_y$title else primary_y$field
+  secondary_title <- if (is.character(secondary_y$title) && length(secondary_y$title) == 1) secondary_y$title else secondary_y$field
+  inverse_transform <- sprintf(
+    "~ %s + (. - %s) / (%s - %s) * (%s - %s)",
+    secondary_range$lo, primary_range$lo, primary_range$hi, primary_range$lo, secondary_range$hi, secondary_range$lo
+  )
+  sec_axis_arg <- sprintf("ggplot2::sec_axis(transform = %s, name = %s)", inverse_transform, render_string(secondary_title))
+  y_extra_args <- c(sprintf("name = %s", render_string(primary_title)), sprintf("sec.axis = %s", sec_axis_arg))
+  primary_mark_type <- if (is.character(primary_child$mark)) primary_child$mark else primary_child$mark$type
+  y_call <- build_scale_calls("y", primary_y, primary_mark_type, ignore_unsupported, new.env(), spec$config$scale$invalid$y$value, NULL, extra_args = y_extra_args)
+  emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, y_call))
+
+  # Every other channel (x, color, size, opacity) still goes through the
+  # normal shared-scale machinery -- only y needed the special handling
+  # above, so this reuses apply_common() with the y def stripped from
+  # every collected encoding (it would otherwise emit its own competing,
+  # sec.axis-less scale_y_*() call that -- being added after ours -- would
+  # silently win and drop the secondary axis).
+  encodings_no_y <- lapply(encodings_for_scales, function(e) {
+    e$y <- NULL
+    e
+  })
+  apply_common(plot_var, spec, emitter, encodings_no_y, ignore_unsupported)
+
+  plot_var
 }
 
 apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_unsupported = FALSE) {
@@ -802,7 +978,7 @@ apply_common <- function(plot_var, spec, emitter, encodings_for_scales, ignore_u
         mark_type <- attr(enc, "mark_type") %||% "point"
         mark_props <- attr(enc, "mark_props") %||% list()
         invalid_override <- spec$config$scale$invalid[[channel]]$value
-        color_aes <- if (channel == "color") effective_color_aes(mark_type, mark_props)
+        color_aes <- if (channel == "color") effective_color_aes(mark_type, mark_props, enc)
         calls <- build_scale_calls(channel, def, mark_type, ignore_unsupported, notes_env, invalid_override, color_aes)
         if (length(calls)) {
           emit(emitter, sprintf("%s <- %s + %s", plot_var, plot_var, calls))

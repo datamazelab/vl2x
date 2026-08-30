@@ -61,8 +61,18 @@ export function planStack(markType, encoding, orientation) {
   // upstream top-level `stack`/`window` transform, or just a manually
   // authored lo/hi range): automatically stacking on top of it would
   // silently discard that explicit range and substitute a wrong one.
+  // A companion can be a literal `datum`/`value` just as validly as a
+  // real `field` (e.g. area_overlay_with_y2.vl.json's own `y2: {datum:
+  // 0}`, an explicit zero baseline spelled out instead of relying on the
+  // implicit one) -- checking only `.field` missed this, so a spec with
+  // a literal-companion range still got wrapped in `Plot.stackY(...)`
+  // regardless, which doesn't recognize an explicit `y1`/`y2` pair as
+  // its own "value channel" to stack at all and silently produced a
+  // broken (line-only-looking) mark instead of the real area.
   const companionDef = encoding[`${valueChannel}2`];
-  if (companionDef && typeof companionDef === 'object' && typeof companionDef.field === 'string') return null;
+  if (companionDef && typeof companionDef === 'object' && (typeof companionDef.field === 'string' || 'datum' in companionDef || 'value' in companionDef)) {
+    return null;
+  }
 
   const stackSetting = valueDef.stack;
   if (!implicit && stackSetting === undefined) return null;

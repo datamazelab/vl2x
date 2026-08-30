@@ -195,8 +195,17 @@ function ordinalExtentDomain(valuesExpr, sort) {
 // Resolve the position scale for `x` or `y`. `zeroBaseline` should be true
 // when this is the "value" axis of a bar/area mark (Vega-Lite's default of
 // including zero in that case).
-export function resolvePositionScale(channel, def, {dataVar, rangeExpr, zeroBaseline, ignoreUnsupported = false, combinedValuesExpr = null, categoryPadding = false}) {
-  const varName = channel;
+export function resolvePositionScale(
+  channel,
+  def,
+  {dataVar, rangeExpr, zeroBaseline, ignoreUnsupported = false, combinedValuesExpr = null, categoryPadding = false, varName: varNameOverride}
+) {
+  // Normally just the channel name itself ("x"/"y") -- overridden only
+  // for a SECOND position scale on the same channel (e.g. `resolve:
+  // {scale: {y: "independent"}}`'s own "dual axis" case, translator.js:
+  // a second, independent y scale can't also be named plain "y", or its
+  // own `const y = ...` declaration would collide with the first one's).
+  const varName = varNameOverride || channel;
   const field = def.field;
   const explicitDomain = explicitDomainCode(def, ignoreUnsupported);
   const domainNote = domainFallbackNote(def, ignoreUnsupported);

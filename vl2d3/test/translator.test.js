@@ -428,6 +428,31 @@ test('a "binned" timeUnit position channel draws a real y/y2 range bar, not a ze
   }
 });
 
+test('resolve: {scale: {y: "independent"}} draws a real dual-axis chart, not one shared/squashed y scale', async () => {
+  // layer_dual_axis.vl.json's own shape: a small-magnitude precipitation
+  // line layered with a much-larger-magnitude temperature area, each
+  // meant to use its own y scale/axis -- previously `resolve` was never
+  // read at all, so both layers shared the SAME y scale/domain, squashing
+  // the smaller-magnitude line flat near zero instead of using its own
+  // independent range.
+  const {document, code} = await renderSpec({
+    data: {values: [{m: 1, hi: 20, lo: 10, p: 0.1}, {m: 2, hi: 25, lo: 12, p: 5.0}]},
+    encoding: {x: {field: 'm', type: 'quantitative'}},
+    layer: [
+      {mark: 'area', encoding: {y: {field: 'hi', type: 'quantitative'}, y2: {field: 'lo'}}},
+      {mark: 'line', encoding: {y: {field: 'p', type: 'quantitative'}}},
+    ],
+    resolve: {scale: {y: 'independent'}},
+  }, {ignoreUnsupported: true});
+  assert.match(code, /const yRight = d3\.scaleLinear/);
+  assert.match(code, /d3\.axisRight\(yRight\)/);
+  const paths = marksOf(document, 'path');
+  assert.ok(paths.length >= 2, `expected both the area and the line to draw, got ${paths.length} paths`);
+  for (const p of paths) {
+    assert.doesNotMatch(p.getAttribute('d'), /NaN/);
+  }
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

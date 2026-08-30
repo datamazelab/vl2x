@@ -1267,7 +1267,14 @@ def _render_errorband(encoding, mark_props, data_var, ax_var, ignore_unsupported
 
 
 def _grouped_or_single(
-    encoding, mark_props, data_var, draw_stmt_fn, stmts: list[str] | None = None, allow_row_array: bool = True, extra_group_field: str | None = None
+    encoding,
+    mark_props,
+    data_var,
+    draw_stmt_fn,
+    stmts: list[str] | None = None,
+    allow_row_array: bool = True,
+    extra_group_field: str | None = None,
+    fallback: str = DEFAULT_COLOR,
 ) -> list[str]:
     """`draw_stmt_fn(rows_expr, color_expr, label_expr)` builds the one
     matplotlib call for either the single ungrouped case or each iteration
@@ -1293,7 +1300,7 @@ def _grouped_or_single(
     sub-series after a color group's first, so the legend still shows
     exactly one entry per color value instead of one per (color, detail)
     combination."""
-    group_field, fixed_color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts, allow_row_array=allow_row_array)
+    group_field, fixed_color = _color_source(encoding, mark_props, fallback=fallback, data_var=data_var, stmts=stmts, allow_row_array=allow_row_array)
     if group_field and extra_group_field:
         lines: list[str] = []
         kind, var = _categorical_color_lookup(encoding.get("color"), data_var, lines)
@@ -1605,6 +1612,18 @@ def _render_line_or_area(is_area: bool):
         stmts += _axis_setup_stmts(ax_var, "x", x_def, data_var)
         stmts += _axis_setup_stmts(ax_var, "y", y_def, data_var)
 
+        # A line mark's own natural mark-level color property is `stroke`
+        # (e.g. layer_dual_axis.vl.json's own `mark: {"stroke":
+        # "#85A9C5", "type": "line", ...}`), not the generic `color` --
+        # `_color_source()`'s own `mark_props` fallback only ever checked
+        # `mark_props["color"]`, so a line relying solely on `stroke` (no
+        # `color` encoding channel or mark property at all) silently fell
+        # back to the flat default blue regardless. Scoped to `not
+        # is_area`: an area's own bare `stroke` (when present at all)
+        # means its outline color, not its fill, so it isn't a safe
+        # stand-in for the fill fallback here.
+        stroke_fallback = format_color_value(mark_props["stroke"]) if not is_area and "stroke" in mark_props else DEFAULT_COLOR
+
         # An area/line mark's own orientation was previously always assumed
         # vertical (x = domain/sequence, y = value) -- wrong the moment x is
         # the *quantitative* channel and y is the domain one instead
@@ -1728,7 +1747,9 @@ def _render_line_or_area(is_area: bool):
         # `detail` channel's own year values as anything but categories).
         detail_def = encoding.get("detail")
         detail_field = detail_def.get("field") if isinstance(detail_def, dict) and detail_def.get("field") else None
-        stmts += _grouped_or_single(encoding, mark_props, data_var, draw, allow_row_array=False, extra_group_field=detail_field)
+        stmts += _grouped_or_single(
+            encoding, mark_props, data_var, draw, allow_row_array=False, extra_group_field=detail_field, fallback=stroke_fallback
+        )
         group_field = _color_source(encoding, mark_props)[0]
         if group_field and not _legend_hidden(encoding.get("color")):
             stmts.append(_legend_stmt(ax_var, group_field))

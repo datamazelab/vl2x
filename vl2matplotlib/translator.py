@@ -304,6 +304,28 @@ def translate_unit(node: dict, emitter: Emitter, hint: str, ax_var: str, ignore_
 
 
 def translate_layer(node: dict, emitter: Emitter, hint: str, ax_var: str, ignore_unsupported: bool = False, path: str = "", data_param: str | None = None) -> None:
+    # `resolve: {scale: {y: "independent"}}` (e.g. layer_dual_axis.vl
+    # .json) asks for each layer's own y scale to be resolved separately
+    # -- a real "dual axis" chart, sharing one x axis. matplotlib has a
+    # direct built-in equivalent, `ax.twinx()` (a second Axes overlaid on
+    # the first, sharing its x-axis natively, with its own independent y
+    # scale and its own y-axis drawn on the right) -- the first layer
+    # still draws on the original (left-axis) Axes, and every subsequent
+    # layer draws on one shared twin Axes instead (matching this spec's
+    # own common 2-layer shape; a 3+-layer independent-y spec would still
+    # share that one twin axes across every layer past the first, rather
+    # than a separate axes per layer, an accepted narrower scope for a
+    # rarer shape). Previously `resolve` was never read at all, so every
+    # layer silently shared the SAME y scale/Axes regardless -- a second
+    # layer on a much smaller/larger magnitude (this spec's own
+    # precipitation-inches line next to a temperature-in-Celsius area)
+    # rendered squashed flat near zero instead of using its own scale.
+    y_independent = (
+        isinstance(node.get("resolve"), dict)
+        and isinstance(node["resolve"].get("scale"), dict)
+        and node["resolve"]["scale"].get("y") == "independent"
+    )
+    twin_ax_var = None
     for i, child in enumerate(node["layer"]):
         merged = _merge_down(child, node)
         # A child lacking its own `data` inherits the wrapper's -- when
@@ -314,13 +336,19 @@ def translate_layer(node: dict, emitter: Emitter, hint: str, ax_var: str, ignore
         # at all, since the facet/repeat caller deliberately strips it off
         # the template before this ever runs).
         child_data_param = data_param if data_param is not None and "data" not in child else None
+        child_ax_var = ax_var
+        if y_independent and i > 0:
+            if twin_ax_var is None:
+                twin_ax_var = emitter.new_var(f"{hint}_ax2")
+                emitter.add_stmt(f"{twin_ax_var} = {ax_var}.twinx()")
+            child_ax_var = twin_ax_var
         # A layer child can itself be a nested `layer` composition (a
         # "layer of layers", e.g. layer_bar_annotations.vl.json's own
         # `{data, layer: [...]}` child with no `mark` of its own at all) --
         # `_draw_unit_or_layer()` recurses into `translate_layer()` again
         # for exactly that shape, rather than this loop assuming every
         # child is always a plain unit view.
-        _draw_unit_or_layer(merged, emitter, f"{hint}{i + 1}", ax_var, ignore_unsupported, f"{path}layer[{i}].", data_param=child_data_param)
+        _draw_unit_or_layer(merged, emitter, f"{hint}{i + 1}", child_ax_var, ignore_unsupported, f"{path}layer[{i}].", data_param=child_data_param)
 
 
 def _merge_down(child: dict, wrapper: dict) -> dict:

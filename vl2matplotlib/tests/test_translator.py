@@ -1088,7 +1088,7 @@ def test_an_explicit_orient_wins_over_the_stack_planner_own_x_y_quantitative_gue
         "mark": {"type": "bar", "orient": "horizontal"},
         "encoding": {"y": {"field": "a", "type": "quantitative"}, "x": {"field": "b", "type": "quantitative"}},
     }, ignore_unsupported=True)
-    assert 'groupby("a")["b"]' in code, f"expected stacking to group by the real category (a), got:\n{code}"
+    assert 'groupby("a")["__b_stack_pos"]' in code, f"expected stacking to group by the real category (a), got:\n{code}"
     ax = fig.axes[0]
     assert len(ax.patches) == 3
     at_a1 = sorted((p for p in ax.patches if abs(p.get_y() - 1) < 2), key=lambda p: p.get_x())
@@ -1309,3 +1309,73 @@ def test_a_rule_marks_own_mark_level_stroke_is_used_not_just_color():
     }, ignore_unsupported=True)
     ax = fig.axes[0]
     assert ax.get_lines()[0].get_color() == "firebrick"
+
+
+def test_a_diverging_signed_stack_splits_positive_and_negative_by_category_not_a_naive_cumsum():
+    # bar_diverging_stack_population_pyramid.vl.json's own shape: a
+    # `calculate`-derived signed value (negative for one color group,
+    # positive for another) aggregated and implicitly stacked by its own
+    # category -- the "zero" stack mode's own naive single
+    # groupby(cat).cumsum() previously blended positive and negative
+    # values together in row order, instead of accumulating each sign
+    # SEPARATELY (real Vega-Lite's own behavior for a diverging stack --
+    # a population pyramid, not a same-signed one), silently pushing
+    # every bar in the same direction instead of diverging left/right.
+    fig, _ = render({
+        "data": {"values": [
+            {"cat": "a", "grp": "lo", "v": -10}, {"cat": "a", "grp": "hi", "v": 5},
+            {"cat": "b", "grp": "lo", "v": -3}, {"cat": "b", "grp": "hi", "v": 8},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "y": {"field": "cat", "type": "nominal"},
+            "x": {"aggregate": "sum", "field": "v", "type": "quantitative"},
+            "color": {"field": "grp", "type": "nominal"},
+        },
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    widths = sorted(round(p.get_width(), 6) for p in ax.patches)
+    # Every bar should span exactly its own signed value (from x=0), not
+    # some cumulative mix -- i.e. the multiset of widths is exactly the
+    # per-(cat,grp) sums themselves.
+    assert widths == [-10.0, -3.0, 5.0, 8.0], f"expected each bar to span its own signed value from zero, got {widths}"
+    for p in ax.patches:
+        assert p.get_x() == pytest.approx(0.0), f"expected every bar to start at the zero baseline, got x={p.get_x()}"
+
+
+def test_resolve_scale_y_independent_gives_each_layer_its_own_twinx_axes():
+    # layer_dual_axis.vl.json's own shape: `resolve: {scale: {y:
+    # "independent"}}` on a 2-layer spec (a small-magnitude precipitation
+    # line alongside a much-larger-magnitude temperature area) --
+    # previously `resolve` was never read at all, so both layers shared
+    # the SAME y scale/Axes, squashing the precipitation line flat near
+    # zero. `ax.twinx()` is matplotlib's own direct built-in equivalent.
+    fig, code = render({
+        "data": {"values": [{"m": 1, "hi": 20, "lo": 10, "p": 0.1}, {"m": 2, "hi": 25, "lo": 12, "p": 5.0}]},
+        "encoding": {"x": {"field": "m", "type": "quantitative"}},
+        "layer": [
+            {"mark": "area", "encoding": {"y": {"field": "hi", "type": "quantitative"}, "y2": {"field": "lo"}}},
+            {"mark": "line", "encoding": {"y": {"field": "p", "type": "quantitative"}}},
+        ],
+        "resolve": {"scale": {"y": "independent"}},
+    }, ignore_unsupported=True)
+    assert ".twinx()" in code
+    assert len(fig.axes) == 2
+    ylim0, ylim1 = fig.axes[0].get_ylim(), fig.axes[1].get_ylim()
+    assert ylim0 != ylim1, f"expected two genuinely independent y ranges, got {ylim0} and {ylim1}"
+
+
+def test_a_line_marks_own_mark_level_stroke_is_used_not_just_color():
+    # layer_dual_axis.vl.json's own second layer: `mark: {"stroke":
+    # "#85A9C5", "type": "line"}` -- _color_source()'s own mark_props
+    # fallback (via _grouped_or_single()) only ever checked "color",
+    # never "stroke", so a line relying solely on a mark-level stroke (no
+    # color encoding/property at all) silently fell back to the flat
+    # default blue.
+    fig, _ = render({
+        "data": {"values": [{"x": 1, "y": 2}, {"x": 2, "y": 3}]},
+        "mark": {"type": "line", "stroke": "#85A9C5"},
+        "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "y", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert ax.get_lines()[0].get_color() == "#85A9C5"

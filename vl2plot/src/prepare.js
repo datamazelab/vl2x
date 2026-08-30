@@ -126,14 +126,21 @@ export function planTransform(encoding, ignoreUnsupported = false) {
   for (const ch of POSITION_CHANNELS) {
     const def = encoding[ch];
     if (!def || typeof def !== 'object') continue;
-    // `bin: {"binned": true}` is Vega-Lite's own signal that the field
-    // *already holds* the bin boundary (typically alongside an explicit
-    // `x2` companion for the other edge) -- the opposite of a request to
-    // bin it now, so this deliberately does NOT count as `binChannel`
-    // here (a real corpus spec paired this with `x2`, hitting `marks.js`'s
-    // own "aggregated value on a continuous bin-interval axis" guard for
-    // an aggregate that was never actually being requested).
-    const isPreBinned = def.bin && typeof def.bin === 'object' && def.bin.binned === true;
+    // `bin: {"binned": true}` OR the equivalent bare-string shorthand
+    // `bin: "binned"` (Vega-Lite's own schema allows either -- confirmed
+    // against layer_cumulative_histogram.vl.json's own `x: {bin:
+    // "binned", ...}`) is Vega-Lite's signal that the field *already
+    // holds* the bin boundary (typically alongside an explicit `x2`
+    // companion for the other edge) -- the opposite of a request to bin
+    // it now, so this deliberately does NOT count as `binChannel` here
+    // (a real corpus spec paired this with `x2`, hitting `marks.js`'s own
+    // "aggregated value on a continuous bin-interval axis" guard for an
+    // aggregate that was never actually being requested). Missing the
+    // bare-string form entirely previously misread it as a genuine
+    // bin-now request, tripping that exact guard and silently dropping
+    // the mark outright under `--ignore-unsupported` (both of this
+    // spec's own layers ended up with an empty `marks: []`).
+    const isPreBinned = def.bin === 'binned' || (def.bin && typeof def.bin === 'object' && def.bin.binned === true);
     if (def.bin && !isPreBinned) binChannel = binChannel || ch;
     else if (def.aggregate != null) aggChannel = aggChannel || ch;
   }
@@ -187,7 +194,6 @@ export function planTransform(encoding, ignoreUnsupported = false) {
     // output, typically onto y; picking the transform by the aggregate's
     // own channel name, as this used to, silently produced the wrong
     // grouping -- e.g. every row its own bar -- without ever throwing).
-    const fn = aggChannel === 'x' ? 'groupY' : 'groupX';
     const groupKeyCh = aggChannel === 'x' ? 'y' : 'x';
     // Vega-Lite's genuinely 1-dimensional aggregate -- only the one
     // channel being aggregated is given at all, no other position/color/
@@ -201,8 +207,43 @@ export function planTransform(encoding, ignoreUnsupported = false) {
     // constant on the missing axis gives every row the same key, which
     // collapses them into the single group Vega-Lite's own semantics call
     // for here.
-    const hasGroupKey = GROUP_KEY_CHANNELS.some(ch => ch !== aggChannel && (hasField(encoding[ch]) || (encoding[ch] && typeof encoding[ch] === 'object' && 'value' in encoding[ch])));
-    return augmentWithTextAggregate({fn, outputs, needsConstantKey: hasGroupKey ? null : groupKeyCh}, encoding, ignoreUnsupported);
+    //
+    // A literal `value`-bound channel (e.g. layer_histogram_global_mean
+    // .vl.json's own rule layer: `color: {value: "red"}, size: {value:
+    // 5}`, no `y` at all) does NOT count as a usable group key here,
+    // despite every row trivially sharing that identical constant --
+    // confirmed empirically that Plot's own group transform, given
+    // nothing else at all to group by, still falls back to one group
+    // PER ROW (the same degenerate case the comment above already
+    // describes), silently drawing NO visible rule/mark whatsoever
+    // rather than throwing. Only a real per-row FIELD value (which Plot
+    // can actually key groups by) counts.
+    const hasPositionGroupKey = hasField(encoding[groupKeyCh]);
+    // `Plot.groupX`/`groupY` ALSO always group on {z, fill, stroke} first
+    // (confirmed from Plot's own source, `transforms/group.js`: both are
+    // thin wrappers around a shared `groupn(x, y, ...)` that groups on
+    // z/fill/stroke before ever looking at x/y), but they each REQUIRE
+    // their own named position option to be present at all -- `options.x
+    // == null` throws `"missing channel: x"` at call time (same for y).
+    // A rule layer with a real per-row color field but genuinely NO other
+    // position channel at all (e.g. layer_line_color_rule.vl.json's own
+    // rule layer: `y: {field: "price", aggregate: "mean"}, color: {field:
+    // "symbol"}`, no `x` whatsoever) would crash `Plot.groupX` outright --
+    // confirmed empirically. `Plot.groupZ` groups purely on {z, fill,
+    // stroke} with no x/y requirement, the correct fit here.
+    const hasNonPositionGroupKey = GROUP_KEY_CHANNELS.some(ch => ch !== 'x' && ch !== 'y' && ch !== aggChannel && hasField(encoding[ch]));
+    let fn, needsConstantKey;
+    if (hasPositionGroupKey) {
+      fn = aggChannel === 'x' ? 'groupY' : 'groupX';
+      needsConstantKey = null;
+    } else if (hasNonPositionGroupKey) {
+      fn = 'groupZ';
+      needsConstantKey = null;
+    } else {
+      fn = aggChannel === 'x' ? 'groupY' : 'groupX';
+      needsConstantKey = groupKeyCh;
+    }
+    return augmentWithTextAggregate({fn, outputs, needsConstantKey}, encoding, ignoreUnsupported);
   }
 
   return null;

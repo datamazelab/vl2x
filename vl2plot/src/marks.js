@@ -9,7 +9,7 @@
 import {formatValue} from './literals.js';
 import {channelValue, effectiveType, isQuantitative, hasField} from './encoding.js';
 import {applyTimeUnits, planTransform} from './prepare.js';
-import {plotReducer} from './aggops.js';
+import {plotReducer, aggregateExpr} from './aggops.js';
 import {planStack} from './stack.js';
 
 // A fresh CSS class name per dodged bar mark needing a min-band-size
@@ -18,6 +18,12 @@ import {planStack} from './stack.js';
 // across the whole process guarantees that trivially, with no reset
 // needed between separate specToCode() calls.
 let barFixupCounter = 0;
+
+// A fresh variable name per rule mark that precomputes its own aggregate
+// as a literal scalar (renderRule()'s own bypass of Plot.groupX/groupY
+// for the "genuinely groupless 1D aggregate" case) -- only needs to be
+// unique within one generated file's own output.
+let ruleAggCounter = 0;
 
 // A channel value ready to splice into a Plot options object -- a bare
 // field-name/literal expression already rendered as JS source by
@@ -478,7 +484,32 @@ function renderLineOrArea(isArea) {
     // that `Plot.line(data, Plot.groupX({y: "mean"}, {...}))` works
     // exactly as well as it does for `Plot.dot`/`Plot.barY` -- Plot's own
     // transform wrapper doesn't care which mark it's wrapping.
-    const transformPlan = planTransform(enc, ignoreUnsupported);
+    let transformPlan = planTransform(enc, ignoreUnsupported);
+    // planTransform() only knows Vega-Lite's own channel names (`x`/`y`),
+    // but an area WITH a companion draws through Plot's own `y1`/`y2`
+    // pair instead of a bare `y` (see `pairs` just above) -- its own
+    // `outputs` key (named after whichever VL channel carried the
+    // aggregate) targets a Plot channel that doesn't exist on this mark
+    // at all in that shape, so Plot.groupX/groupY silently computed
+    // nothing (area_temperature_range.vl.json's own "no plot, just axes"
+    // symptom: `y: {aggregate: "max", ...}` + `y2: {aggregate: "min",
+    // ...}`, remapped here to Plot's own `y2`/`y1` respectively -- the
+    // companion's own aggregate (VL allows the range channel to
+    // aggregate independently, computing a genuinely different value
+    // than the primary one) had no representation in planTransform()'s
+    // single-aggregate-channel design at all, so it's added here too.
+    if (transformPlan && isArea && hasField(enc[companionCh])) {
+      const remappedOutputs = {...transformPlan.outputs};
+      if (valueCh in remappedOutputs) {
+        remappedOutputs[`${valueCh}2`] = remappedOutputs[valueCh];
+        delete remappedOutputs[valueCh];
+      }
+      const companionDef = enc[companionCh];
+      if (companionDef.aggregate != null) {
+        remappedOutputs[`${valueCh}1`] = plotReducer(companionDef.aggregate, ignoreUnsupported);
+      }
+      transformPlan = {...transformPlan, outputs: remappedOutputs};
+    }
     const stackPlan = planStack(isArea ? 'area' : 'line', enc, orient);
     const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
     const fn = isArea ? (orient === 'horizontal' ? 'areaX' : 'areaY') : 'line';
@@ -508,9 +539,38 @@ function renderLineOrArea(isArea) {
         overlayMarks.push(`Plot.line(${dataVar}, ${wrapTransforms(linePairs, transformPlan, stackPlan)})`);
       }
       if (markProps.point) {
+        // `colorChannelName('point', markProps)` normally reads
+        // `markProps.filled` to decide fill-vs-stroke for a genuine POINT
+        // mark -- meaningless here, since `markProps` is this AREA
+        // mark's own props object (no `filled` property ever applies to
+        // an area at all), so it silently defaulted to Plot's own hollow
+        // stroke-only dot style. Real Vega-Lite's own composite-mark
+        // convention always fills this overlay point with the area/
+        // line's own solid color (confirmed against the real compiler's
+        // own output: `fill: {value: "#4c78a8"}`, the exact same value
+        // the area's own fill and the line's own stroke get), forced
+        // here via a `filled: true` override passed only to this one
+        // commonChannels() call, not by touching colorChannelName()'s
+        // own general-purpose logic.
+        const pointCommon = commonChannels(enc, 'point', {...markProps, filled: true});
+        // With no real color channel/mark-level color at all (the common
+        // case for this shape -- area_overlay.vl.json has neither),
+        // commonChannels() leaves `fill` unset entirely, same as it does
+        // for the area/line's own main mark -- relying on Plot's own
+        // per-mark-type default there, which for Plot.dot specifically is
+        // a HOLLOW ring (`fill: none, stroke: currentColor`), unlike
+        // Plot.areaY/Plot.line's own solid `currentColor` fill/stroke --
+        // a real default-styling MISMATCH between the two, not just a
+        // missing color. Falls back to that same literal `"currentColor"`
+        // explicitly (matching what the area/line already implicitly
+        // resolve to) so the dot reads as a solid marker consistent with
+        // the shape it's overlaid on, instead of a near-invisible hollow
+        // ring in an unrelated default style.
+        const hasRealFill = pointCommon.some(([k, v]) => k === 'fill' && v !== undefined);
         const pointPairs = [
           ...overlayValuePairs,
-          ...commonChannels(enc, 'point', markProps),
+          ...pointCommon,
+          !hasRealFill ? ['fill', formatValue('currentColor')] : null,
         ].filter(Boolean);
         overlayMarks.push(`Plot.dot(${dataVar}, ${wrapTransforms(pointPairs, transformPlan, stackPlan)})`);
       }
@@ -532,16 +592,50 @@ function renderRule(encoding, markProps, dataVar, ignoreUnsupported) {
   const primaryCh = fn === 'ruleY' ? 'y' : 'x';
   const otherCh = primaryCh === 'x' ? 'y' : 'x';
   const otherCompanionCh = `${otherCh}2`;
+  let transformPlan = planTransform(enc, ignoreUnsupported);
+  let primaryValue = val(enc[primaryCh]);
+  let markDataVar = dataVar;
+  // `planTransform()`'s own `needsConstantKey` (its own doc comment:
+  // "Vega-Lite's genuinely 1-dimensional aggregate... no other channel
+  // to group by") normally works by injecting a constant onto the
+  // MISSING opposite channel so `Plot.groupX`/`groupY` has something to
+  // group by at all -- fine for a bar (a constant y/x IS a real,
+  // meaningful zero-baseline position there), but wrong for a rule:
+  // that same injected constant survives into the FINAL rendered mark
+  // unchanged (Plot's group transform has no way to use a channel for
+  // grouping *without* also rendering it), giving `Plot.ruleX` a real
+  // (if constant) `y` position instead of leaving it absent -- which is
+  // exactly the signal `Plot.ruleX` uses to span the FULL opposite axis
+  // by default (layer_histogram_global_mean.vl.json's own shape: a rule
+  // at the dataset's own overall mean, no y channel at all, previously
+  // collapsed to a near-invisible sliver instead of a full-height line).
+  // Bypassed entirely for a rule by precomputing the aggregate as a
+  // literal scalar via a real d3 reduction instead of Plot's own group
+  // transform -- no fake channel needed at all, so the opposite axis
+  // stays genuinely absent.
+  if (transformPlan && transformPlan.needsConstantKey) {
+    const def = enc[primaryCh];
+    const fieldAccessor = `d => d[${JSON.stringify(def.field)}]`;
+    const aggVar = `__ruleAgg${++ruleAggCounter}`;
+    statements.push(`const ${aggVar} = ${aggregateExpr(def.aggregate, dataVar, fieldAccessor, ignoreUnsupported)};`);
+    primaryValue = aggVar;
+    transformPlan = null;
+    // The rule now draws at one precomputed, already-reduced position --
+    // mapping it over the FULL (still per-row) dataset would draw one
+    // literal-identical rule per row instead of the single line this
+    // mark actually is; a bare single-element array is all Plot needs
+    // for a mark with no other real per-row channel left to read.
+    markDataVar = '[null]';
+  }
   const pairs = [
-    [primaryCh, val(enc[primaryCh])],
+    [primaryCh, primaryValue],
     [otherCh, val(enc[otherCh])],
     [otherCompanionCh, val(enc[otherCompanionCh])],
     ...commonChannels(enc, 'rule', markProps),
     ['strokeWidth', val(markProps.strokeWidth != null ? {value: markProps.strokeWidth} : encoding.size)],
   ];
-  const transformPlan = planTransform(enc, ignoreUnsupported);
   const wrapped = wrapTransforms(pairs, transformPlan, null);
-  return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
+  return {statements, markExpr: `Plot.${fn}(${markDataVar}, ${wrapped})`};
 }
 
 function renderTick(encoding, markProps, dataVar, ignoreUnsupported) {

@@ -996,6 +996,90 @@ test('an area mark with composite mark.line/mark.point overlays a real line and 
   assert.ok(marksOf(document, 'path').length >= 2, 'expected both the area fill and the overlaid line as separate paths');
 });
 
+test('an area overlay point is filled, not left hollow by Plot.dot\'s own default', async () => {
+  // area_overlay.vl.json's own shape, no color channel/mark-level color
+  // at all -- commonChannels() leaves `fill` unset in that case (same
+  // as it does for the area/line's own main mark), which previously let
+  // Plot.dot's own per-mark-type default apply: a HOLLOW ring (`fill:
+  // none, stroke: currentColor`), unlike Plot.areaY/Plot.line's own
+  // solid `currentColor` fill/stroke -- a real default-styling mismatch,
+  // read by the user as "no dots shown" even though a hollow ring was
+  // technically present in the DOM.
+  const {code} = await renderSpec({
+    data: {values: [{d: 1, v: 10}, {d: 2, v: 20}]},
+    mark: {type: 'area', point: true},
+    encoding: {x: {field: 'd', type: 'quantitative'}, y: {field: 'v', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  assert.match(code, /Plot\.dot\([^)]*\n[^)]*fill:\s*"currentColor"/s);
+});
+
+test('an explicit literal (datum/value) y2 companion is not double-stacked by Plot.stackY', async () => {
+  // area_overlay_with_y2.vl.json's own shape: `y2: {datum: 0}` -- an
+  // explicit zero baseline spelled out as a literal companion instead of
+  // relying on the implicit one. planStack()'s own "already has an
+  // explicit range" exclusion previously only recognized a `.field`
+  // companion, missing a `datum`/`value` one -- so this still got
+  // wrapped in Plot.stackY(...), which doesn't recognize an explicit
+  // y1/y2 pair as its own value channel at all, silently producing a
+  // broken (thin line-only-looking) mark instead of the real filled area.
+  const {code} = await renderSpec({
+    data: {values: [{d: 1, v: 10}, {d: 2, v: 20}]},
+    mark: {type: 'area'},
+    encoding: {
+      x: {field: 'd', type: 'quantitative'},
+      y: {field: 'v', type: 'quantitative'},
+      y2: {datum: 0, type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /Plot\.stackY/);
+  assert.match(code, /y1:\s*0/);
+});
+
+test('an area with independently aggregated y and y2 companions computes both, not just one', async () => {
+  // area_temperature_range.vl.json's own shape: `y: {aggregate: "max",
+  // field: "temp_max"}` + `y2: {aggregate: "min", field: "temp_min"}` --
+  // planTransform()'s own single-aggregate-channel design only ever
+  // named its output after the plain VL channel ("y"), which doesn't
+  // exist at all on an area-with-companion mark (drawn through Plot's
+  // own y1/y2 pair instead) -- Plot.groupX silently computed nothing for
+  // a channel key that was never present, and the companion's own
+  // *independent* aggregate had no representation at all, producing no
+  // visible shape (just axes).
+  const {code} = await renderSpec({
+    data: {values: [{g: 'a', hi: 10, lo: 1}, {g: 'a', hi: 20, lo: 2}, {g: 'b', hi: 5, lo: 0}]},
+    mark: 'area',
+    encoding: {
+      x: {field: 'g', type: 'nominal'},
+      y: {aggregate: 'max', field: 'hi', type: 'quantitative'},
+      y2: {aggregate: 'min', field: 'lo'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /y2:\s*"max"/);
+  assert.match(code, /y1:\s*"min"/);
+});
+
+test('bin: "binned" (the bare-string shorthand) is recognized as pre-binned, not a request to bin now', async () => {
+  // layer_cumulative_histogram.vl.json's own shape: `x: {bin: "binned",
+  // ...}` -- Vega-Lite's schema allows this bare-string shorthand as an
+  // alternative to `bin: {"binned": true}`; the isPreBinned check
+  // previously only recognized the object form, so the string form was
+  // misread as a genuine "bin this now" request, tripping the "aggregated
+  // value on a continuous bin-interval category axis" guard and silently
+  // dropping the mark entirely under --ignore-unsupported (both of that
+  // spec's own layers ended up with an empty `marks: []`, "just axes").
+  const {code} = await renderSpec({
+    data: {values: [{lo: 0, hi: 1, n: 3}, {lo: 1, hi: 2, n: 5}]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'lo', type: 'quantitative', bin: 'binned'},
+      x2: {field: 'hi'},
+      y: {field: 'n', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /marks:\s*\[\s*\]/, `expected a real mark, not an empty marks array, got: ${code}`);
+  assert.match(code, /Plot\.(bar|rect)/);
+});
+
 test('mark.clip:true clips the mark to the plot frame, matching the horizon-graph idiom', async () => {
   // area_horizon.vl.json's own shape: a second layer shifted down by a
   // calculate transform, relying on `clip: true` to hide the part that
@@ -1146,4 +1230,91 @@ test('an escaped-dot field name (a real "." in the name, not a nested path) surv
   }, {ignoreUnsupported: true});
   assert.doesNotMatch(code, /\\\\\./, `expected no literal backslash-dot surviving into the generated field names, got: ${code}`);
   assert.match(code, /"a\.b"/, `expected the real unescaped column name "a.b" to appear, got: ${code}`);
+});
+
+test('a rule at a groupless 1D aggregate spans the full opposite axis, not a near-invisible sliver', async () => {
+  // layer_histogram_global_mean.vl.json's own shape: `mark: "rule"`,
+  // `x: {aggregate: "mean", field: "IMDB Rating"}`, no y channel at all
+  // -- planTransform()'s own `needsConstantKey` injects a constant onto
+  // the missing y channel so Plot.groupY has something to group by, but
+  // that same constant then survives into the FINAL rendered mark
+  // unchanged, giving Plot.ruleX a real (if constant) y position instead
+  // of leaving it absent -- the exact signal ruleX uses to span the full
+  // height by default. Bypassed by precomputing the aggregate directly.
+  const {document, code} = await renderSpec({
+    data: {values: [{v: 1}, {v: 2}, {v: 3}]},
+    mark: 'rule',
+    encoding: {x: {aggregate: 'mean', field: 'v', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /Plot\.groupY/);
+  assert.match(code, /d3\.mean/);
+  assert.match(code, /Plot\.ruleX\(\[null\]/, `expected the rule to draw from a single-row array, not the full per-row dataset, got: ${code}`);
+  const lines = marksOf(document, 'line');
+  assert.equal(lines.length, 1, 'expected exactly one rule line, not one per data row');
+  const line = lines[0];
+  assert.equal(line.getAttribute('x1'), line.getAttribute('x2'), 'expected a vertical rule (same x1/x2)');
+  assert.notEqual(line.getAttribute('y1'), line.getAttribute('y2'), 'expected the rule to span a real y range, not a zero-height sliver');
+});
+
+test('a rule aggregated with a real per-row color field (no other position channel) groups by color, not x', async () => {
+  // layer_line_color_rule.vl.json's own shape: a rule layer with
+  // `y: {aggregate: "mean", field: "price"}, color: {field: "symbol"}`,
+  // no `x` channel at all. `hasGroupKey` (a real color field) previously
+  // still routed this to `Plot.groupX`, which defaults an absent `x`
+  // option to Plot's own `identity` accessor (NOT null) rather than
+  // throwing -- silently grouping by each row's own object reference
+  // (one degenerate near-zero-height group per row) and feeding those
+  // non-numeric "x values" into the shared x-scale, corrupting its
+  // domain. `Plot.groupZ` groups purely on {z, fill, stroke}, with no x
+  // requirement at all -- the correct fit whenever a real *non-position*
+  // group key exists but the other position channel is genuinely absent.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {sym: 'A', v: 1}, {sym: 'A', v: 3},
+      {sym: 'B', v: 10}, {sym: 'B', v: 20},
+    ]},
+    mark: 'rule',
+    encoding: {
+      y: {aggregate: 'mean', field: 'v', type: 'quantitative'},
+      color: {field: 'sym', type: 'nominal'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /Plot\.groupX/);
+  assert.match(code, /Plot\.groupZ/);
+  const lines = marksOf(document, 'line');
+  assert.equal(lines.length, 2, 'expected one horizontal rule line per color group, not one per data row');
+  for (const line of lines) {
+    assert.equal(line.getAttribute('y1'), line.getAttribute('y2'), 'expected a horizontal rule (same y1/y2)');
+    assert.notEqual(line.getAttribute('x1'), line.getAttribute('x2'), 'expected the rule to span the full x range, not a zero-width sliver');
+  }
+});
+
+test('resolve: {scale: {y: "independent"}} (dual axis) draws each layer on its own y scale', async () => {
+  // layer_dual_axis.vl.json's own shape: an area layer (temp, y domain
+  // [0,30]) and a line layer (precipitation, a totally different range),
+  // resolved to independent y scales -- Plot has no native per-mark
+  // independent scale within one `Plot.plot()` call, so this renders two
+  // separate SVGs (one per resolve group) overlaid in a wrapper div, the
+  // second with its y-axis moved to the right and its own x-axis
+  // suppressed (the shared x already drawn by the first).
+  const {document} = await renderSpec({
+    width: 200, height: 150,
+    data: {values: [
+      {m: 1, temp: 5, rain: 0.5}, {m: 2, temp: 8, rain: 2.0}, {m: 3, temp: 12, rain: 4.5},
+    ]},
+    encoding: {x: {field: 'm', type: 'ordinal'}},
+    layer: [
+      {mark: 'area', encoding: {y: {field: 'temp', type: 'quantitative'}}},
+      {mark: 'line', encoding: {y: {field: 'rain', type: 'quantitative'}}},
+    ],
+    resolve: {scale: {y: 'independent'}},
+  }, {ignoreUnsupported: true});
+  const svgs = [...document.querySelectorAll('svg')];
+  assert.equal(svgs.length, 2, 'expected two overlaid SVGs, one per resolve group');
+  const [primarySvg, independentSvg] = svgs;
+  assert.ok(primarySvg.querySelector('g[aria-label="x-axis tick label"]'), 'expected the primary SVG to draw the shared x-axis');
+  assert.ok(!independentSvg.querySelector('g[aria-label="x-axis tick label"]'), 'expected the independent SVG to suppress its own (redundant) x-axis');
+  const rightAxisText = independentSvg.querySelector('g[aria-label="y-axis tick label"] text');
+  const rightAxisX = Number(rightAxisText.getAttribute('transform').match(/translate\(([\d.]+),/)[1]);
+  assert.ok(rightAxisX > 100, `expected the independent y-axis anchored on the right (large x), got ${rightAxisX}`);
 });

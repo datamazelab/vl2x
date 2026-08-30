@@ -683,6 +683,80 @@ function translateFacet(node, ctx, path) {
   return {statements: [...unit.statements, ...sizeStmts], plotSrc};
 }
 
+// `resolve: {scale: {y: "independent"}}` ("dual axis"): every layer past
+// the first gets its OWN y-scale/domain, conventionally drawn on a SECOND
+// axis on the right, while x stays fully shared across every layer --
+// matching the identical resolve semantics already implemented for vl2d3
+// (a hand-rolled second scale + `d3.axisRight`) and vl2matplotlib (native
+// `ax.twinx()`). Observable Plot has no native per-mark independent scale
+// within one `Plot.plot()` call -- a single call always has exactly one y
+// scale -- so this renders TWO separate `Plot.plot()` SVGs (one per
+// resolve group) absolutely positioned on top of one another in a shared
+// wrapper div, the second with `y: {axis: "right"}` (a real Plot scale
+// option: passing an anchor string directly, not just `true`/`false`,
+// confirmed against Plot's own `plot.js`) and `x: {axis: null}` (avoids a
+// second, redundant x-axis drawn on top of the first).
+//
+// Pixel alignment between the two SVGs depends on both sharing the
+// identical plotting-area rectangle: Plot's own per-plot auto-margins
+// vary with each plot's own tick-label content (e.g. "0"/"10"/"20" on one
+// side vs. "0.0"/"0.5"/"1.0" on the other), so both calls are given the
+// SAME explicit margins instead of Plot's own inferred defaults, which
+// would otherwise misalign the shared x-axis between the two SVGs by
+// however many pixels their tick-label widths happen to differ.
+function translateDualAxisLayer(node, ctx, path) {
+  const size = panelSize(node);
+  const w = size.w || 640;
+  const h = size.h || 400;
+  const marginTop = 20, marginBottom = 30, marginLeft = 50, marginRight = 50;
+
+  const primary = translateLayerOrUnit({...node, layer: [node.layer[0]]}, ctx, `${path}layer[0].`);
+  const independent = translateLayerOrUnit({...node, layer: node.layer.slice(1)}, ctx, `${path}layer[1+].`);
+
+  const independentScale = {...independent.scaleOptions};
+  independentScale.y = {...(independentScale.y || {}), axis: 'right'};
+  independentScale.x = {...(independentScale.x || {}), axis: null};
+
+  const pad = '  ';
+  const buildPlot = (markExprs, scaleOptions, withTitle) => {
+    const lines = ['Plot.plot({', `${pad}document: container.ownerDocument,`];
+    if (withTitle && size.title) lines.push(`${pad}title: ${formatValue(size.title)},`);
+    if (withTitle && size.subtitle) lines.push(`${pad}subtitle: ${formatValue(size.subtitle)},`);
+    lines.push(
+      `${pad}width: ${w},`, `${pad}height: ${h},`,
+      `${pad}marginTop: ${marginTop},`, `${pad}marginBottom: ${marginBottom},`,
+      `${pad}marginLeft: ${marginLeft},`, `${pad}marginRight: ${marginRight},`,
+    );
+    lines.push(...renderScaleBlock(scaleOptions, 1));
+    lines.push(`${pad}marks: [`);
+    for (const m of markExprs) lines.push(`${pad}  ${m},`);
+    lines.push(`${pad}],`, `})`);
+    return lines.join('\n');
+  };
+
+  const primaryVar = newVar('dualAxisPrimary');
+  const independentVar = newVar('dualAxisIndependent');
+  const wrapperVar = newVar('dualAxisWrapper');
+
+  const statements = [
+    ...primary.statements,
+    ...independent.statements,
+    `const ${primaryVar} = ${buildPlot(primary.markExprs, primary.scaleOptions, true)};`,
+    `const ${independentVar} = ${buildPlot(independent.markExprs, independentScale, false)};`,
+    `const ${wrapperVar} = container.ownerDocument.createElement('div');`,
+    `${wrapperVar}.style.position = 'relative';`,
+    `${wrapperVar}.style.width = '${w}px';`,
+    `${wrapperVar}.style.height = '${h}px';`,
+    `${independentVar}.style.position = 'absolute';`,
+    `${independentVar}.style.top = '0';`,
+    `${independentVar}.style.left = '0';`,
+    `${independentVar}.style.pointerEvents = 'none';`,
+    `${wrapperVar}.appendChild(${primaryVar});`,
+    `${wrapperVar}.appendChild(${independentVar});`,
+  ];
+  return {statements, plotSrc: wrapperVar, isWrapper: true};
+}
+
 function translateStandalone(node, ctx, path) {
   const sub = translateLayerOrUnit(node, ctx, path);
   let plotSrc = buildPlotCallSource(sub.markExprs, sub.scaleOptions, panelSize(node), null, 1);
@@ -899,6 +973,9 @@ function translateNode(node, ctx, path) {
       };
     }
     throw new Error("Unsupported: a 2D (row and column together) 'repeat' is not yet supported by vl2plot");
+  }
+  if (Array.isArray(node.layer) && node.layer.length >= 2 && node.resolve && node.resolve.scale && node.resolve.scale.y === 'independent') {
+    return translateDualAxisLayer(node, ctx, path);
   }
   return translateStandalone(node, ctx, path);
 }

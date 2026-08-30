@@ -19,7 +19,7 @@ axis_kind <- function(def) {
 
 # Build the scale_*() call(s) for one channel, or character(0) if the
 # defaults suffice.
-build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALSE, .notes = NULL, invalid_override = NULL, color_aes = NULL) {
+build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALSE, .notes = NULL, invalid_override = NULL, color_aes = NULL, extra_args = NULL) {
   if (is.null(def)) return(character(0))
   # A color field commonly has no explicit "type" at all (Vega-Lite infers
   # it from the data instead, e.g. a plain string-valued field defaults to
@@ -29,9 +29,12 @@ build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALS
   # screened out here the same way a missing type silently drops every
   # other channel's customization. An `invalid_override` alone (no other
   # customization at all) is a real reason to still build a scale call too.
-  if (channel != "color" && is.null(def$type) && is.null(invalid_override)) return(character(0))
+  # `extra_args` (translate_dual_axis_layer()'s own `sec.axis = ...`) is a
+  # third such reason -- forcing a call even when this channel otherwise
+  # has no customization of its own at all.
+  if (channel != "color" && is.null(def$type) && is.null(invalid_override) && is.null(extra_args)) return(character(0))
 
-  if (channel %in% c("x", "y")) return(build_position_scale(channel, def))
+  if (channel %in% c("x", "y")) return(build_position_scale(channel, def, extra_args))
   # `color_aes` (effective_color_aes(), encoding.R): the aes() name this
   # layer's geom call actually ends up using for its color encoding, which
   # can differ from color_channel_aes()'s own mark-type-only answer -- a
@@ -46,7 +49,7 @@ build_scale_calls <- function(channel, def, mark_type, ignore_unsupported = FALS
   character(0)
 }
 
-build_position_scale <- function(channel, def) {
+build_position_scale <- function(channel, def, extra_args = NULL) {
   kind <- axis_kind(def)
   fn <- paste0("ggplot2::scale_", channel, "_", kind)
   args <- character(0)
@@ -111,8 +114,8 @@ build_position_scale <- function(channel, def) {
   }
   if (isTRUE(def$scale$reverse)) args <- c(args, if (kind == "discrete") "limits = rev" else "trans = \"reverse\"")
 
-  if (length(args) == 0) return(character(0))
-  format_call(fn, args)
+  if (length(args) == 0 && is.null(extra_args)) return(character(0))
+  format_call(fn, args, extra_args = extra_args)
 }
 
 build_color_scale <- function(aes_name, def, invalid_override = NULL) {

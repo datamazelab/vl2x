@@ -30,11 +30,37 @@ color_channel_aes <- function(mark_type) if (mark_type %in% .fill_marks) "fill" 
 # -- silently ineffective, not an error, so easy to miss (e.g.
 # isotype_bar_chart.vl.json's own `"filled": true` point mark with a
 # color `scale.range`).
-effective_color_aes <- function(mark_type, mark_props) {
+effective_color_aes <- function(mark_type, mark_props, encoding = NULL) {
   base <- color_channel_aes(mark_type)
   if (base == "colour" && mark_type %in% c("point", "circle", "square", "tick") &&
       (isTRUE(mark_props[["filled"]]) || !is.null(mark_props[["stroke"]]))) {
     return("fill")
+  }
+  # A bar/rect with a companion range (x2/y2, or xError/yError) on one
+  # axis and a *discrete* (non-quantitative) position on the OTHER --
+  # bar_diverging_stack_transform.vl.json's own shape: `x`/`x2` (a
+  # signed percentage range) + `y: {field: "question", type: "nominal"}`
+  # -- has no way to size a real filled box against that discrete
+  # companion axis, so render_geom_layer_code() (geoms.R) draws it as a
+  # `geom_linerange()` with a widened `linewidth` instead (a thick line,
+  # not a box) -- which renames its own `fill` aes to `colour` at render
+  # time (`rename_fill_to_colour()`, geoms.R), since geom_linerange has
+  # no fill aesthetic at all. Mirrors that exact same swap here so the
+  # SEPARATE scale-building code below (apply_common(), translator.R)
+  # requests `scale_colour_*()` instead of the ordinarily-correct
+  # `scale_fill_*()` -- previously built purely from `mark_type`, with no
+  # visibility into this render-time swap at all, so a spec's own custom
+  # color `scale.domain`/`.range` (this exact spec's own 5-color ordinal
+  # palette) silently customized an aesthetic (`fill`) the geom never
+  # actually used, leaving the real one (`colour`) on ggplot2's default
+  # hue palette instead.
+  if (base == "fill" && mark_type %in% c("bar", "rect") && is.list(encoding)) {
+    has_x2 <- !is.null(encoding[["x2"]]) || !is.null(encoding[["xError"]])
+    has_y2 <- !is.null(encoding[["y2"]]) || !is.null(encoding[["yError"]])
+    if (has_y2 && !has_x2 && is.null(encoding[["x"]])) return("colour")
+    if (has_x2 && !has_y2 && !is.null(encoding[["y"]]) && !identical(encoding[["y"]][["type"]], "quantitative")) {
+      return("colour")
+    }
   }
   base
 }

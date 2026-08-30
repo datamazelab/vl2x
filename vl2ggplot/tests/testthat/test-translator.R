@@ -330,3 +330,74 @@ test_that("a genuinely quantitative yOffset draws a real sub-band ranged bar via
   expect_equal(nrow(d), 4)
   expect_equal(length(unique(round(d$ymin, 6))), 4)
 })
+
+test_that("a bar/rect rendered as geom_linerange gets scale_colour_*, not an inert scale_fill_*", {
+  # bar_diverging_stack_transform.vl.json's own shape: `x`/`x2` (a signed
+  # range) + `y: {field: "question", type: "nominal"}` -- render_geom_
+  # layer_code() draws this as geom_linerange() (no fill aesthetic at
+  # all, only colour), renaming the aes from fill to colour at render
+  # time, but the separate scale-building code previously always
+  # requested scale_fill_*() for any bar/rect regardless, silently
+  # customizing an aesthetic the geom never used while the real one
+  # (colour) fell back to ggplot2's own default hue palette.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"q": "Q1", "t": "A", "nx": -5, "nx2": 0},
+      {"q": "Q1", "t": "B", "nx": 0, "nx2": 5}
+    ]},
+    "mark": "bar",
+    "encoding": {
+      "x": {"field": "nx", "type": "quantitative"},
+      "x2": {"field": "nx2"},
+      "y": {"field": "q", "type": "nominal"},
+      "color": {
+        "field": "t", "type": "nominal",
+        "scale": {"domain": ["A", "B"], "range": ["#111111", "#222222"]}
+      }
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "scale_colour_manual")
+  expect_false(grepl("scale_fill_manual", code))
+  r <- run_spec(spec)
+  d <- r$built$data[[1]]
+  expect_setequal(unique(d$colour), c("#111111", "#222222"))
+})
+
+test_that("resolve: {scale: {y: independent}} (dual axis) rescales the secondary layer onto the primary's y range", {
+  # layer_dual_axis.vl.json's own shape: a primary area layer with an
+  # explicit y domain ([0, 30]) and a secondary line layer on a totally
+  # different scale (0-5ish) -- ggplot2 has only one real y coordinate,
+  # so the secondary layer's own raw values get linearly rescaled onto
+  # the primary's range before plotting, with a `sec_axis()` inverse
+  # transform relabeling the right-hand axis in the secondary's own real
+  # units.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"m": 1, "temp": 5, "rain": 10}, {"m": 2, "temp": 8, "rain": 40},
+      {"m": 3, "temp": 12, "rain": 25}
+    ]},
+    "encoding": {"x": {"field": "m", "type": "ordinal"}},
+    "layer": [
+      {"mark": "area", "encoding": {"y": {"field": "temp", "type": "quantitative", "scale": {"domain": [0, 30]}, "title": "Temp"}}},
+      {"mark": "line", "encoding": {"y": {"field": "rain", "type": "quantitative", "title": "Rain"}}}
+    ],
+    "resolve": {"scale": {"y": "independent"}}
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "sec_axis")
+  expect_match(code, "__dualaxis_rain")
+  expect_match(code, 'name = "Temp"')
+  expect_match(code, 'name = "Rain"')
+
+  r <- run_spec(spec)
+  primary_data <- r$built$data[[1]]
+  secondary_data <- r$built$data[[2]]
+  # The primary layer's own y values are untouched, still in [0, 30].
+  expect_true(all(primary_data$y >= 0 & primary_data$y <= 30))
+  # The secondary layer's raw rain values (10-40) land inside that same
+  # [0, 30] range once rescaled, not their own original (wildly
+  # different) 10-40 scale.
+  expect_true(all(secondary_data$y >= 0 & secondary_data$y <= 30))
+  expect_true(max(secondary_data$y) > 5, "expected the rescaled line to actually use the shared range, not collapse near zero")
+})
