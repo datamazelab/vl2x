@@ -94,6 +94,23 @@ function renderOne(t, dataVar, ignoreUnsupported) {
   if ('flatten' in t) {
     return [`${dataVar} = vlFlatten(${dataVar}, {fields: ${JSON.stringify(t.flatten)}, as: ${JSON.stringify(t.as)}});`];
   }
+  if ('fold' in t) {
+    // Vega-Lite's "un-pivot": one output row per (original row, folded
+    // field) pair, with two new columns naming which field it came from
+    // and that field's own value -- every other column carried through
+    // unchanged. Previously entirely unsupported, silently skipped under
+    // `--ignore-unsupported` (area_density_stacked_fold.vl.json's own
+    // shape: a subsequent `density` transform reads the fold's own
+    // "value" output column, which never existed at all with the fold
+    // itself skipped, so `vlDensity` computed a density over an
+    // all-`undefined` field -- the user-reported "doesn't seem to be
+    // plotting data" symptom).
+    const asNames = Array.isArray(t.as) && t.as.length === 2 ? t.as : ['key', 'value'];
+    const fields = JSON.stringify(t.fold);
+    return [
+      `${dataVar} = ${dataVar}.flatMap(d => (${fields}).map(f => ({...d, ${JSON.stringify(asNames[0])}: f, ${JSON.stringify(asNames[1])}: d[f]})));`,
+    ];
+  }
   if ('joinaggregate' in t) {
     // Like the top-level `aggregate` transform just above -- same
     // groupby/op/field/as shape -- but JOINS the per-group aggregate back

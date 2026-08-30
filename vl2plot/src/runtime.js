@@ -209,6 +209,75 @@ export class VlQBar extends Plot.Mark {
   }
 }
 
+// Vega-Lite's `xOffset`/`yOffset` with a genuinely QUANTITATIVE field (not
+// the far more common categorical "dodge" case, see catChannelPairs() in
+// marks.js) is a real, distinct shape -- confirmed against the real
+// compiler's own output for bar_ranged_offset_quantitative.vl.json: the
+// offset channel gets its own LINEAR scale (domain: the field's own real
+// min/max, NOT forced through zero; range: `[0, bandwidth(outer-category-
+// scale)]`), and the bar's own position on that axis is `outerBand(cat) +
+// offsetScale(value)`, with a small FIXED thickness (confirmed empirically
+// against the real compiler's own resolved output: exactly 18px,
+// regardless of the outer band's own size) rather than a value-driven
+// zero-baseline length. The OTHER position channel (`x`, in that same
+// spec) is a completely ordinary band category, unaffected by any of
+// this. Needs a custom mark because Plot has no "sub-position within a
+// band via a second, nested scale" concept of its own; the outer
+// category's own scale is still Plot's real 'x'/'y' band scale (declared
+// with an explicit `{type: 'band'}` at the top-level Plot.plot() options
+// specifically so it exposes a real, resolvable `.bandwidth()` inside
+// this mark's own render() -- confirmed empirically that Plot infers a
+// zero-width 'point' scale instead, silently, whenever nothing else on
+// the plot establishes band-ness).
+export class VlOffsetBar extends Plot.Mark {
+  constructor(data, options = {}) {
+    const {plainCh, plainCat, offsetCh, offsetCat, offsetValue, offsetDomain, fill, title, size = 18} = options;
+    const channels = {
+      plainCat: {value: plainCat, scale: plainCh},
+      offsetCat: {value: offsetCat, scale: offsetCh},
+      offsetValue: {value: offsetValue},
+    };
+    if (fill != null) channels.fill = {value: fill, scale: 'color'};
+    if (title != null) channels.title = {value: title, optional: true};
+    super(data, channels, options, {ariaLabel: 'bar'});
+    this.plainCh = plainCh;
+    this.offsetCh = offsetCh;
+    this.offsetDomain = offsetDomain;
+    this.size = size;
+  }
+  render(index, scales, values, dimensions, context) {
+    const g = d3.select(context.document.createElementNS('http://www.w3.org/2000/svg', 'g'));
+    const plainBandwidth = typeof scales[this.plainCh].bandwidth === 'function' ? scales[this.plainCh].bandwidth() : 0;
+    const outerBandwidth = typeof scales[this.offsetCh].bandwidth === 'function' ? scales[this.offsetCh].bandwidth() : 0;
+    const [lo, hi] = this.offsetDomain;
+    const span = hi - lo || 1;
+    const thickness = Math.min(this.size, outerBandwidth || this.size);
+    for (const i of index) {
+      const plainStart = values.plainCat[i];
+      const outerStart = values.offsetCat[i];
+      const subPos = ((values.offsetValue[i] - lo) / span) * outerBandwidth;
+      const fill = values.fill ? values.fill[i] : 'currentColor';
+      const rect =
+        this.plainCh === 'x'
+          ? g
+              .append('rect')
+              .attr('x', plainStart)
+              .attr('width', plainBandwidth)
+              .attr('y', outerStart + subPos)
+              .attr('height', thickness)
+          : g
+              .append('rect')
+              .attr('y', plainStart)
+              .attr('height', plainBandwidth)
+              .attr('x', outerStart + subPos)
+              .attr('width', thickness);
+      rect.attr('fill', fill);
+      if (values.title) rect.append('title').text(values.title[i]);
+    }
+    return g.node();
+  }
+}
+
 // Vega-Lite's *explicit* stack transform: given a value `field` and a
 // `groupby` field list, computes a cumulative running sum of `field`
 // within each group (ordered by `sort`, a list of `{field, order}`),

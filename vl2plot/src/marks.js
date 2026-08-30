@@ -9,6 +9,7 @@
 import {formatValue} from './literals.js';
 import {channelValue, effectiveType, isQuantitative, hasField} from './encoding.js';
 import {applyTimeUnits, planTransform} from './prepare.js';
+import {plotReducer} from './aggops.js';
 import {planStack} from './stack.js';
 
 // A fresh CSS class name per dodged bar mark needing a min-band-size
@@ -274,6 +275,37 @@ function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
 
 function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
   const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
+  // A genuinely QUANTITATIVE `xOffset`/`yOffset` (as opposed to the far
+  // more common categorical "dodge" case, see catChannelPairs() below) is
+  // a real, distinct shape -- bar_ranged_offset_quantitative.vl.json's
+  // own `y: {field: "team"}` + `yOffset: {field: "score", type:
+  // "quantitative"}`: the offset channel gets its own LINEAR sub-scale
+  // *within* the outer category's own band (real Vega-Lite's own
+  // documented behavior, confirmed against the real compiler's output),
+  // not a plain dodge position and not a zero-baseline bar length. The
+  // OTHER position channel (`x`, in that spec) is a completely ordinary
+  // band category. See VlOffsetBar's own doc comment (runtime.js).
+  for (const offsetBaseCh of ['x', 'y']) {
+    const offsetDef = enc[`${offsetBaseCh}Offset`];
+    if (!isRealChannel(offsetDef) || !isQuantitative(offsetDef)) continue;
+    const plainCh = offsetBaseCh === 'x' ? 'y' : 'x';
+    const plainDef = enc[plainCh];
+    const offsetBaseDef = enc[offsetBaseCh];
+    if (!hasField(plainDef) || !hasField(offsetBaseDef) || !hasField(offsetDef)) continue;
+    const colorDef = enc.color || enc.fill || enc.stroke;
+    const tooltipDef = Array.isArray(enc.tooltip) ? enc.tooltip[0] : enc.tooltip;
+    const qPairs = [
+      ['plainCh', JSON.stringify(plainCh)],
+      ['plainCat', val(plainDef)],
+      ['offsetCh', JSON.stringify(offsetBaseCh)],
+      ['offsetCat', val(offsetBaseDef)],
+      ['offsetValue', val(offsetDef)],
+      ['offsetDomain', `d3.extent(${dataVar}, d => d[${JSON.stringify(offsetDef.field)}])`],
+      colorDef ? ['fill', val(colorDef)] : null,
+      tooltipDef ? ['title', val(tooltipDef)] : null,
+    ].filter(Boolean);
+    return {statements, markExpr: `new VlOffsetBar(${dataVar}, ${objectSource(qPairs)})`};
+  }
   const valueCh = orient === 'horizontal' ? 'x' : 'y';
   const catCh = orient === 'horizontal' ? 'y' : 'x';
   const catCompanionCh = `${catCh}2`;
@@ -551,8 +583,49 @@ function renderText(encoding, markProps, dataVar, ignoreUnsupported) {
   return {statements, markExpr: `Plot.text(${dataVar}, ${wrapped})`};
 }
 
+// A binned axis's own `bin` shorthand for `Plot.bin`'s per-axis options --
+// `{value: field, thresholds: maxbins}`, matching planTransform()'s own
+// maxbins->thresholds convention for the 1D case (prepare.js).
+function binAxisOption(def) {
+  const thresholds = def.bin && typeof def.bin === 'object' && typeof def.bin.maxbins === 'number' ? def.bin.maxbins : 10;
+  return `{value: ${formatValue(def.field)}, thresholds: ${thresholds}}`;
+}
+
+function isRealBin(def) {
+  return def && def.bin && !(typeof def.bin === 'object' && def.bin.binned === true);
+}
+
+// A genuine 2D histogram/heatmap -- both x and y independently binned,
+// with an aggregate (typically `count`) elsewhere, usually `color` (e.g.
+// rect_binned_heatmap.vl.json's own `x`/`y` both `bin: {maxbins: N}`,
+// `color: {aggregate: "count"}`) -- planTransform()'s own binX/binY
+// convention only ever binds a SINGLE axis (Vega-Lite's own 1D bin/group
+// model, see its own doc comment), so falling through to the generic
+// renderRect() path below treated this shape as "bin x only, leave y's
+// own bin spec as a plain unbucketed field" -- every row sharing an
+// x-bin (regardless of its own y value) collapsed into one giant
+// vertical smear instead of a real 2D grid of binned cells. Plot's own
+// `Plot.bin(outputs, options)` transform (distinct from `Plot.binX`/
+// `Plot.binY`) natively supports binning BOTH x and y at once, which is
+// exactly this shape.
+function renderRect2DBin(enc, markProps, dataVar, ignoreUnsupported) {
+  const colorCh = colorChannelName('rect', markProps);
+  const colorDef = enc.color || enc.fill || enc.stroke;
+  const outputs = [];
+  if (colorDef && colorDef.aggregate != null) {
+    outputs.push([colorCh, JSON.stringify(plotReducer(colorDef.aggregate, ignoreUnsupported))]);
+  }
+  const passthrough = commonChannels(enc, 'rect', markProps).filter(([k]) => k !== colorCh);
+  const binOptions = [['x', binAxisOption(enc.x)], ['y', binAxisOption(enc.y)], ...passthrough];
+  const wrapped = `Plot.bin(${objectSource(outputs)}, ${objectSource(binOptions)})`;
+  return `Plot.rect(${dataVar}, ${wrapped})`;
+}
+
 function renderRect(encoding, markProps, dataVar, ignoreUnsupported) {
   const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
+  if (isRealBin(enc.x) && isRealBin(enc.y)) {
+    return {statements, markExpr: renderRect2DBin(enc, markProps, dataVar, ignoreUnsupported)};
+  }
   // Both axes ordinal, neither with a companion range (x2/y2) -- the
   // classic full-grid heatmap shape -- uses `Plot.cell` (one discrete cell
   // per (x, y) combination); anything with a real numeric span on either

@@ -243,3 +243,58 @@ test_that("an explicit mark.orient wins over the both-quantitative orientation g
   # which would span most of the way to the neighboring category at a=5).
   expect_true(all(d$ymax - d$ymin < 1))
 })
+
+test_that("a line's color and detail channels combine into the group aesthetic, not just detail alone", {
+  # repeat_child_layer.vl.json's own shape: `color: {field: "location"}` +
+  # `detail: {field: "year"}` on the same line layer. Two independent
+  # bugs previously combined here: (1) the aggregation planner's own
+  # groupby-field cap ("more than 2 fields") silently dropped `detail`
+  # from the x+color+detail set entirely, leaving its own year value
+  # untruncated; (2) even with detail correctly retained, the `group`
+  # aes-combining logic in encoding.R skipped itself outright whenever
+  # `detail` had already populated `group` on its own, so `colour` never
+  # got folded in -- every row sharing the same year (regardless of
+  # location) ended up on one merged, crossing line.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"loc": "A", "year": 2020, "m": 1, "v": 1}, {"loc": "A", "year": 2020, "m": 2, "v": 2},
+      {"loc": "A", "year": 2021, "m": 1, "v": 10}, {"loc": "A", "year": 2021, "m": 2, "v": 20},
+      {"loc": "B", "year": 2020, "m": 1, "v": 5}, {"loc": "B", "year": 2020, "m": 2, "v": 6}
+    ]},
+    "mark": "line",
+    "encoding": {
+      "x": {"field": "m", "type": "ordinal"},
+      "y": {"field": "v", "type": "quantitative"},
+      "color": {"field": "loc", "type": "nominal"},
+      "detail": {"field": "year", "type": "nominal"}
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "interaction\\(.*loc.*year")
+  r <- run_spec(spec)
+  d <- r$built$data[[1]]
+  # 3 distinct (loc, year) series -> 3 distinct ggplot-internal group ids.
+  expect_equal(length(unique(d$group)), 3)
+})
+
+test_that("a standalone text mark's synthesized constant axis hides its own chrome", {
+  # rect_mosaic_labelled_with_offset.vl.json's own shape: a standalone
+  # `mark: "text"` view with only an `x` encoding (no `y` at all) --
+  # the 1D-strip fallback synthesizes a constant `y = ""` position so
+  # ggplot2 has something to plot against, but previously left that
+  # fabricated axis's own default chrome (panel background, gridlines,
+  # tick marks, an empty-string axis title) fully visible, reading as an
+  # entire second, empty chart floating above the real one.
+  spec <- spec_from_json('{
+    "data": {"values": [{"g": "a", "v": 1}, {"g": "b", "v": 2}]},
+    "mark": "text",
+    "encoding": {"x": {"field": "v", "type": "quantitative"}, "text": {"field": "g"}}
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "axis\\.text\\.y = ggplot2::element_blank\\(\\)")
+  expect_match(code, "axis\\.ticks\\.y = ggplot2::element_blank\\(\\)")
+  expect_match(code, "axis\\.title\\.y = ggplot2::element_blank\\(\\)")
+  # Still renders real data, not just theme chrome.
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+})

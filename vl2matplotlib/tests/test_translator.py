@@ -1203,3 +1203,65 @@ def test_mark_invalid_null_on_an_area_widens_the_domain_and_leaves_real_gaps():
     assert xlim[0] <= -1 and xlim[1] >= 10, f"expected the x-axis to still span the full -1..10 domain, got {xlim}"
     paths = ax.collections[0].get_paths()
     assert len(paths) >= 2, f"expected the area to break into separate paths around the null rows, got {len(paths)}"
+
+
+def test_a_line_marks_own_detail_channel_splits_series_that_share_a_color_group():
+    # repeat_child_layer.vl.json's own shape: `color: {field: "location"}`
+    # + `detail: {field: "year"}` on the same line layer -- previously the
+    # draw loop only ever grouped by `color`'s own field, so every year's
+    # worth of rows for one location got concatenated (sorted only by the
+    # domain axis) into a single line that zigzagged backwards between
+    # years instead of drawing one smooth line per (location, year) pair.
+    fig, _ = render({
+        "data": {"values": [
+            {"loc": "A", "year": 2020, "m": 1, "v": 1}, {"loc": "A", "year": 2020, "m": 2, "v": 2},
+            {"loc": "A", "year": 2021, "m": 1, "v": 10}, {"loc": "A", "year": 2021, "m": 2, "v": 20},
+            {"loc": "B", "year": 2020, "m": 1, "v": 5}, {"loc": "B", "year": 2020, "m": 2, "v": 6},
+        ]},
+        "mark": "line",
+        "encoding": {
+            "x": {"field": "m", "type": "ordinal"},
+            "y": {"field": "v", "type": "quantitative"},
+            "color": {"field": "loc", "type": "nominal"},
+            "detail": {"field": "year", "type": "nominal"},
+        },
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    lines = ax.get_lines()
+    assert len(lines) == 3, f"expected 3 separate lines (A/2020, A/2021, B/2020), got {len(lines)}"
+    labels = [l.get_label() for l in lines]
+    assert labels.count("A") == 1, f"expected exactly one legend-visible 'A' entry, got labels: {labels}"
+    assert labels.count("B") == 1, f"expected exactly one legend-visible 'B' entry, got labels: {labels}"
+
+
+def test_a_genuinely_quantitative_yoffset_draws_a_real_sub_band_ranged_bar():
+    # bar_ranged_offset_quantitative.vl.json's own shape: `y: {field:
+    # "team"}` + `yOffset: {field: "score", type: "quantitative"}` on a
+    # bar whose x is also categorical (quarter) -- neither axis is
+    # quantitative, so _render_bar()'s own horizontal/value/cat
+    # classification previously never even noticed yOffset at all,
+    # falling through to treating team's own string values as a numeric
+    # bar length. Confirmed against the real compiler's own output: the
+    # offset channel gets a linear sub-position within the outer team
+    # band, a small fixed thickness, not a value-driven bar length.
+    fig, _ = render({
+        "data": {"values": [
+            {"quarter": "Q1", "team": "A", "score": 12}, {"quarter": "Q2", "team": "A", "score": 18},
+            {"quarter": "Q1", "team": "B", "score": 8}, {"quarter": "Q2", "team": "B", "score": 14},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "quarter", "type": "ordinal"},
+            "y": {"field": "team", "type": "nominal"},
+            "yOffset": {"field": "score", "type": "quantitative"},
+            "color": {"field": "team", "type": "nominal"},
+        },
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.patches) == 4
+    widths = {round(p.get_width(), 6) for p in ax.patches}
+    assert len(widths) == 1, f"expected every bar to share the same real bandwidth, got {widths}"
+    heights = {round(p.get_height(), 6) for p in ax.patches}
+    assert len(heights) == 1, f"expected every bar to share the same fixed sub-band height, got {heights}"
+    ys = {round(p.get_y(), 6) for p in ax.patches}
+    assert len(ys) == 4, f"expected 4 distinct y positions (one per row's own score), got {ys}"

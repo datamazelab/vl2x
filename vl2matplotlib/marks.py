@@ -451,7 +451,111 @@ def render_mark(mark, encoding: dict, data_var: str, ax_var: str, ignore_unsuppo
     return renderer(encoding, mark_props, data_var, ax_var, ignore_unsupported)
 
 
+def _render_ranged_offset_bar(encoding: dict, mark_props: dict, data_var: str, ax_var: str, offset_ch: str, offset_def: dict) -> list[str]:
+    """A genuinely QUANTITATIVE `xOffset`/`yOffset` (as opposed to the far
+    more common categorical "dodge" case in `_render_bar()` below) is a
+    real, distinct shape -- bar_ranged_offset_quantitative.vl.json's own
+    `y: {field: "team"}` + `yOffset: {field: "score", type:
+    "quantitative"}`: confirmed against the real compiler's own output,
+    the offset channel gets a LINEAR sub-position *within* the outer
+    category's own band (domain: the field's own real min/max, NOT
+    forced through zero), with a small FIXED thickness -- not a
+    value-driven zero-baseline bar length, and not a discrete per-group
+    dodge slot. The OTHER position channel is a completely ordinary
+    categorical position, unaffected by any of this. `_render_bar()`'s
+    own `horizontal`/`value_channel`/`cat_channel` classification never
+    even notices this shape at all: neither x nor y is quantitative
+    (`team`/`quarter` are both categorical), so it falls through to
+    treating `team`'s own string values as if they were a numeric bar
+    length -- this is checked and handled BEFORE any of that runs."""
+    base_ch = "y" if offset_ch == "yOffset" else "x"
+    plain_ch = "x" if base_ch == "y" else "y"
+    base_def = encoding.get(base_ch) or {}
+    plain_def = encoding.get(plain_ch) or {}
+    offset_field = offset_def["field"]
+
+    stmts: list[str] = []
+    plain_col, plain_stmts = position_column(plain_ch, plain_def, data_var)
+    stmts += plain_stmts
+    stmts += _axis_setup_stmts(ax_var, plain_ch, plain_def, data_var)
+    base_col, base_stmts = position_column(base_ch, base_def, data_var)
+    stmts += base_stmts
+    stmts += _axis_setup_stmts(ax_var, base_ch, base_def, data_var)
+
+    # matplotlib has no direct data-space equivalent of the real
+    # compiler's own fixed-pixel sub-band height (confirmed empirically:
+    # a flat 18px regardless of the outer band's own size) -- a data-
+    # space unit has no fixed relationship to eventual rendered pixels at
+    # all here, so this instead uses a FRACTION of this project's own
+    # existing 0.8-wide ordinal-band convention (already used for every
+    # other categorical bar elsewhere in this file), reading as a
+    # visibly-thick-but-clearly-sub-band-sized bar with real gaps between
+    # different rows' own possible positions.
+    band_span = 0.8
+    thickness = band_span * 0.5
+    sub_pos_var = f"__{offset_ch}_sub_{data_var}"
+    stmts.append(
+        f"{sub_pos_var} = (({data_var}[{offset_field!r}] - ({data_var}[{offset_field!r}].min())) / "
+        f"max(({data_var}[{offset_field!r}].max()) - ({data_var}[{offset_field!r}].min()), 1e-9)) * {band_span}"
+    )
+    base_lo = f"(({base_col}) - {band_span / 2})"
+
+    group_field, fixed_color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts)
+    color_map_var = None
+    if group_field:
+        kind, var = _categorical_color_lookup(encoding.get("color"), data_var, stmts)
+        color_map_var = f"__colormap_{data_var}"
+        if kind == "raw":
+            # No fixed domain->color mapping to build a legend from at all
+            # here (the raw field values *are* the literal colors) -- a
+            # `ax.bar(color=<array>)` call still draws correctly, it just
+            # gets no legend below.
+            color_expr = f"{data_var}[{group_field!r}].astype(str)"
+            color_map_var = None
+        elif kind == "map":
+            color_expr = f"{data_var}[{group_field!r}].map({var}).fillna({DEFAULT_COLOR})"
+            color_map_var = var
+        else:
+            stmts.append(
+                f"{color_map_var} = {{v: {var}[i % len({var})] for i, v in enumerate("
+                f"sorted({data_var}[{group_field!r}].dropna().unique(), key={ORDINAL_SORT_KEY}))}}"
+            )
+            color_expr = f"{data_var}[{group_field!r}].map({color_map_var}).fillna({DEFAULT_COLOR})"
+    else:
+        color_expr = fixed_color
+
+    alpha = _opacity_value(encoding, mark_props)
+    if base_ch == "y":
+        stmts.append(
+            f"{ax_var}.bar({plain_col}, {thickness!r}, width={band_span!r}, bottom={base_lo} + {sub_pos_var}, "
+            f"color={color_expr}, alpha={alpha})"
+        )
+    else:
+        stmts.append(
+            f"{ax_var}.barh({plain_col}, {thickness!r}, height={band_span!r}, left={base_lo} + {sub_pos_var}, "
+            f"color={color_expr}, alpha={alpha})"
+        )
+    # `color=<array>` on a single `ax.bar()` call (not a per-group draw
+    # loop, unlike every other color-array bar case in this file) gives
+    # no per-artist `label=` for a plain `ax.legend()` to pick up at all
+    # -- built directly from the domain->color map instead, the same
+    # explicit-handles convention the dodge+stack branch elsewhere in
+    # this file uses for its own identical "one vectorized draw call,
+    # not a loop" shape.
+    if color_map_var and not _legend_hidden(encoding.get("color")):
+        stmts.append(
+            f"{ax_var}.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=__c) for __c in {color_map_var}.values()], "
+            f"labels=[str(__k) for __k in {color_map_var}.keys()], title={group_field!r}, "
+            f"bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)"
+        )
+    return stmts
+
+
 def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> list[str]:
+    for offset_ch in ("xOffset", "yOffset"):
+        offset_def = encoding.get(offset_ch)
+        if isinstance(offset_def, dict) and offset_def.get("field") and is_quantitative(offset_def):
+            return _render_ranged_offset_bar(encoding, mark_props, data_var, ax_var, offset_ch, offset_def)
     x_def, y_def = encoding.get("x"), encoding.get("y")
     # An explicit mark-level `orient` always wins; otherwise Vega-Lite's own
     # inference: horizontal iff x is the continuous (quantitative) channel
@@ -1162,7 +1266,9 @@ def _render_errorband(encoding, mark_props, data_var, ax_var, ignore_unsupported
     return stmts
 
 
-def _grouped_or_single(encoding, mark_props, data_var, draw_stmt_fn, stmts: list[str] | None = None, allow_row_array: bool = True) -> list[str]:
+def _grouped_or_single(
+    encoding, mark_props, data_var, draw_stmt_fn, stmts: list[str] | None = None, allow_row_array: bool = True, extra_group_field: str | None = None
+) -> list[str]:
     """`draw_stmt_fn(rows_expr, color_expr, label_expr)` builds the one
     matplotlib call for either the single ungrouped case or each iteration
     of the grouping loop. `stmts`, when given, lets a `color.condition`
@@ -1170,8 +1276,50 @@ def _grouped_or_single(encoding, mark_props, data_var, draw_stmt_fn, stmts: list
     draw call(s) below reference it; omit (or pass `allow_row_array=False`,
     for a caller -- `line`/`area` -- whose own matplotlib call can't take
     an array `color=`) to fall back to the condition's flat base color
-    instead."""
+    instead.
+
+    `extra_group_field` (a line/area mark's own `detail` field --
+    repeat_child_layer.vl.json's own shape: `color: {field: "location"}`
+    *and* `detail: {timeUnit: "year", field: "date"}` on the same layer)
+    splits each color group's own rows into further sub-series that no
+    longer get connected into one another -- previously grouping was by
+    `color` alone, so every year's own rows for the same location were
+    concatenated (sorted only by month) into a single zigzagging line that
+    crossed back on itself between years, instead of one smooth line per
+    (location, year) pair. Vega-Lite's own `detail` channel contributes no
+    visual encoding of its own, so every sub-series here still draws with
+    its shared color group's own single color/label -- `_nolegend_` (a
+    matplotlib-recognized "exclude this artist" label) is used for every
+    sub-series after a color group's first, so the legend still shows
+    exactly one entry per color value instead of one per (color, detail)
+    combination."""
     group_field, fixed_color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts, allow_row_array=allow_row_array)
+    if group_field and extra_group_field:
+        lines: list[str] = []
+        kind, var = _categorical_color_lookup(encoding.get("color"), data_var, lines)
+        # A stable per-color-value palette index, computed once up front --
+        # needed because the draw loop below now enumerates every (color,
+        # detail) COMBINATION, not just each distinct color value, so a
+        # bare loop-position index would otherwise cycle through the
+        # palette once per combination instead of once per color.
+        idx_var = f"__color_idx_{data_var}"
+        lines.append(
+            f"{idx_var} = {{v: i for i, v in enumerate(sorted({data_var}[{group_field!r}].dropna().unique(), "
+            f"key=lambda v: (0, v) if isinstance(v, (int, float)) else (1, str(v))))}}"
+        )
+        color_expr = (
+            "str(__key[0])" if kind == "raw"
+            else f"{var}.get(__key[0], {DEFAULT_COLOR})" if kind == "map"
+            else f"{var}[{idx_var}[__key[0]] % len({var})]"
+        )
+        seen_var = f"__seen_{data_var}"
+        lines.append(f"{seen_var} = set()")
+        lines.append(f"for __key, __rows in {data_var}.groupby([{group_field!r}, {extra_group_field!r}]):")
+        label_expr = f"(str(__key[0]) if __key[0] not in {seen_var} else '_nolegend_')"
+        inner = draw_stmt_fn("__rows", color_expr, label_expr)
+        lines += [f"    {s}" for s in inner]
+        lines.append(f"    {seen_var}.add(__key[0])")
+        return lines
     if group_field:
         lines: list[str] = []
         kind, var = _categorical_color_lookup(encoding.get("color"), data_var, lines)
@@ -1182,6 +1330,17 @@ def _grouped_or_single(encoding, mark_props, data_var, draw_stmt_fn, stmts: list
         )
         lines.append(f"for __i, (__key, __rows) in enumerate({data_var}.groupby({group_field!r})):")
         inner = draw_stmt_fn("__rows", color_expr, "str(__key)")
+        lines += [f"    {s}" for s in inner]
+        return lines
+    if extra_group_field:
+        # No color grouping at all -- `detail` alone still splits the mark
+        # into several independent series (so they don't zigzag between
+        # each other), but Vega-Lite's own semantics give every one of
+        # them the identical fixed color/no legend entry, matching the
+        # plain single-series case below in every way except the actual
+        # `groupby()`.
+        lines = [f"for __key, __rows in {data_var}.groupby({extra_group_field!r}):"]
+        inner = draw_stmt_fn("__rows", fixed_color, None)
         lines += [f"    {s}" for s in inner]
         return lines
     return draw_stmt_fn(data_var, fixed_color, None)
@@ -1523,7 +1682,26 @@ def _render_line_or_area(is_area: bool):
                 out.append(f"{ax_var}.plot({rx}, {ry}, color={color}, alpha={alpha}{label_kw}{marker_kw})")
             return out
 
-        stmts += _grouped_or_single(encoding, mark_props, data_var, draw, allow_row_array=False)
+        # `detail` (e.g. repeat_child_layer.vl.json's own `color: {field:
+        # "location"}` + `detail: {timeUnit: "year", field: "date"}`)
+        # splits a line/area's own rows into further sub-series that must
+        # NOT be connected into one another -- without this, every row
+        # sharing a `color` group (here, every year's worth of rows for
+        # one location) got concatenated, sorted only by the domain axis,
+        # into a single line that zigzagged backwards between years
+        # instead of drawing one smooth line per (location, year) pair.
+        # No `is_quantitative()` exclusion here (unlike `_color_source()`'s
+        # own field check) -- `detail` has no continuous/colormap rendering
+        # of its own to fall back to at all, it's purely a discrete
+        # grouping key regardless of whether its own values happen to be
+        # numeric (e.g. this spec's own `year_date`, a cyclic `timeUnit:
+        # "year"` reduced to a plain int by the earlier timeUnit-rewrite
+        # pass, which also relabels its own `type` as "quantitative" --
+        # correct for a real value channel, but not a reason to treat a
+        # `detail` channel's own year values as anything but categories).
+        detail_def = encoding.get("detail")
+        detail_field = detail_def.get("field") if isinstance(detail_def, dict) and detail_def.get("field") else None
+        stmts += _grouped_or_single(encoding, mark_props, data_var, draw, allow_row_array=False, extra_group_field=detail_field)
         group_field = _color_source(encoding, mark_props)[0]
         if group_field and not _legend_hidden(encoding.get("color")):
             stmts.append(_legend_stmt(ax_var, group_field))

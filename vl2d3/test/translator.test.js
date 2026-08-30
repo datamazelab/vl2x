@@ -338,6 +338,70 @@ test('a datum-only color channel on an ungrouped line mark uses the shared color
   assert.notEqual(strokes[0], strokes[1], `expected the two layers to resolve to different color(...) calls, got: ${strokes}`);
 });
 
+test("a line mark's own detail channel splits series that share a color group, not just color alone", async () => {
+  // repeat_child_layer.vl.json's own shape: `color: {field: "location"}`
+  // + `detail: {field: "year"}` on the same line layer -- previously the
+  // draw loop only ever grouped by seriesGroupField()'s own pick (color,
+  // when present), so every year's worth of rows for one location got
+  // drawn as one path, sorted only by the domain axis, zigzagging
+  // backwards between years instead of drawing one smooth line per
+  // (location, year) pair.
+  const {document} = await renderSpec({
+    data: {values: [
+      {loc: 'A', year: 2020, m: 1, v: 1}, {loc: 'A', year: 2020, m: 2, v: 2},
+      {loc: 'A', year: 2021, m: 1, v: 10}, {loc: 'A', year: 2021, m: 2, v: 20},
+      {loc: 'B', year: 2020, m: 1, v: 5}, {loc: 'B', year: 2020, m: 2, v: 6},
+    ]},
+    mark: 'line',
+    encoding: {
+      x: {field: 'm', type: 'ordinal'},
+      y: {field: 'v', type: 'quantitative'},
+      color: {field: 'loc', type: 'nominal'},
+      detail: {field: 'year', type: 'nominal'},
+    },
+  }, {ignoreUnsupported: true});
+  const paths = marksOf(document, 'path');
+  assert.equal(paths.length, 3, `expected 3 separate lines (A/2020, A/2021, B/2020), got ${paths.length}`);
+});
+
+test('a genuinely quantitative yOffset draws a real sub-band ranged bar, not a heatmap cell', async () => {
+  // bar_ranged_offset_quantitative.vl.json's own shape: `y: {field:
+  // "team"}` + `yOffset: {field: "score", type: "quantitative"}` on a
+  // bar mark whose OTHER axis (x: quarter) is also a plain band --
+  // previously this matched the "both axes are bands, no offset"
+  // heatmap-cell branch first, drawing one solid bandwidth-by-bandwidth
+  // box per (quarter, team) pair and completely ignoring the offset.
+  // Confirmed against the real compiler's own output: the offset channel
+  // gets a LINEAR sub-scale within the outer team band (domain: the
+  // field's own real min/max, range [0, bandwidth]), a small FIXED
+  // height, not a value-driven zero-baseline length.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {quarter: 'Q1', team: 'A', score: 12}, {quarter: 'Q2', team: 'A', score: 18},
+      {quarter: 'Q1', team: 'B', score: 8}, {quarter: 'Q2', team: 'B', score: 14},
+    ]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'quarter', type: 'ordinal'},
+      y: {field: 'team', type: 'nominal'},
+      yOffset: {field: 'score', type: 'quantitative'},
+      color: {field: 'team', type: 'nominal'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /d3\.scaleLinear\(d3\.extent/);
+  // Excludes the 10x10 legend swatch rects (marksOf()'s own swatch
+  // filter has nothing to match against here -- vl2d3's legend rects
+  // carry no distinguishing class of their own).
+  const rects = marksOf(document, 'rect').filter(r => r.getAttribute('height') !== '10');
+  assert.equal(rects.length, 4);
+  const widths = new Set(rects.map(r => r.getAttribute('width')));
+  assert.equal(widths.size, 1, `expected every bar to share the same real bandwidth, got: ${[...widths]}`);
+  const heights = new Set(rects.map(r => r.getAttribute('height')));
+  assert.equal(heights.size, 1, `expected every bar to share the same fixed sub-band height, got: ${[...heights]}`);
+  const ys = new Set(rects.map(r => r.getAttribute('y')));
+  assert.equal(ys.size, 4, `expected 4 distinct y positions (one per row's own score), got: ${ys.size}`);
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

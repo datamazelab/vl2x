@@ -1046,3 +1046,81 @@ test('bin:true (no explicit maxbins) defaults to 10 bins, matching real Vega-Lit
   }, {ignoreUnsupported: true});
   assert.match(code, /thresholds:\s*10/);
 });
+
+test('rect with both x and y binned draws a real 2D grid of cells, not a 1D smear along one axis', async () => {
+  // rect_binned_heatmap.vl.json's own shape: `x`/`y` both `bin: {maxbins:
+  // N}`, `color: {aggregate: "count"}` -- planTransform()'s own 1D-only
+  // bin/group convention previously bound only x, leaving y's own bin
+  // spec as a plain unbucketed field: every row sharing an x-bin
+  // collapsed into one giant vertical smear regardless of its own y
+  // value, instead of a real 2D grid of binned cells.
+  const values = [];
+  for (let x = 0; x < 20; x++) for (let y = 0; y < 20; y++) values.push({x, y});
+  const {document} = await renderSpec({
+    data: {values},
+    mark: 'rect',
+    encoding: {
+      x: {field: 'x', type: 'quantitative', bin: {maxbins: 5}},
+      y: {field: 'y', type: 'quantitative', bin: {maxbins: 5}},
+      color: {aggregate: 'count', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  const rects = marksOf(document, 'rect');
+  const xs = new Set(rects.map(r => r.getAttribute('x')));
+  const ys = new Set(rects.map(r => r.getAttribute('y')));
+  assert.ok(xs.size > 1, `expected multiple distinct x positions, got ${xs.size}`);
+  assert.ok(ys.size > 1, `expected multiple distinct y positions, got ${ys.size}`);
+});
+
+test('a top-level fold transform un-pivots the listed fields, not silently skipped', async () => {
+  // area_density_stacked_fold.vl.json's own shape: a `fold` transform
+  // (previously entirely unsupported, silently skipped under
+  // --ignore-unsupported) feeding a SUBSEQUENT `density` transform that
+  // reads fold's own "value" output column -- with fold skipped, that
+  // column never existed at all, so density computed over an
+  // all-undefined field, producing no plottable data (the user-reported
+  // "doesn't seem to be plotting data" symptom).
+  const {code} = await renderSpec({
+    data: {values: [{a: 1, b: 2}, {a: 3, b: 4}]},
+    transform: [{fold: ['a', 'b'], as: ['key', 'val']}],
+    mark: 'point',
+    encoding: {x: {field: 'key', type: 'nominal'}, y: {field: 'val', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /skipped unsupported transform/);
+  assert.match(code, /flatMap/);
+});
+
+test('a genuinely quantitative yOffset draws a real sub-band ranged bar, not a dodge/facet', async () => {
+  // bar_ranged_offset_quantitative.vl.json's own shape: `y: {field:
+  // "team"}` + `yOffset: {field: "score", type: "quantitative"}` --
+  // confirmed against the real compiler's own output that this means a
+  // LINEAR sub-scale within the outer team band (domain: the field's own
+  // real min/max, range: [0, bandwidth]), a small FIXED height (18px),
+  // NOT the far more common categorical dodge treatment (which would
+  // repurpose y into a facet). Previously fell through to the dodge path
+  // regardless of type, producing a stray fy facet and a raw (unscaled)
+  // score value used directly as a band position.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {quarter: 'Q1', team: 'A', score: 12}, {quarter: 'Q2', team: 'A', score: 18},
+      {quarter: 'Q1', team: 'B', score: 8}, {quarter: 'Q2', team: 'B', score: 14},
+    ]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'quarter', type: 'ordinal'},
+      y: {field: 'team', type: 'nominal'},
+      yOffset: {field: 'score', type: 'quantitative'},
+      color: {field: 'team', type: 'nominal'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /\bfy:/);
+  const rects = marksOf(document, 'rect');
+  assert.equal(rects.length, 4);
+  const widths = new Set(rects.map(r => r.getAttribute('width')));
+  assert.equal(widths.size, 1, `expected every bar to share the same real bandwidth, got widths: ${[...widths]}`);
+  assert.notEqual(widths.values().next().value, '0', 'expected a nonzero bandwidth, not the zero-width point-scale collapse');
+  const heights = new Set(rects.map(r => r.getAttribute('height')));
+  assert.equal(heights.size, 1, `expected every bar to share the same fixed sub-band height, got: ${[...heights]}`);
+  const ys = new Set(rects.map(r => r.getAttribute('y')));
+  assert.equal(ys.size, 4, `expected 4 distinct y positions (one per row's own score), got: ${ys.size}`);
+});

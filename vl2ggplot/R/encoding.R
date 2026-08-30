@@ -202,8 +202,23 @@ build_layer_channels <- function(encoding, mark_type, ignore_unsupported = FALSE
   # (x, y, colour) *row* becomes its own single-point "line" whenever x or y
   # is discrete too -- nothing visibly connects, even though the data and
   # colour mapping are both otherwise correct.
-  if (mark_type %in% c("line", "trail", "area") && is.null(aes_pairs[["group"]])) {
+  if (mark_type %in% c("line", "trail", "area")) {
+    # A `detail` channel already populated `aes_pairs[["group"]]` on its
+    # own, via the generic per-channel mapping loop above (`.channel_aes_
+    # name`'s own `detail = "group"` entry) -- previously this whole block
+    # was skipped outright whenever that happened (`is.null(aes_pairs[[
+    # "group"]])`), so a layer with BOTH `colour` and `detail` (e.g.
+    # repeat_child_layer.vl.json's own `color: {field: "location"}` +
+    # `detail: {field: "date", timeUnit: "year"}`) never got `colour`
+    # folded into the grouping key at all: `group` stayed just `detail`'s
+    # own field alone, merging every colour group's own rows that
+    # happened to share the same detail value into a single connected
+    # line. Folded in here as one more candidate grouping_exprs entry
+    # instead, alongside colour/fill/shape, so two rows only ever share a
+    # line when they agree on EVERY discrete channel, not just one.
+    detail_group <- aes_pairs[["group"]]
     grouping_exprs <- unlist(aes_pairs[intersect(c("colour", "fill", "shape"), names(aes_pairs))], use.names = FALSE)
+    if (!is.null(detail_group)) grouping_exprs <- c(grouping_exprs, detail_group)
     if (!is.null(invalid_run_field)) {
       # A run id partitioning the rows on either side of an invalid-value
       # gap (render_invalid_run_id(), translator.R) -- folded in here

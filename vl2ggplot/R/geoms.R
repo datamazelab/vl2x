@@ -769,6 +769,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       fixed[["y"]] <- if (identical(mark_props[["baseline"]], "top")) "-Inf" else "Inf"
     }
   }
+  synthesized_axes <- character(0)
   if (mark_type %in% c("point", "circle", "square", "tick", "bar", "rect", "text") && !isTRUE(plan$use_histogram) && !identical(fixed[["stat"]], '"count"')) {
     # A 1D strip/dot plot (only one of x/y given) centers on the missing
     # axis rather than requiring both -- mirroring vl2d3's same fallback.
@@ -784,10 +785,13 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     if (is.null(aes_pairs[["x"]]) && is.null(fixed[["x"]]) && is.null(aes_pairs[["y"]]) && is.null(fixed[["y"]])) {
       fixed[["x"]] <- '""'
       fixed[["y"]] <- '""'
+      synthesized_axes <- c("x", "y")
     } else if (is.null(aes_pairs[["x"]]) && is.null(fixed[["x"]])) {
       aes_pairs[["x"]] <- '""'
+      synthesized_axes <- "x"
     } else if (is.null(aes_pairs[["y"]]) && is.null(fixed[["y"]])) {
       aes_pairs[["y"]] <- '""'
+      synthesized_axes <- "y"
     }
   }
   # geom_col()/geom_bar()'s default orientation ("x": x is the
@@ -872,6 +876,19 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   }
   fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]), ignore_unsupported, .notes)
   main_call <- build_call(fn, aes_pairs, fixed, data_arg)
+  # A synthesized constant `""` position (just above, the 1D-strip
+  # fallback) has no real data-driven meaning at all -- left un-hidden,
+  # a genuinely standalone view (rect_mosaic_labelled_with_offset.vl
+  # .json's own top text-label strip, a bare `mark: "text"` with only an
+  # `x` encoding) drew its own fabricated axis's full default chrome
+  # (panel background, gridlines, tick marks, an empty-string axis
+  # title) -- reading as an entire second, empty chart floating above
+  # the real one instead of a compact label row. Mirrors the identical
+  # `blank_axis_theme()` treatment the bar/rect zero-baseline branches
+  # above already apply for the same reason; only fires when this view
+  # is genuinely standalone (blank_axis_theme()'s own guard), never for
+  # a layer child sharing scale with real sibling data.
+  for (axis in synthesized_axes) main_call <- paste0(main_call, blank_axis_theme(axis))
   # `mark.line`/`mark.point` (e.g. area_overlay.vl.json's own `{"type":
   # "area", "line": true, "point": true}`) overlay the area's own top edge
   # with a stroked line and/or a marker per data point -- ggplot2 has no

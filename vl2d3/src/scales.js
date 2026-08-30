@@ -648,6 +648,29 @@ export function resolveOpacityScale(def, {dataVar, ignoreUnsupported = false, in
 // turned out continuous -- callers must handle that, see marks.js).
 export function resolveOffsetScale(channel, def, {dataVar, outerScale, minBandSize, explicitDomain}) {
   const varName = channel; // "xOffset" or "yOffset"
+  // A genuinely QUANTITATIVE offset (as opposed to the far more common
+  // categorical "dodge" case below) is a real, distinct shape --
+  // confirmed against the real compiler's own output for bar_ranged_
+  // offset_quantitative.vl.json: the offset channel gets a LINEAR scale,
+  // domain the field's own real min/max (NOT forced through zero), range
+  // `[0, outer.bandwidth()]` -- a continuous sub-position *within* the
+  // outer band, not a discrete per-group slot. Every `bandwidth()`-based
+  // caller elsewhere (dodgeAwareAccessor()/renderBar() in marks.js) must
+  // check `kind === 'linear'` before doing so, since a plain
+  // `d3.scaleLinear()` has no such method at all.
+  if (def.type === 'quantitative') {
+    const domainExpr = `d3.extent(${dataVar}, d => d[${JSON.stringify(def.field)}])`;
+    const scaleExpr = `d3.scaleLinear(${domainExpr}, [0, ${outerScale.varName}.bandwidth()])`;
+    if (outerScale.kind === 'ambiguous') {
+      return {
+        varName,
+        decl: `const ${varName} = ${outerScale.isNominalVar} ? ${scaleExpr} : null;`,
+        kind: 'linear',
+        conditional: true,
+      };
+    }
+    return {varName, decl: `const ${varName} = ${scaleExpr};`, kind: 'linear', conditional: false};
+  }
   // `explicitDomain` (e.g. bar_grouped_repeated.vl.json's own `datum`-only
   // xOffset, see translator.js's caller) is a plain array of already-known
   // literal values -- there's no data column to derive an ordinal domain

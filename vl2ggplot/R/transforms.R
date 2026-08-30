@@ -667,12 +667,18 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     return(plan)
   }
 
+  # No cap on the number of groupby channels here -- both consumers below
+  # (plan_native_stat()'s own timeUnit-truncation loop, and plan_explicit_
+  # aggregate()'s dplyr::group_by(), see its own group_field_refs) already
+  # handle an arbitrary number of groupby fields generically, with no
+  # hardcoded arity limit. An earlier "more than 2 fields" cap here
+  # silently dropped any additional channel from BOTH the timeUnit
+  # truncation AND the actual grouping -- e.g. repeat_child_layer.vl
+  # .json's own `x` (month) + `color` (location) + `detail` (year), which
+  # dropped `detail` entirely, leaving its own untruncated raw date field
+  # to leak through wherever geoms.R separately reads `encoding$detail`
+  # directly (its own `group` aes).
   group_keys <- c(plain_keys, tu_only_keys)
-  if (length(group_keys) > 2) {
-    if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
-    group_keys <- group_keys[1:2]
-    plan_notes <- c(plan_notes, "# vl2ggplot: unsupported aggregation grouped by more than 2 fields, keeping only the first 2 (ignore_unsupported)")
-  }
 
   # All-stat-summary-compatible, exactly one aggregate channel, and *some*
   # discrete groupby channel to summarize within -- let the geom's own stat
@@ -988,11 +994,9 @@ apply_error_extent <- function(mark_props, encoding, var_name, ignore_unsupporte
 
 plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ignore_unsupported = FALSE, facet_group_fields = character(0), densify_channels = NULL, center_stack = FALSE, offset_field = NULL) {
   notes <- character(0)
-  if (length(group_keys) > 2) {
-    if (!ignore_unsupported) stop("Unsupported: aggregating grouped by more than 2 fields is not yet supported")
-    group_keys <- group_keys[1:2]
-    notes <- c(notes, "# vl2ggplot: unsupported aggregation grouped by more than 2 fields, keeping only the first 2 (ignore_unsupported)")
-  }
+  # No cap on group_keys here either -- see plan_layer_data()'s own
+  # identical comment above; group_field_refs below is already built and
+  # passed to dplyr::group_by() generically, with no arity limit.
   if (!ignore_unsupported) {
     for (k in agg_keys) {
       op <- encoding[[k]]$aggregate

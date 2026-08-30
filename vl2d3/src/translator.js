@@ -896,14 +896,11 @@ function buildUnitOrLayerBody(root, ignoreUnsupported, dataParam = null, include
   for (const [offsetChannel, posChannel] of [['xOffset', 'x'], ['yOffset', 'y']]) {
     const def = prepared.map(p => p.encoding[offsetChannel]).find(Boolean);
     const outerScale = scales[posChannel];
-    // A quantitative xOffset/yOffset is Vega-Lite's *other* use of this
-    // channel -- per-row jitter by a continuous value, added directly as a
-    // pixel nudge -- not the dodge/grouped-band case resolveOffsetScale()
-    // builds for; there's no finite "distinct group" domain to band over
-    // (every row can have its own value), so this is left unhandled
-    // (dropped, same as before this offset support existed) rather than
-    // building a degenerate one-slot-per-row scale.
-    if (!def || 'value' in def || def.type === 'quantitative' || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
+    // A genuinely QUANTITATIVE xOffset/yOffset (resolveOffsetScale()'s own
+    // linear-sub-scale branch, scales.js) still needs an outer band scale
+    // to nest inside -- same requirement as the categorical dodge case
+    // below, just a different scale *shape* once past this check.
+    if (!def || 'value' in def || !outerScale || (outerScale.kind !== 'band' && outerScale.kind !== 'ambiguous')) continue;
     // A DEFAULT floor of 1px (not just an explicit `config.bar.minBandSize`
     // override, see resolveOffsetScale()'s own comment) even with no config
     // at all -- with enough distinct offset values sharing one outer band

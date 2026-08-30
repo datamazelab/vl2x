@@ -145,7 +145,13 @@ function dodgeAwareAccessor(encoding, scales, channel, ignoreUnsupported = false
   if (!offsetDef || (offsetDef.field === undefined && offsetDef.datum === undefined) || !offsetScale) {
     return `${base}${bandCenterOffset(scales[channel])}`;
   }
-  const withOffset = `${base} + ${offsetScale.varName}(${offsetKeyExpr(offsetDef)}) + ${offsetScale.varName}.bandwidth() / 2`;
+  // A LINEAR offset scale (resolveOffsetScale()'s own quantitative branch,
+  // scales.js) has no `bandwidth()` of its own to center within at all --
+  // its own computed sub-position already IS the exact intended offset,
+  // unlike a discrete dodge sub-band (which needs the extra `/2` to land
+  // on its own center rather than its left/top edge).
+  const centering = offsetScale.kind === 'linear' ? '' : ` + ${offsetScale.varName}.bandwidth() / 2`;
+  const withOffset = `${base} + ${offsetScale.varName}(${offsetKeyExpr(offsetDef)})${centering}`;
   return offsetScale.conditional ? `(${offsetScale.varName} ? (${withOffset}) : (${base}))` : withOffset;
 }
 
@@ -1063,6 +1069,27 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("height", ${yBarWidthVar})`);
     lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
     lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
+  } else if (xBand && yBand && !encoding.x2 && !encoding.y2 && encoding.yOffset && scales.yOffset && scales.yOffset.kind === 'linear') {
+    // Both x AND y are bands, with a genuinely QUANTITATIVE yOffset on
+    // top (bar_ranged_offset_quantitative.vl.json's own shape: `y:
+    // {field: "team"}` + `yOffset: {field: "score", type:
+    // "quantitative"}`) -- checked BEFORE the plain "both bands, no
+    // offset" heatmap-cell case just below, which would otherwise match
+    // first and draw one solid bandwidth-by-bandwidth cell per (x, y)
+    // pair, completely ignoring the offset's own per-row sub-position.
+    // `x` stays an entirely ordinary band; `y`'s own bar sits at
+    // `y(team) + yOffset(score)`, a small FIXED height (18px, confirmed
+    // against the real compiler's own resolved output -- not a
+    // value-driven zero-baseline length).
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]))`);
+    lines.push(`    .attr("width", x.bandwidth())`);
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) + yOffset(${offsetKeyExpr(encoding.yOffset)}))`);
+    lines.push(`    .attr("height", 18)`);
+  } else if (xBand && yBand && !encoding.x2 && !encoding.y2 && encoding.xOffset && scales.xOffset && scales.xOffset.kind === 'linear') {
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]))`);
+    lines.push(`    .attr("height", y.bandwidth())`);
+    lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) + xOffset(${offsetKeyExpr(encoding.xOffset)}))`);
+    lines.push(`    .attr("width", 18)`);
   } else if (xBand && yBand && !encoding.x2 && !encoding.y2) {
     // Both axes are bands with no value/range channel at all -- a
     // heatmap/grid cell: a full bandwidth-by-bandwidth box at each (x, y)
@@ -1522,6 +1549,17 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   const cy = y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
   const sortField = x ? encoding.x.field : encoding.y.field;
   const groupField = seriesGroupField(encoding);
+  // A `detail` field DISTINCT from whatever seriesGroupField() already
+  // picked as the primary groupField (e.g. repeat_child_layer.vl.json's
+  // own `color: {field: "location"}` + `detail: {timeUnit: "year",
+  // field: "date"}` on the same layer) additionally splits each color
+  // group's own rows into further sub-series that must not be connected
+  // into one another -- without this, every row sharing a `color` group
+  // (here, every year's worth of rows for one location) got drawn as one
+  // path, sorted only by the domain axis, zigzagging backwards between
+  // years instead of drawing one smooth line per (location, year) pair.
+  const detailField =
+    encoding.detail && encoding.detail.field && encoding.detail.field !== groupField ? encoding.detail.field : null;
   // The row-drop filter for x/y is deliberately skipped upstream for a
   // "line" mark (see pathContinuityChannels(), translator.js) -- an
   // invalid row is still IN `dataVar` here, and needs this `.defined()`
@@ -1551,13 +1589,28 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
     lines.push(`    .attr("fill", "none")`);
     lines.push(`    .attr("stroke-width", ${formatValue(simpleMarkProp(markProps.strokeWidth, 1.5, 'strokeWidth', ignoreUnsupported))}${markPropNote(markProps.strokeWidth, 'strokeWidth', ignoreUnsupported)})`);
     lines.push(`  .selectAll("path")`);
-    lines.push(`  .data(d3.group(${dataVar}, d => d[${JSON.stringify(groupField)}]))`);
-    lines.push(`  .join("path")`);
-    lines.push(`    .attr("stroke", ([key]) => ${stroke})`);
-    lines.push(
-      `    .attr("d", ([, rows]) => d3.line()${definedClause}${curve}.x(d => ${cx}).y(d => ${cy})` +
-        `(rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
-    );
+    if (detailField) {
+      // d3.flatGroup() (unlike d3.group(), which nests one Map inside
+      // another for multiple key accessors) returns a flat array of
+      // `[key1, key2, ..., rows]` tuples -- exactly one entry per
+      // (groupField, detailField) combination, ready to join one <path>
+      // per entry the same way the single-key case below does.
+      lines.push(`  .data(d3.flatGroup(${dataVar}, d => d[${JSON.stringify(groupField)}], d => d[${JSON.stringify(detailField)}]))`);
+      lines.push(`  .join("path")`);
+      lines.push(`    .attr("stroke", ([key]) => ${stroke})`);
+      lines.push(
+        `    .attr("d", ([, , rows]) => d3.line()${definedClause}${curve}.x(d => ${cx}).y(d => ${cy})` +
+          `(rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
+      );
+    } else {
+      lines.push(`  .data(d3.group(${dataVar}, d => d[${JSON.stringify(groupField)}]))`);
+      lines.push(`  .join("path")`);
+      lines.push(`    .attr("stroke", ([key]) => ${stroke})`);
+      lines.push(
+        `    .attr("d", ([, rows]) => d3.line()${definedClause}${curve}.x(d => ${cx}).y(d => ${cy})` +
+          `(rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
+      );
+    }
   } else {
     // A `datum`-only (or literal `value`) color/fill/stroke channel (e.g.
     // repeat_layer.vl.json's own per-repeated-layer `color: {datum:

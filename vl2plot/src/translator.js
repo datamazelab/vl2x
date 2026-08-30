@@ -18,6 +18,7 @@ import {extractDateFunctionFields} from './expr.js';
 import {collectTemporalFields as collectEncodingTemporalFields} from './prepare.js';
 import {buildScaleOptions, renderScaleBlock} from './scales.js';
 import {formatValue} from './literals.js';
+import {isQuantitative} from './encoding.js';
 
 const UNSUPPORTED_COMPOSITIONS = ['repeat'];
 
@@ -114,8 +115,39 @@ function collectScaleOptions(encoding, markType, ignoreUnsupported) {
     if (opts) out[scaleCh] = {...(out[scaleCh] || {}), ...opts};
   }
 
+  // A genuinely quantitative `xOffset`/`yOffset` (VlOffsetBar's own case,
+  // marks.js) needs its OUTER category channel's own top-level scale
+  // forced to an explicit real band scale -- confirmed empirically that
+  // Plot otherwise infers a zero-width 'point' scale for a bare position
+  // channel with no other mark on the plot establishing band-ness,
+  // leaving VlOffsetBar's own render() with a `bandwidth() === 0` to
+  // divide by (silently collapsing every bar's own offset sub-position to
+  // the band's start edge, and its own plainCh's real bandwidth to 0).
+  for (const offsetCh of ['xOffset', 'yOffset']) {
+    const def = encoding[offsetCh];
+    if (!isRealChannel(def) || !isQuantitative(def)) continue;
+    // Both position channels need this, not just the offset's own outer
+    // category -- confirmed empirically that VlOffsetBar's OTHER
+    // (`plainCh`) channel gets the identical zero-bandwidth 'point'-scale
+    // treatment for the exact same reason (nothing else on the plot
+    // signals band-ness for it either, since VlOffsetBar is the only
+    // mark), silently collapsing its own real band width to 0 too.
+    const baseCh = offsetCh === 'xOffset' ? 'x' : 'y';
+    const plainCh = baseCh === 'x' ? 'y' : 'x';
+    out[baseCh] = {...(out[baseCh] || {}), type: 'band'};
+    out[plainCh] = {...(out[plainCh] || {}), type: 'band'};
+  }
+
   for (const [offsetCh, {facet, base}] of Object.entries(DODGE_OFFSET_TO_FACET)) {
-    if (!isRealChannel(encoding[offsetCh])) continue;
+    // A genuinely quantitative offset (handled entirely by the loop just
+    // above instead -- VlOffsetBar's own real sub-band linear scale, not
+    // a dodge) must NOT also go through the facet-repurposing treatment
+    // here: the two are mutually exclusive interpretations of the same
+    // `xOffset`/`yOffset` channel, and applying both left a stray
+    // `fy`/`axis: null` fighting VlOffsetBar's own genuine `y` axis
+    // (the outer category's real band scale, which this shape needs
+    // fully visible, unlike an ordinary dodge's repurposed one).
+    if (!isRealChannel(encoding[offsetCh]) || isQuantitative(encoding[offsetCh])) continue;
     // `padding: 0.1` (a small gap between groups, not between every bar
     // within one) keeps adjacent groups reading as one combined axis
     // rather than visually separate facet panels; the repurposed
@@ -897,7 +929,7 @@ export function specToCode(spec, options = {}) {
 
   const bodyText = bodyLines.join('\n');
   const needsD3 = /\bd3\.\w+\(/.test(bodyText);
-  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlFlatten', 'vlDensity', 'VlArc', 'VlTrail', 'VlQBar', 'vlWindow', 'vlArgAggregate', 'vlFacetSortValues', 'vlApplyMinBandSize'].filter(name =>
+  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlFlatten', 'vlDensity', 'VlArc', 'VlTrail', 'VlQBar', 'VlOffsetBar', 'vlWindow', 'vlArgAggregate', 'vlFacetSortValues', 'vlApplyMinBandSize'].filter(name =>
     new RegExp(`\\b${name}\\(`).test(bodyText)
   );
 
