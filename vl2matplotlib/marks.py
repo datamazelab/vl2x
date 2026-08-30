@@ -1638,6 +1638,33 @@ def _render_line_or_area(is_area: bool):
         value_channel = "x" if horizontal else "y"
         companion = encoding.get(f"{value_channel}2")
         base_expr = f"{data_var}[{companion['field']!r}]" if isinstance(companion, dict) and companion.get("field") else "0"
+        # `mark: {"invalid": null}` on an AREA (as opposed to a line, whose
+        # own null rows genuinely break the path into a gap) means "show
+        # this row as a real zero-height point at the baseline instead of
+        # a gap" -- confirmed against the real compiler's own output for
+        # area_invalid_null.vl.json: an invalid row's own `y_end` is
+        # rewritten to `0` (matching the zero-baseline `y_start` a
+        # no-companion area already has), keeping the fill ONE continuous
+        # polygon that dips to the baseline at each invalid x rather than
+        # tearing into separate disconnected islands (or, worse, simply
+        # cropping those edge rows out of the plot's own x-domain
+        # entirely, the direct cause of the previously-missing -1..10
+        # edges). By the time `encoding` reaches this renderer, an
+        # implicitly-stacked area (stack.py's own apply_stacking_to_
+        # encoding(), which applies unconditionally to every area/bar
+        # regardless of a color channel) has ALREADY rewritten `y`/`y2`
+        # to `<field>_stack1`/`<field>_stack0` -- for this spec's own
+        # single-row-per-x groups, `.cumsum()` over one NaN value stays
+        # NaN, so BOTH the rewritten value field and its companion carry
+        # the null through, not just the original `y`. Real Vega-Lite's
+        # own behavior clamps BOTH ends to 0 for an invalid row, so both
+        # are cleared here, whichever field names they currently carry.
+        clamp_invalid_to_zero = is_area and mark_props.get("invalid", "filter") is None
+        if clamp_invalid_to_zero:
+            value_field = (x_def if horizontal else y_def)["field"]
+            stmts.append(f"{data_var}[{value_field!r}] = {data_var}[{value_field!r}].fillna(0)")
+            if isinstance(companion, dict) and companion.get("field"):
+                stmts.append(f"{data_var}[{companion['field']!r}] = {data_var}[{companion['field']!r}].fillna(0)")
         # `mark: {type: "line", point: true}` (or a style-override object,
         # `{point: {color: ..., size: ...}}`) overlays a marker at each of
         # the line's own data points -- previously dropped entirely,
@@ -1735,6 +1762,14 @@ def _render_rule(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
     x2_def, y2_def = encoding.get("x2"), encoding.get("y2")
     stmts: list[str] = []
     alpha = _opacity_value(encoding, mark_props)
+    # A rule's own mark-level color property is `stroke` (e.g.
+    # bar_simple_extent.vl.json's own `mark: {"type": "rule", "stroke":
+    # "firebrick"}`), not the generic `color` -- `_color_source()`'s own
+    # `mark_props` fallback only ever checks `mark_props["color"]`, so a
+    # rule relying solely on `stroke` (no `color` encoding channel or
+    # mark property at all, a common real shape for a fixed reference
+    # line) silently fell back to the flat default blue regardless.
+    stroke_fallback = format_color_value(mark_props["stroke"]) if "stroke" in mark_props else DEFAULT_COLOR
 
     if has_field(x_def) and has_field(y_def) and (x2_def or y2_def):
         x_col, xs = position_column("x", x_def, data_var)
@@ -1746,14 +1781,14 @@ def _render_rule(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> 
         # via this exact x/y/y2 range-bar-adjacent shape) as more than a
         # single flat color -- the branches below (a single `axvline`/
         # `axhline` per row, or one fixed reference line) can't.
-        color = _color_source(encoding, mark_props, data_var=data_var, stmts=stmts)[1]
+        color = _color_source(encoding, mark_props, fallback=stroke_fallback, data_var=data_var, stmts=stmts)[1]
         if y2_def and y2_def.get("field"):
             stmts.append(f"{ax_var}.vlines({x_col}, {y_col}, {data_var}[{y2_def['field']!r}], color={color}, alpha={alpha})")
         elif x2_def and x2_def.get("field"):
             stmts.append(f"{ax_var}.hlines({y_col}, {x_col}, {data_var}[{x2_def['field']!r}], color={color}, alpha={alpha})")
         return stmts
 
-    color = _color_source(encoding, mark_props, allow_row_array=False)[1]
+    color = _color_source(encoding, mark_props, fallback=stroke_fallback, allow_row_array=False)[1]
     if has_field(x_def) and not has_field(y_def):
         x_col, xs = position_column("x", x_def, data_var)
         stmts += xs

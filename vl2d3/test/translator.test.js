@@ -402,6 +402,32 @@ test('a genuinely quantitative yOffset draws a real sub-band ranged bar, not a h
   assert.equal(ys.size, 4, `expected 4 distinct y positions (one per row's own score), got: ${ys.size}`);
 });
 
+test('a "binned" timeUnit position channel draws a real y/y2 range bar, not a zero-baseline value', async () => {
+  // bar_simple_binned_timeunit_special_chars.vl.json's own shape: `y:
+  // {field: "a\\.b", timeUnit: "binnedutcyearmonthdate"}` on a bar with
+  // no y2 of its own -- previously the truncated date field had no
+  // companion end at all, so the bar-rendering fallback treated the
+  // temporal y channel as a plain quantitative value and called `y(0)`
+  // (nonsensical for a time scale, since 0 isn't a real Date). Confirmed
+  // against the real compiler's own output: a "binned" timeUnit implies
+  // a real y2 one bucket-width past the truncated start.
+  const {document, code} = await renderSpec({
+    data: {values: [{d: '2022-01-01', v: 1}, {d: '2022-01-02', v: 2}]},
+    mark: 'bar',
+    encoding: {
+      y: {field: 'd', type: 'temporal', timeUnit: 'binnedyearmonthdate'},
+      x: {field: 'v', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /y\(0\)/);
+  assert.match(code, /_end/);
+  const rects = marksOf(document, 'rect');
+  assert.equal(rects.length, 2);
+  for (const r of rects) {
+    assert.ok(Number(r.getAttribute('height')) > 0, `expected a real positive bar height, got ${r.getAttribute('height')}`);
+  }
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

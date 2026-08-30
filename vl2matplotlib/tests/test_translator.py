@@ -1182,14 +1182,19 @@ def test_an_explicit_scale_domain_clamps_the_axis_matching_the_horizon_graph_idi
     assert ax.get_ylim() == (0, 50)
 
 
-def test_mark_invalid_null_on_an_area_widens_the_domain_and_leaves_real_gaps():
+def test_mark_invalid_null_on_an_area_clamps_to_the_baseline_as_one_continuous_shape():
     # area_invalid_null.vl.json's own shape: `mark: {"type": "area",
     # "invalid": null}` -- unlike the default ("filter", which drops
     # invalid rows and connects smoothly across the gap), an explicit
-    # `invalid: null` keeps them in place, meaning the domain axis must
-    # still reflect their own real x extent (not shrink to only the
-    # valid rows'), and the drawn area must break into separate paths at
-    # each null instead of connecting through it.
+    # `invalid: null` keeps them in place. Confirmed against the real
+    # compiler's own output: an invalid row's own y is rewritten to 0
+    # (matching the zero-baseline the OTHER end already has), so the
+    # fill stays ONE continuous polygon that dips to the baseline at
+    # each invalid x, rather than tearing into separate disconnected
+    # islands (or being cropped out of the x-domain entirely) -- unlike
+    # a LINE mark's own null handling, which genuinely does break the
+    # path into a gap (a materially different real Vega-Lite behavior,
+    # not replicated here).
     fig, _ = render({
         "data": {"values": [
             {"x": -1, "y": None}, {"x": 1, "y": 10}, {"x": 2, "y": 30},
@@ -1202,7 +1207,11 @@ def test_mark_invalid_null_on_an_area_widens_the_domain_and_leaves_real_gaps():
     xlim = ax.get_xlim()
     assert xlim[0] <= -1 and xlim[1] >= 10, f"expected the x-axis to still span the full -1..10 domain, got {xlim}"
     paths = ax.collections[0].get_paths()
-    assert len(paths) >= 2, f"expected the area to break into separate paths around the null rows, got {len(paths)}"
+    assert len(paths) == 1, f"expected one continuous polygon dipping to the baseline, got {len(paths)} separate paths"
+    verts = paths[0].vertices
+    # The polygon's own leftmost/rightmost x should reach the invalid
+    # edge rows (-1 and 10), not just the valid rows' own 1..4 extent.
+    assert verts[:, 0].min() <= -1 and verts[:, 0].max() >= 10
 
 
 def test_a_line_marks_own_detail_channel_splits_series_that_share_a_color_group():
@@ -1265,3 +1274,38 @@ def test_a_genuinely_quantitative_yoffset_draws_a_real_sub_band_ranged_bar():
     assert len(heights) == 1, f"expected every bar to share the same fixed sub-band height, got {heights}"
     ys = {round(p.get_y(), 6) for p in ax.patches}
     assert len(ys) == 4, f"expected 4 distinct y positions (one per row's own score), got {ys}"
+
+
+def test_a_top_level_extent_transform_feeds_a_rule_marks_own_scale_expr_value():
+    # bar_simple_extent.vl.json's own shape: `transform: [{"extent": "b",
+    # "param": "b_extent"}]` feeding a rule mark's own `x: {value: {expr:
+    # "scale('x', b_extent[0])"}}`. Previously `extent` was entirely
+    # unsupported (silently skipped), leaving the raw `{"expr": ...}` dict
+    # spliced straight through as a literal Python dict passed to
+    # `ax.axvline(x=...)` -- "unhashable type: 'dict'".
+    fig, code = render({
+        "data": {"values": [{"b": 28}, {"b": 55}, {"b": 91}]},
+        "transform": [{"extent": "b", "param": "b_extent"}],
+        "mark": {"type": "rule", "stroke": "firebrick"},
+        "encoding": {"x": {"value": {"expr": "scale('x', b_extent[0])"}}},
+    }, ignore_unsupported=True)
+    assert "b_extent[0]" in code
+    assert "{" not in code.split("x=")[1].split(",")[0]
+    ax = fig.axes[0]
+    assert len(ax.get_lines()) == 1
+    assert ax.get_lines()[0].get_xdata()[0] == 28
+
+
+def test_a_rule_marks_own_mark_level_stroke_is_used_not_just_color():
+    # bar_simple_extent.vl.json's own two rule layers: `mark: {"type":
+    # "rule", "stroke": "firebrick"}` -- _color_source()'s own mark_props
+    # fallback only ever checked "color", never "stroke", so a rule
+    # relying solely on a mark-level stroke (no color encoding/property at
+    # all) silently fell back to the flat default blue.
+    fig, _ = render({
+        "data": {"values": [{"b": 1}]},
+        "mark": {"type": "rule", "stroke": "firebrick"},
+        "encoding": {"x": {"field": "b", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert ax.get_lines()[0].get_color() == "firebrick"

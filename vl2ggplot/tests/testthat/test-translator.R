@@ -298,3 +298,35 @@ test_that("a standalone text mark's synthesized constant axis hides its own chro
   r <- run_spec(spec)
   expect_equal(nrow(r$built$data[[1]]), 2)
 })
+
+test_that("a genuinely quantitative yOffset draws a real sub-band ranged bar via geom_rect", {
+  # bar_ranged_offset_quantitative.vl.json's own shape: `y: {field:
+  # "team"}` + `yOffset: {field: "score", type: "quantitative"}` --
+  # ggplot2's own `position_dodge2()` (the categorical-dodge case this
+  # project otherwise maps xOffset/yOffset onto directly) has no way to
+  # express a continuous linear sub-position within a band at all, so
+  # this previously fell through to treating the offset field as an
+  # ordinary discrete dodge group (`group = score`), fragmenting every
+  # row into its own tiny dodge slot instead of a real ranged sub-position.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"quarter": "Q1", "team": "A", "score": 12}, {"quarter": "Q2", "team": "A", "score": 18},
+      {"quarter": "Q1", "team": "B", "score": 8}, {"quarter": "Q2", "team": "B", "score": 14}
+    ]},
+    "mark": "bar",
+    "encoding": {
+      "x": {"field": "quarter", "type": "ordinal"},
+      "y": {"field": "team", "type": "nominal"},
+      "yOffset": {"field": "score", "type": "quantitative"},
+      "color": {"field": "team", "type": "nominal"}
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "ggplot2::geom_rect")
+  expect_no_match <- !grepl("position_dodge2", code)
+  expect_true(expect_no_match)
+  r <- run_spec(spec)
+  d <- r$built$data[[1]]
+  expect_equal(nrow(d), 4)
+  expect_equal(length(unique(round(d$ymin, 6))), 4)
+})

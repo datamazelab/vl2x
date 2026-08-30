@@ -531,8 +531,22 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
   offset_channel <- intersect(names(node_encoding), c("xOffset", "yOffset"))
   if (length(offset_channel) > 0) {
     offset_def <- node_encoding[[offset_channel[1]]]
-    if (!is.null(offset_def$field)) {
+    # A genuinely QUANTITATIVE offset (bar_ranged_offset_quantitative.vl
+    # .json's own shape) is a real, distinct shape from the categorical
+    # dodge case this whole block otherwise handles -- `position_dodge2()`
+    # requires a discrete grouping variable, not a continuous one, and has
+    # no way to express "a linear sub-position within the outer band" at
+    # all. Left in `node_encoding` (not stripped the way the dodge case's
+    # own offset channel is, just below) and `offset_field` left NULL (so
+    # none of the dodge-specific machinery below activates) -- render_geom_
+    # layer_code()'s own early check (geoms.R) reads the channel directly
+    # off the still-intact encoding instead, building real geom_rect()
+    # geometry by hand.
+    if (identical(offset_def$type, "quantitative")) {
+      # leave node_encoding/offset_field untouched -- geoms.R handles it
+    } else if (!is.null(offset_def$field)) {
       offset_field <- offset_def
+      node_encoding[[offset_channel[1]]] <- NULL
     } else if (!ignore_unsupported) {
       stop(sprintf('Unsupported: "%s" with no field (a constant offset) is not yet supported by vl2ggplot', offset_channel[1]))
     } else {
@@ -540,8 +554,8 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
         '# vl2ggplot: unsupported "%s" with no field (a constant offset), rendering series overlapping instead (ignore_unsupported)',
         offset_channel[1]
       ))
+      node_encoding[[offset_channel[1]]] <- NULL
     }
-    for (ch in c("xOffset", "yOffset")) node_encoding[[ch]] <- NULL
   }
   # This child's own xOffset/yOffset (if any) wins over one shared at the
   # enclosing layer wrapper -- same precedence as any other encoding channel.

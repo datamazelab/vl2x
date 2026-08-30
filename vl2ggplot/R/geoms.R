@@ -375,6 +375,79 @@ render_geom_layer <- function(mark, encoding, data_arg, plan, ignore_unsupported
   list(code = code, notes = if (is.null(notes)) character(0) else paste0("# vl2ggplot: ", notes))
 }
 
+# A genuinely QUANTITATIVE `xOffset`/`yOffset` (as opposed to the far more
+# common categorical "dodge" case, which maps directly onto ggplot2's own
+# `position_dodge2()` -- see prepare_unit()'s own comment, translator.R) is
+# a real, distinct shape -- bar_ranged_offset_quantitative.vl.json's own
+# `y: {field: "team"}` + `yOffset: {field: "score", type: "quantitative"}`:
+# confirmed against the real compiler's own output, the offset channel gets
+# a LINEAR sub-position *within* the outer category's own band (domain: the
+# field's own real min/max, NOT forced through zero), with a small FIXED
+# thickness -- not a value-driven zero-baseline bar length, and not a
+# discrete per-group dodge slot ggplot2's own `position_dodge2()` has no way
+# to express at all (it requires a discrete grouping variable, not a
+# continuous one). Built as `geom_rect()` with every position expressed as
+# a pure aes() computation (factor()-derived integer positions, `min()`/
+# `max()` read directly off the mapped column) rather than pre-mutated
+# columns, since this function -- unlike prepare_unit()/plan_layer_data(),
+# which have real emitter access for a separate statements list -- can only
+# return the one geom-call (plus scale) string appended onto the plot.
+render_ranged_offset_bar_layer <- function(encoding, offset_channel, data_arg, extent_data_var) {
+  base_ch <- if (offset_channel == "yOffset") "y" else "x"
+  plain_ch <- if (base_ch == "y") "x" else "y"
+  offset_field <- encoding[[offset_channel]]$field
+  base_field <- encoding[[base_ch]]$field
+  plain_field <- encoding[[plain_ch]]$field
+  color_def <- encoding$color
+  data_var <- data_arg %||% extent_data_var
+
+  band_span <- 0.8
+  half_span <- band_span / 2
+  thickness <- band_span * 0.5
+  offset_ref <- field_ref(offset_field)
+  sub_pos_expr <- sprintf(
+    "(((%s) - min(%s)) / max(max(%s) - min(%s), 1e-9)) * %s",
+    offset_ref, offset_ref, offset_ref, offset_ref, band_span
+  )
+  base_pos_expr <- sprintf("as.numeric(factor(%s))", field_ref(base_field))
+  plain_pos_expr <- sprintf("as.numeric(factor(%s))", field_ref(plain_field))
+  fill_expr <- if (!is.null(color_def$field)) sprintf(", fill = factor(%s)", field_ref(color_def$field)) else ""
+
+  aes_expr <- if (base_ch == "y") {
+    sprintf(
+      "ggplot2::aes(xmin = (%s) - %s, xmax = (%s) + %s, ymin = (%s) - %s + %s, ymax = (%s) - %s + %s + %s%s)",
+      plain_pos_expr, half_span, plain_pos_expr, half_span,
+      base_pos_expr, half_span, sub_pos_expr,
+      base_pos_expr, half_span, sub_pos_expr, thickness, fill_expr
+    )
+  } else {
+    sprintf(
+      "ggplot2::aes(ymin = (%s) - %s, ymax = (%s) + %s, xmin = (%s) - %s + %s, xmax = (%s) - %s + %s + %s%s)",
+      plain_pos_expr, half_span, plain_pos_expr, half_span,
+      base_pos_expr, half_span, sub_pos_expr,
+      base_pos_expr, half_span, sub_pos_expr, thickness, fill_expr
+    )
+  }
+  geom_args <- character(0)
+  if (!is.null(data_arg)) geom_args <- c(geom_args, sprintf("data = %s", data_arg))
+  geom_args <- c(geom_args, sprintf("mapping = %s", aes_expr))
+  geom_call <- format_call("ggplot2::geom_rect", geom_args)
+  # geom_rect() needs plain numeric xmin/xmax/ymin/ymax (not a discrete
+  # `factor()` position the way an ordinary geom_bar()/geom_col() axis
+  # would show one natively) -- both category axes are real integer
+  # positions here (`as.numeric(factor(...))`, above), so their own tick
+  # labels need restoring by hand via explicit breaks/labels instead.
+  plain_scale <- sprintf(
+    "ggplot2::scale_%s_continuous(breaks = seq_along(levels(factor(%s[[%s]]))), labels = levels(factor(%s[[%s]])))",
+    plain_ch, data_var, deparse(plain_field), data_var, deparse(plain_field)
+  )
+  base_scale <- sprintf(
+    "ggplot2::scale_%s_continuous(breaks = seq_along(levels(factor(%s[[%s]]))), labels = levels(factor(%s[[%s]])))",
+    base_ch, data_var, deparse(base_field), data_var, deparse(base_field)
+  )
+  paste(c(geom_call, plain_scale, base_scale), collapse = " +\n  ")
+}
+
 render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupported = FALSE, .notes = NULL, extent_data_var = NULL, extent_params = list()) {
   mark_type <- if (is.character(mark)) mark else mark$type
   mark_props <- if (is.character(mark)) list() else mark[names(mark) != "type"]
@@ -442,6 +515,15 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     # other point-like mark already shares (below, `fixed[["x"]] <- '""'`
     # etc) -- render_tick_layer() has no equivalent of that fallback.
     return(render_tick_layer(encoding, aes_pairs, fixed, mark_props, data_arg, ignore_unsupported, .notes))
+  }
+  if (mark_type %in% c("bar", "rect")) {
+    quant_offset_channel <-
+      if (!is.null(encoding$yOffset) && identical(encoding$yOffset$type, "quantitative")) "yOffset"
+      else if (!is.null(encoding$xOffset) && identical(encoding$xOffset$type, "quantitative")) "xOffset"
+      else NULL
+    if (!is.null(quant_offset_channel)) {
+      return(render_ranged_offset_bar_layer(encoding, quant_offset_channel, data_arg, extent_data_var))
+    }
   }
   y_range <- error_bounds(encoding, "y", ignore_unsupported, .notes)
   x_range <- error_bounds(encoding, "x", ignore_unsupported, .notes)

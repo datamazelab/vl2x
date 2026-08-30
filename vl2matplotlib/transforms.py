@@ -20,7 +20,7 @@ from .expr import translate_expr
 from .literals import format_value, sanitize_identifier
 from .timeunit import is_supported_timeunit, timeunit_expr
 
-SUPPORTED_TRANSFORM_KEYS = {"filter", "calculate", "aggregate", "bin", "timeUnit", "window", "joinaggregate", "fold", "density", "pivot", "quantile", "stack"}
+SUPPORTED_TRANSFORM_KEYS = {"filter", "calculate", "aggregate", "bin", "timeUnit", "window", "joinaggregate", "fold", "density", "pivot", "quantile", "stack", "extent"}
 
 
 def render_transforms(transform_list: list, data_var: str, ignore_unsupported: bool = False) -> list[str]:
@@ -61,6 +61,19 @@ def _render_one(t: dict, data_var: str, ignore_unsupported: bool) -> list[str]:
         return _render_quantile(t, data_var, ignore_unsupported)
     if "stack" in t:
         return _render_stack_transform(t, data_var, ignore_unsupported)
+    if "extent" in t:
+        # `{"extent": field, "param": name}` computes the [min, max] of
+        # `field` and exposes it under `param` for a later value-channel
+        # expression to reference (e.g. bar_simple_extent.vl.json's own
+        # `x: {value: {expr: "scale('x', b_extent[0])"}}`, a rule mark
+        # drawn at the data's own min/max). Unlike every other transform
+        # here, this needs no per-layer plumbing at all: every generated
+        # script runs as one flat sequence of statements sharing a single
+        # Python module-level namespace, so a plain top-level assignment
+        # here is already visible to any later layer's own expression
+        # that references this name (see encoding.py's channel_value_expr(),
+        # which resolves the matching `scale(...)` shape directly).
+        return [f"{t['param']} = [{data_var}[{t['extent']!r}].min(), {data_var}[{t['extent']!r}].max()]"]
     key = next(iter(t), "<unknown>")
     if ignore_unsupported:
         return [f"# vl2matplotlib: skipped unsupported transform type {key!r} (ignore_unsupported)"]

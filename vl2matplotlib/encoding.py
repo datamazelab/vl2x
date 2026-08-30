@@ -8,7 +8,29 @@ than behind a separate indirection layer here.
 
 from __future__ import annotations
 
+import re
+
 from .literals import format_value
+
+# A value channel's own `{"expr": "scale('x'/'y', <inner>)"}` shape --
+# Vega's own idiom for converting a *data-space* value into the pixel
+# space a raw mark position property expects (needed there because a
+# value channel bypasses the normal field->scale encoding pipeline
+# entirely). matplotlib's own `axvline`/`axhline` (the marks a bare value
+# channel like this actually reaches) already expect a plain DATA-space
+# value -- they apply the plot's own scale automatically -- so `scale(...)`'s
+# own job is a no-op here; only `<inner>` is needed. `<inner>` commonly
+# indexes into a top-level `extent` transform's own two-element `[min,
+# max]` list (`transforms.py`'s own `extent` handling) using the exact
+# same 0-based bracket syntax Python already uses, so it needs no
+# reindexing at all (unlike vl2ggplot's identical case, which has to
+# convert to R's 1-based `range()[...]`).
+_SCALE_EXPR_RE = re.compile(r"^scale\(\s*['\"][xy]['\"]\s*,\s*(.+)\)$")
+
+
+def _resolve_scale_expr(expr: str) -> str | None:
+    m = _SCALE_EXPR_RE.match(expr.strip())
+    return m.group(1) if m else None
 
 
 def has_field(def_: object) -> bool:
@@ -48,7 +70,12 @@ def channel_value_expr(def_: dict) -> str:
     template's own `{"datum": {"repeat": "layer"}}`) rather than a `field` --
     returns the constant Python expression for it."""
     if "value" in def_:
-        return format_value(def_["value"])
+        value = def_["value"]
+        if isinstance(value, dict) and isinstance(value.get("expr"), str):
+            inner = _resolve_scale_expr(value["expr"])
+            if inner is not None:
+                return inner
+        return format_value(value)
     if "datum" in def_:
         datum = def_["datum"]
         if _is_datetime_literal_object(datum):

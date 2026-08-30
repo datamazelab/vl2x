@@ -1124,3 +1124,26 @@ test('a genuinely quantitative yOffset draws a real sub-band ranged bar, not a d
   const ys = new Set(rects.map(r => r.getAttribute('y')));
   assert.equal(ys.size, 4, `expected 4 distinct y positions (one per row's own score), got: ${ys.size}`);
 });
+
+test('an escaped-dot field name (a real "." in the name, not a nested path) survives timeUnit derivation', async () => {
+  // bar_simple_binned_timeunit_special_chars.vl.json's own shape: `field:
+  // "a\\.b"` (Vega-Lite's own escape convention for a literal dot in a
+  // field name) on a `timeUnit`-bearing channel -- previously
+  // collectTemporalFields()/applyTimeUnits() used the raw, still-escaped
+  // field string both to READ the source column and to NAME the derived
+  // one, while the mark's own later channel-value rendering unescapes it
+  // -- creating the derived column under one key
+  // ("binnedyear_a\\.b", a literal backslash) but reading it back under a
+  // DIFFERENT one ("binnedyear_a.b"), silently producing `undefined` for
+  // every row.
+  const {code} = await renderSpec({
+    data: {values: [{'a.b': '2022-01-01', v: 1}, {'a.b': '2022-01-02', v: 2}]},
+    mark: 'bar',
+    encoding: {
+      y: {field: 'a\\.b', type: 'temporal', timeUnit: 'yearmonthdate'},
+      x: {field: 'v', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /\\\\\./, `expected no literal backslash-dot surviving into the generated field names, got: ${code}`);
+  assert.match(code, /"a\.b"/, `expected the real unescaped column name "a.b" to appear, got: ${code}`);
+});

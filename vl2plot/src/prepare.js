@@ -14,7 +14,7 @@
 
 import {isSupportedTimeUnit, timeUnitExpr, isCyclicTimeUnit} from './timeunit.js';
 import {isSupportedAggregateOp, plotReducer} from './aggops.js';
-import {effectiveType} from './encoding.js';
+import {effectiveType, unescapeFieldName} from './encoding.js';
 
 const POSITION_CHANNELS = ['x', 'y'];
 // Every channel Plot's own `groupX`/`groupY` transform can pick up as an
@@ -51,7 +51,15 @@ export function collectTemporalFields(encoding) {
   for (const ch of ALL_CHANNELS) {
     const def = encoding[ch];
     if (!def || typeof def !== 'object' || typeof def.field !== 'string') continue;
-    if (def.type === 'temporal' || def.timeUnit) fields.push(def.field);
+    // Unescaped here (Vega-Lite's own `\.`-means-a-literal-dot convention,
+    // e.g. `"a\\.b"` naming the real column "a.b", not a nested "a"->"b"
+    // path) -- `renderTemporalCoercion()` (data.js) uses this list's own
+    // strings directly as BOTH the read key and the new Date column's own
+    // key, so a still-escaped field here reads a column that doesn't
+    // exist (`d["a\\.b"]` when the real key is "a.b"), silently coercing
+    // to `Invalid Date` for every row (bar_simple_binned_timeunit_
+    // special_chars.vl.json's own shape).
+    if (def.type === 'temporal' || def.timeUnit) fields.push(unescapeFieldName(def.field));
   }
   return fields;
 }
@@ -82,8 +90,15 @@ export function applyTimeUnits(encoding, dataVar, ignoreUnsupported = false) {
       throw new Error(`Unsupported timeUnit: "${JSON.stringify(unit)}"`);
     }
     const unitName = typeof unit === 'object' ? unit.unit : unit;
-    const outField = `${unitName}_${def.field}`;
-    const expr = timeUnitExpr(unit, fieldRef('d', def.field), ignoreUnsupported);
+    // Unescaped for the same reason collectTemporalFields() is, just
+    // above -- collectTemporalFields()'s own output (what
+    // renderTemporalCoercion() actually creates the coerced Date column
+    // under) is ALREADY the real unescaped name, so reading `def.field`
+    // here as-is (still escaped) would look up a column that was never
+    // created under that exact (backslash-containing) key at all.
+    const sourceField = unescapeFieldName(def.field);
+    const outField = `${unitName}_${sourceField}`;
+    const expr = timeUnitExpr(unit, fieldRef('d', sourceField), ignoreUnsupported);
     assigns.push(`${JSON.stringify(outField)}: ${expr}`);
     const impliedType = isCyclicTimeUnit(unit) ? (def.type && def.type !== 'temporal' ? def.type : 'ordinal') : 'temporal';
     rewritten[ch] = {...def, field: outField, timeUnit: undefined, type: def.type || impliedType};

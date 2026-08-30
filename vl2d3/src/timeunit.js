@@ -55,7 +55,7 @@ const local = {
 // `TimeUnitParams` object (`{"unit": "year", "step": 2}`, used for
 // e.g. binning into 2-year buckets). The `step`/other params are dropped --
 // only the base unit is honored -- rather than failing outright.
-function normalize(unit) {
+export function normalize(unit) {
   let name = typeof unit === 'object' && unit !== null ? unit.unit : unit;
   if (typeof name !== 'string') return name;
   // The two prefixes can appear in either order (e.g. "binnedutcyearmonthdate"
@@ -79,6 +79,45 @@ function normalize(unit) {
 
 export function isSupportedTimeUnit(unit) {
   return normalize(unit) in local;
+}
+
+// Whether `unit` carries the leading "binned" marker (in either order
+// relative to a "utc" prefix, e.g. "binnedyearmonthdate"/
+// "utcbinnedyearmonthdate") -- a field Vega-Lite expects to already
+// contain bucket-boundary values, as opposed to a plain not-yet-bucketed
+// timeUnit. Checked directly rather than by comparing `normalize()`'s
+// output length, since `normalize()` strips silently regardless of
+// whether a "binned" prefix was actually present at all.
+export function isBinnedTimeUnit(unit) {
+  const name = typeof unit === 'object' && unit !== null ? unit.unit : unit;
+  if (typeof name !== 'string') return false;
+  const stripped = name.startsWith('utc') ? name.slice(3) : name;
+  return stripped.startsWith('binned');
+}
+
+// A "binned" timeUnit's own implicit companion end -- one bucket-width
+// past `dateExpr`'s own (already-truncated) start, matching real Vega-
+// Lite's own behavior (confirmed against the real compiler's own output
+// for bar_simple_binned_timeunit_special_chars.vl.json: a genuine `y`/`y2`
+// RANGE bar spanning bin-start to bin-start-plus-one-unit, not a
+// zero-baseline value the way a plain quantitative channel would be).
+// Only the monotonic (year-containing) combined units "binned" is ever
+// meaningfully paired with in practice are covered -- a cyclic single
+// unit (`binnedmonth`, say) has no real "next bucket" in absolute time to
+// speak of, and isn't attempted here.
+const BINNED_END_INCREMENT = {
+  year: d => `new Date((${d}).getFullYear() + 1, 0, 1)`,
+  yearquarter: d => `new Date((${d}).getFullYear(), Math.floor((${d}).getMonth() / 3) * 3 + 3, 1)`,
+  yearmonth: d => `new Date((${d}).getFullYear(), (${d}).getMonth() + 1, 1)`,
+  yearmonthdate: d => `new Date((${d}).getFullYear(), (${d}).getMonth(), (${d}).getDate() + 1)`,
+};
+
+export function binnedEndExpr(unit, dateExpr, ignoreUnsupported = false) {
+  const key = normalize(unit);
+  const fn = BINNED_END_INCREMENT[key];
+  if (fn) return fn(dateExpr);
+  if (ignoreUnsupported) return `(${dateExpr}) /* vl2d3: no bin-end derivation for "binned" timeUnit "${JSON.stringify(unit)}", left as the bucket start (--ignore-unsupported) */`;
+  throw new Error(`Unsupported "binned" timeUnit for bin-end derivation: "${JSON.stringify(unit)}"`);
 }
 
 // A "cyclic" timeUnit (see the block comment above `local`) collapses every

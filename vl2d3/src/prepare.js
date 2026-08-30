@@ -15,7 +15,7 @@
 // rather than emitting incorrect numbers.
 
 import {isSupportedAggregateOp, aggregateExpr} from './aggops.js';
-import {isSupportedTimeUnit, timeUnitExpr, isCyclicTimeUnit} from './timeunit.js';
+import {isSupportedTimeUnit, timeUnitExpr, isCyclicTimeUnit, isBinnedTimeUnit, binnedEndExpr} from './timeunit.js';
 
 // True position channels (as opposed to `color`/`size`/etc, which also
 // live in POSITION_LIKE below purely so prepare.js drives their aggregate
@@ -137,6 +137,16 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
     // combination that it keeps the old identity-passthrough
     // approximation (binMapExpr()) rather than the real binning above.
     const mapEntries = [];
+    // A "binned" timeUnit position channel (e.g. bar_simple_binned_
+    // timeunit_special_chars.vl.json's own `y: {field: "a.b", timeUnit:
+    // "binnedutcyearmonthdate"}`) implies its own companion end field one
+    // bucket-width past the (already-truncated) start -- confirmed against
+    // the real compiler's own output: a genuine y/y2 RANGE bar, not a
+    // zero-baseline value. Only added when the spec doesn't already
+    // declare a real companion of its own, and only for a true position
+    // channel (x/y) -- a color/detail/etc. channel has no "range" concept
+    // to speak of.
+    const binnedEndEntries = [];
     for (const [channel, def] of [...timeUnitOnlyChannels, ...binChannels]) {
       if (def.bin) {
         const outField = outFieldName(def.field, 'bin');
@@ -147,10 +157,23 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
         }
         const outField = outFieldName(def.field, def.timeUnit);
         mapEntries.push([channel, def, outField, timeUnitExpr(def.timeUnit, `d[${JSON.stringify(def.field)}]`, ignoreUnsupported)]);
+        if (
+          (channel === 'x' || channel === 'y') &&
+          isBinnedTimeUnit(def.timeUnit) &&
+          !encoding[`${channel}2`] &&
+          isSupportedTimeUnit(def.timeUnit)
+        ) {
+          const endField = `${outField}_end`;
+          binnedEndEntries.push([channel, endField, binnedEndExpr(def.timeUnit, `d[${JSON.stringify(outField)}]`, ignoreUnsupported)]);
+        }
       }
     }
     const assigns = mapEntries.map(([, , outField, expr]) => `${JSON.stringify(outField)}: ${expr}`);
     statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${assigns.join(', ')}}));`);
+    if (binnedEndEntries.length) {
+      const endAssigns = binnedEndEntries.map(([, endField, expr]) => `${JSON.stringify(endField)}: ${expr}`);
+      statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${endAssigns.join(', ')}}));`);
+    }
     for (const [channel, def, outField] of mapEntries) {
       rewritten[channel] = {...def, field: outField};
       delete rewritten[channel].bin;
@@ -159,6 +182,10 @@ export function prepareEncoding(encoding, dataVar, ignoreUnsupported = false) {
       // it's not given explicitly, so only fill it in when absent.
       if (def.timeUnit) applyTimeUnitType(rewritten, channel, def);
       else rewritten[channel].type = def.type || 'quantitative';
+    }
+    for (const [channel, endField] of binnedEndEntries) {
+      rewritten[channel].binned = true;
+      rewritten[`${channel}2`] = {field: endField, type: 'temporal'};
     }
     return {statements, encoding: rewritten};
   }
