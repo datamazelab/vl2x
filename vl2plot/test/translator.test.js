@@ -980,3 +980,69 @@ test('a detail channel with its own timeUnit is truncated, not left as the raw f
   }, {ignoreUnsupported: true});
   assert.match(code, /z:\s*"year_date"/);
 });
+
+test('an area mark with composite mark.line/mark.point overlays a real line and dots, not just the fill', async () => {
+  // area_overlay.vl.json's own shape: `mark: {"type": "area", "line":
+  // true, "point": true}` -- Vega-Lite's composite-mark shorthand for
+  // overlaying a stroked line and point markers on top of the area fill.
+  // Previously never read at all: renderLineOrArea() only ever emitted
+  // the Plot.areaY() fill itself, so no line/dots were visible.
+  const {document} = await renderSpec({
+    data: {values: [{d: 1, v: 10}, {d: 2, v: 20}, {d: 3, v: 15}]},
+    mark: {type: 'area', line: true, point: true},
+    encoding: {x: {field: 'd', type: 'quantitative'}, y: {field: 'v', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  assert.equal(marksOf(document, 'circle').length, 3, 'expected one overlaid point per row');
+  assert.ok(marksOf(document, 'path').length >= 2, 'expected both the area fill and the overlaid line as separate paths');
+});
+
+test('mark.clip:true clips the mark to the plot frame, matching the horizon-graph idiom', async () => {
+  // area_horizon.vl.json's own shape: a second layer shifted down by a
+  // calculate transform, relying on `clip: true` to hide the part that
+  // spills below y=0 instead of letting it show through under the axis.
+  // Previously `markProps.clip` was never read at all.
+  const {code} = await renderSpec({
+    data: {values: [{x: 1, y: 10}, {x: 2, y: -5}]},
+    mark: {type: 'area', clip: true},
+    encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  assert.match(code, /clip:\s*true/);
+});
+
+test('repeat: {column: [...]} lays panels out side by side, with no flex-wrap to reflow them into rows', async () => {
+  // repeat_independent_colors.vl.json's own shape -- a `repeat: {column:
+  // [...]}` (no `row`) expands to `hconcat`, whose wrapper previously set
+  // `flexWrap: 'wrap'` unconditionally: in a panel narrower than the
+  // combined width of every child, this silently reflowed the children
+  // onto separate lines, visually indistinguishable from a vconcat/row
+  // layout even though `flexDirection` was already correctly `'row'`.
+  const {code} = await renderSpec({
+    repeat: {column: ['Origin', 'Cylinders']},
+    spec: {
+      data: {values: [{Horsepower: 1, Miles_per_Gallon: 2, Origin: 'a', Cylinders: 4}]},
+      mark: 'point',
+      encoding: {x: {field: 'Horsepower', type: 'quantitative'}, y: {field: 'Miles_per_Gallon', type: 'quantitative'}},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /flexDirection = 'row'/);
+  assert.doesNotMatch(code, /flexWrap/);
+});
+
+test('bin:true (no explicit maxbins) defaults to 10 bins, matching real Vega-Lite, not Plot\'s own finer auto-threshold', async () => {
+  // repeat_layer.vl.json's own shape -- confirmed against the real
+  // vega-lite compiler's own output (`bin_maxbins_10_...`) that a plain
+  // `bin: true` always defaults to `maxbins: 10`. Left unset, Plot's own
+  // auto-threshold heuristic produced a much finer bin count on a large
+  // dataset (39 bins on movies.json, not 10) -- a noticeably more jagged,
+  // differently-shaped line than every other tool's own rendering of the
+  // identical spec.
+  const {code} = await renderSpec({
+    data: {values: Array.from({length: 200}, (_, i) => ({r: i % 10, v: i}))},
+    mark: 'line',
+    encoding: {
+      x: {field: 'r', type: 'quantitative', bin: true},
+      y: {field: 'v', type: 'quantitative', aggregate: 'mean'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /thresholds:\s*10/);
+});

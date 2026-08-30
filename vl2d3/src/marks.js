@@ -1559,7 +1559,22 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
         `(rows.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
     );
   } else {
-    const stroke = JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
+    // A `datum`-only (or literal `value`) color/fill/stroke channel (e.g.
+    // repeat_layer.vl.json's own per-repeated-layer `color: {datum:
+    // {"repeat": "layer"}}`, substituted to a per-layer constant like
+    // `{"datum": "Worldwide Gross"}`) has no *field* to group by --
+    // seriesGroupField() above already returns null for it, so this is
+    // the ungrouped branch, but the stroke computation here previously
+    // only ever consulted `markProps` (a mark-level static style),
+    // completely ignoring the encoding channel: every layer of a
+    // multi-layer chart sharing this same fallback silently drew with
+    // the identical default "steelblue" stroke, despite each layer's own
+    // `color` scale (built once, shared across every layer, by
+    // translator.js's own scale-resolution pass) having a real, distinct
+    // domain entry for each layer's own datum.
+    const colorDef = encoding.color || encoding.fill || encoding.stroke;
+    const fallback = JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
+    const stroke = colorDef ? accessor(colorDef, scales, 'color', fallback, ignoreUnsupported) : fallback;
     lines.push(`svg.append("path")`);
     lines.push(`    .attr("fill", "none")`);
     lines.push(`    .attr("stroke", ${stroke})`);

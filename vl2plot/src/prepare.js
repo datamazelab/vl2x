@@ -138,9 +138,22 @@ export function planTransform(encoding, ignoreUnsupported = false) {
     // bin *count*, which is exactly what Plot's own `thresholds` accepts
     // as a bare number (a precise bin *width*, `bin: {"step": N}`, has no
     // matching Plot option and is left to Plot's own default heuristic).
+    // Vega-Lite's own default (`bin: true`, or `bin: {}` with no explicit
+    // `maxbins`/`step`) is a fixed `maxbins: 10` -- confirmed against the
+    // real compiler's own output for repeat_layer.vl.json (`bin_maxbins_
+    // 10_...`, an un-overridden `bin: true`). Left unset, Plot's own
+    // auto-threshold heuristic (Sturges/Scott-ish, driven by the data's
+    // own size/spread) previously produced a MUCH finer bin count on a
+    // large dataset (39 bins on this same spec's ~3000-row movies
+    // dataset, not 10) -- a noticeably more jagged, differently-shaped
+    // line than every other tool's own 10-bin rendering of the identical
+    // spec (the user-reported "doesn't look like the same line plot as
+    // the others" symptom).
     const binDef = encoding[binChannel].bin;
     if (binDef && typeof binDef === 'object' && typeof binDef.maxbins === 'number') {
       outputs.thresholds = binDef.maxbins;
+    } else if (!(binDef && typeof binDef === 'object' && typeof binDef.step === 'number')) {
+      outputs.thresholds = 10;
     }
     return augmentWithTextAggregate({fn: binChannel === 'x' ? 'binX' : 'binY', outputs}, encoding, ignoreUnsupported);
   }

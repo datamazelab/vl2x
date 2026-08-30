@@ -316,6 +316,28 @@ test('a bar with both x and y quantitative and an explicit orient stacks and ori
   assert.ok(Math.abs(segs[0].x + segs[0].w - segs[1].x) < 1, `expected two adjacent (stacked) segments along x, got ${JSON.stringify(segs)}`);
 });
 
+test('a datum-only color channel on an ungrouped line mark uses the shared color scale, not a hardcoded default', async () => {
+  // repeat_layer.vl.json's own shape (after repeat-expansion): a `layer`
+  // of two line marks, each with `color: {datum: "..."}` (a per-layer
+  // constant, no field to group rows by) -- seriesGroupField() correctly
+  // returns null for this (nothing to group), landing in renderLine()'s
+  // ungrouped branch, but that branch previously only ever consulted
+  // markProps (mark-level static style), never the encoding channel's
+  // own datum -- every layer silently drew with the identical default
+  // "steelblue" stroke despite each having a real, distinct entry in the
+  // shared color scale's own domain.
+  const {code} = await renderSpec({
+    data: {values: [{x: 1, y: 2}]},
+    layer: [
+      {mark: 'line', encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}, color: {datum: 'A', type: 'nominal'}}},
+      {mark: 'line', encoding: {x: {field: 'x', type: 'quantitative'}, y: {field: 'y', type: 'quantitative'}, color: {datum: 'B', type: 'nominal'}}},
+    ],
+  }, {ignoreUnsupported: true});
+  const strokes = [...code.matchAll(/\.attr\("stroke",\s*(color\([^)]*\))\)/g)].map(m => m[1]);
+  assert.equal(strokes.length, 2, `expected both lines to use the shared color scale, got: ${code}`);
+  assert.notEqual(strokes[0], strokes[1], `expected the two layers to resolve to different color(...) calls, got: ${strokes}`);
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

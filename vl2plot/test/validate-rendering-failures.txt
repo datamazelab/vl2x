@@ -456,7 +456,6 @@ export default async function chart(container, options = {}) {
   const wrapper = container.ownerDocument.createElement('div');
   wrapper.style.display = 'flex';
   wrapper.style.flexDirection = 'column';
-  wrapper.style.flexWrap = 'wrap';
   wrapper.style.gap = '1em';
   let chart1Data = await d3.csv(new URL("data/population_engineers_hurricanes.csv", options.baseURL ?? import.meta.url), d3.autoType);
   // vl2plot: skipped unsupported transform type "lookup" (--ignore-unsupported)

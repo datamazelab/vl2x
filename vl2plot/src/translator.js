@@ -686,7 +686,21 @@ function translateMulti(node, ctx, key, path) {
   if (direction === 'grid') {
     statements.push(`${wrapperVar}.style.display = 'grid';`, `${wrapperVar}.style.gridTemplateColumns = 'repeat(${columns}, auto)';`, `${wrapperVar}.style.gap = '1em';`);
   } else {
-    statements.push(`${wrapperVar}.style.display = 'flex';`, `${wrapperVar}.style.flexDirection = '${flexDirection}';`, `${wrapperVar}.style.flexWrap = 'wrap';`, `${wrapperVar}.style.gap = '1em';`);
+    // No `flexWrap` here -- a real `hconcat`/`vconcat` (or a `repeat` that
+    // expands to one, e.g. `repeat: {column: [...]}`) never auto-reflows
+    // into a grid in Vega-Lite's own semantics; only an explicit `columns`
+    // (the `direction === 'grid'` branch above) wraps into multiple rows.
+    // `flexWrap: 'wrap'` here previously let a narrow showcase panel wrap
+    // a `row`-direction (hconcat) wrapper's children onto separate lines
+    // the moment their combined width exceeded the panel -- visually
+    // indistinguishable from a `vconcat` (repeat_independent_colors.vl
+    // .json's own "should be repeating by column, but appearing as rows"
+    // symptom) despite `flexDirection` itself already being correctly
+    // set to `'row'`. `.render-wrap`'s own `overflow: auto` (showcase
+    // CSS) already provides a horizontal-scroll fallback for a wrapper
+    // that doesn't fit, matching real Vega-Lite's own "no reflow, let it
+    // overflow" behavior instead.
+    statements.push(`${wrapperVar}.style.display = 'flex';`, `${wrapperVar}.style.flexDirection = '${flexDirection}';`, `${wrapperVar}.style.gap = '1em';`);
   }
 
   children.forEach((child, i) => {

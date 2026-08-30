@@ -1139,3 +1139,67 @@ def test_a_genuinely_quantitative_qq_bar_gets_a_narrow_width_not_a_wide_touching
     assert len(ax.patches) == 2
     for p in ax.patches:
         assert p.get_width() < 1.5, f"expected a narrow reference-bar width, got {p.get_width()}"
+
+
+def test_an_area_marks_own_composite_line_and_point_properties_overlay_a_line_and_markers():
+    # area_overlay.vl.json's own shape: `mark: {"type": "area", "line":
+    # true, "point": true}` -- Vega-Lite's composite-mark shorthand for
+    # overlaying a stroked line and point markers on top of the area
+    # fill. Previously `point`/`line` were only ever consulted for a
+    # plain (non-area) line mark, so an area spec'd this way silently
+    # drew ONLY the fill -- confirmed against the user-reported "no
+    # dots/points shown for matplotlib" symptom.
+    fig, _ = render({
+        "data": {"values": [{"d": 1, "v": 10}, {"d": 2, "v": 20}, {"d": 3, "v": 15}]},
+        "mark": {"type": "area", "line": True, "point": True},
+        "encoding": {"x": {"field": "d", "type": "quantitative"}, "y": {"field": "v", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.collections) >= 1, "expected the area fill (a PolyCollection)"
+    marker_lines = [ln for ln in ax.lines if ln.get_marker() != 'None']
+    plain_lines = [ln for ln in ax.lines if ln.get_marker() == 'None']
+    assert marker_lines, "expected an overlaid line with point markers"
+    assert plain_lines, "expected an overlaid plain stroked line"
+
+
+def test_an_explicit_scale_domain_clamps_the_axis_matching_the_horizon_graph_idiom():
+    # area_horizon.vl.json's own shape: a second layer shifted down by a
+    # calculate transform so part of it falls below zero, relying on a
+    # shared `scale: {domain: [0, 50]}` to hide that spillover (matching
+    # matplotlib's own default clipping of a patch to its Axes' data
+    # limits) instead of autoscaling to include it. Previously no
+    # position channel's own explicit scale.domain was ever applied at
+    # all -- the axis always autoscaled to the full data extent.
+    fig, _ = render({
+        "data": {"values": [{"x": 1, "y": 10}, {"x": 2, "y": -5}]},
+        "mark": "area",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative", "scale": {"domain": [0, 50]}},
+        },
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert ax.get_ylim() == (0, 50)
+
+
+def test_mark_invalid_null_on_an_area_widens_the_domain_and_leaves_real_gaps():
+    # area_invalid_null.vl.json's own shape: `mark: {"type": "area",
+    # "invalid": null}` -- unlike the default ("filter", which drops
+    # invalid rows and connects smoothly across the gap), an explicit
+    # `invalid: null` keeps them in place, meaning the domain axis must
+    # still reflect their own real x extent (not shrink to only the
+    # valid rows'), and the drawn area must break into separate paths at
+    # each null instead of connecting through it.
+    fig, _ = render({
+        "data": {"values": [
+            {"x": -1, "y": None}, {"x": 1, "y": 10}, {"x": 2, "y": 30},
+            {"x": 3, "y": None}, {"x": 4, "y": 15}, {"x": 10, "y": None},
+        ]},
+        "mark": {"type": "area", "invalid": None},
+        "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "y", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    xlim = ax.get_xlim()
+    assert xlim[0] <= -1 and xlim[1] >= 10, f"expected the x-axis to still span the full -1..10 domain, got {xlim}"
+    paths = ax.collections[0].get_paths()
+    assert len(paths) >= 2, f"expected the area to break into separate paths around the null rows, got {len(paths)}"

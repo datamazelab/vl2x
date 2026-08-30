@@ -220,14 +220,24 @@ function commonChannels(encoding, markType, markProps) {
   // either way -- so it's unconditional rather than only kicking in for
   // the one case that exposed the bug.
   const facetChannels = markProps.__facetChannels;
+  // `mark: {"clip": true}` clips the mark's own drawn geometry to the
+  // plot's frame -- Plot's own mark option of the identical name and
+  // meaning, a direct 1:1 mapping. Needed in particular for the classic
+  // "horizon graph" idiom (area_horizon.vl.json's own shape: a second
+  // layer shifted down by the band height via a `calculate` transform,
+  // relying on `clip: true` to hide everything that spills below y=0
+  // rather than letting it show through under the axis) -- previously
+  // never read at all, so a clipped layer's area silently extended past
+  // the frame instead of being cut off at it.
   return [
     [colorCh, colorValue],
     ['opacity', opacityValue],
     ['z', val(encoding.detail)],
     ['title', val(tooltipDef)],
+    markProps.clip ? ['clip', 'true'] : null,
     ...(facetChannels && facetChannels.x ? [['fx', JSON.stringify(facetChannels.x)]] : []),
     ...(facetChannels && facetChannels.y ? [['fy', JSON.stringify(facetChannels.y)]] : []),
-  ];
+  ].filter(x => x !== null);
 }
 
 function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
@@ -440,7 +450,41 @@ function renderLineOrArea(isArea) {
     const stackPlan = planStack(isArea ? 'area' : 'line', enc, orient);
     const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
     const fn = isArea ? (orient === 'horizontal' ? 'areaX' : 'areaY') : 'line';
-    return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
+    // Vega-Lite's composite-mark shorthand for an area: `mark: {"type":
+    // "area", "line": true, "point": true}` overlays a real stroked line
+    // (the area's own top edge) and/or point markers at each datum, on
+    // top of the plain filled area -- previously never read at all here,
+    // so an area spec'd this way silently drew ONLY the fill, with no
+    // line/points visible (confirmed against area_overlay.vl.json's own
+    // "no dots/points shown" symptom). Reuses the SAME transformPlan/
+    // stackPlan as the area fill itself so the overlay tracks the exact
+    // same (possibly aggregated/stacked) position -- just the single
+    // value channel, not the y1/y2 pair, since a line/dot has no fill
+    // extent of its own.
+    const overlayMarks = [];
+    if (isArea && (markProps.line || markProps.point)) {
+      const overlayValuePairs = [
+        [domainCh, val(enc[domainCh])],
+        [valueCh, val(enc[valueCh])],
+      ];
+      if (markProps.line) {
+        const linePairs = [
+          ...overlayValuePairs,
+          ...commonChannels(enc, 'line', markProps),
+          orderField ? ['sort', formatValue(orderField)] : null,
+        ].filter(Boolean);
+        overlayMarks.push(`Plot.line(${dataVar}, ${wrapTransforms(linePairs, transformPlan, stackPlan)})`);
+      }
+      if (markProps.point) {
+        const pointPairs = [
+          ...overlayValuePairs,
+          ...commonChannels(enc, 'point', markProps),
+        ].filter(Boolean);
+        overlayMarks.push(`Plot.dot(${dataVar}, ${wrapTransforms(pointPairs, transformPlan, stackPlan)})`);
+      }
+    }
+    const markExpr = [`Plot.${fn}(${dataVar}, ${wrapped})`, ...overlayMarks].join(', ');
+    return {statements, markExpr};
   };
 }
 

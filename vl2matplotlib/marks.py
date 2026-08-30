@@ -406,6 +406,27 @@ def _axis_setup_stmts(ax_var: str, channel: str, def_: dict, data_var: str) -> l
         # just one side's *value* axis a descending sort so its bars grow
         # inward/leftward instead of outward/rightward.
         stmts.append(f"{ax_var}.invert_{channel}axis()")
+    # An explicit `scale.domain` on a continuous position channel clamps
+    # the visible axis range -- needed in particular for the classic
+    # "horizon graph" idiom (area_horizon.vl.json's own shape: a second
+    # layer shifted down by a `calculate` transform so part of it falls
+    # below zero, relying on the shared `domain: [0, 50]` to hide that
+    # spillover rather than autoscaling to include it, matching
+    # matplotlib's own default `clip_on=True` behavior of clipping a
+    # patch to its Axes' data limits). Previously never applied at all --
+    # every position channel's own axis silently autoscaled to the full
+    # data extent regardless of an explicit domain, letting the horizon
+    # graph's own folded-under portion show through past the x-axis
+    # instead of being clipped away. Restricted to plain numeric 2-value
+    # domains on a continuous (non-ordinal) scale -- an ordinal/temporal
+    # domain needs real category-position or date-coercion handling this
+    # doesn't attempt.
+    scale_cfg = def_.get("scale") if isinstance(def_.get("scale"), dict) else {}
+    domain = scale_cfg.get("domain")
+    if scale_type(def_) in ("linear", "log") and isinstance(domain, list) and len(domain) == 2 and all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in domain
+    ):
+        stmts.append(f"{ax_var}.set_{channel}lim({domain[0]!r}, {domain[1]!r})")
     if scale_type(def_) == "ordinal":
         cats = category_var(channel, data_var)
         ticks = f"range(len({cats}))"
@@ -1466,6 +1487,14 @@ def _render_line_or_area(is_area: bool):
         # (the plain default) draws no marker, matching a bare `ax.plot()`.
         point_prop = mark_props.get("point")
         marker_kw = ", marker='o', markersize=6, markeredgewidth=0" if (not is_area and point_prop) else ""
+        # An area mark's own `point`/`line` composite-mark properties
+        # (`mark: {"type": "area", "line": true, "point": true}`) overlay a
+        # real stroked line and/or point markers on top of the fill --
+        # previously `point_prop` was only ever consulted for a plain line
+        # mark (the `not is_area` guard above), so an area spec'd this way
+        # silently drew ONLY the fill (confirmed against area_overlay.vl
+        # .json's own "no dots shown for matplotlib" symptom).
+        line_prop = mark_props.get("line")
 
         def draw(rows, color, label):
             # Sorted by the domain axis within each group -- a line/area is
@@ -1486,6 +1515,10 @@ def _render_line_or_area(is_area: bool):
                     out.append(f"{ax_var}.fill_betweenx({ry}, {base}, {rx}, color={color}, alpha={alpha}{label_kw})")
                 else:
                     out.append(f"{ax_var}.fill_between({rx}, {base}, {ry}, color={color}, alpha={alpha}{label_kw})")
+                if line_prop:
+                    out.append(f"{ax_var}.plot({rx}, {ry}, color={color})")
+                if point_prop:
+                    out.append(f"{ax_var}.plot({rx}, {ry}, color={color}, marker='o', markersize=6, linestyle='None')")
             else:
                 out.append(f"{ax_var}.plot({rx}, {ry}, color={color}, alpha={alpha}{label_kw}{marker_kw})")
             return out
