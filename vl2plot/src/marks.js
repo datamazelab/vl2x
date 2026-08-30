@@ -82,7 +82,15 @@ function colorChannelName(markType, markProps) {
   return 'fill';
 }
 
-function orientation(encoding) {
+function orientation(encoding, explicitOrient) {
+  // An explicit `mark: {"orient": "horizontal"/"vertical"}` always wins
+  // over every heuristic below -- needed in particular for a bar/area
+  // whose x AND y are BOTH quantitative (e.g. bar_qq_stack_horizontal.vl
+  // .json), where the `isQuantitative(x) && !isQuantitative(y)` heuristic
+  // below can't tell which one is actually meant as the category axis at
+  // all (neither is non-quantitative) and silently always guessed
+  // "vertical" regardless of what the spec's own explicit `orient` said.
+  if (explicitOrient === 'horizontal' || explicitOrient === 'vertical') return explicitOrient;
   const x = encoding.x || {};
   const y = encoding.y || {};
   // A *binned* position channel with no companion channel at all is
@@ -155,9 +163,9 @@ function wrapTransforms(pairs, transformPlan, stackPlan, indent = 2) {
 
 // Shared per-mark preamble: timeUnit derivation (data statements + a
 // rewritten encoding with plain field names only) and orientation.
-function prepareMark(encoding, dataVar, ignoreUnsupported) {
+function prepareMark(encoding, dataVar, ignoreUnsupported, markProps) {
   const {statements, encoding: enc} = applyTimeUnits(encoding, dataVar, ignoreUnsupported);
-  return {statements, encoding: enc, orient: orientation(enc)};
+  return {statements, encoding: enc, orient: orientation(enc, markProps && markProps.orient)};
 }
 
 // Vega-Lite's `sort: {"op": ..., "field": ..., "order": ...}` form (sort
@@ -223,7 +231,7 @@ function commonChannels(encoding, markType, markProps) {
 }
 
 function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const markType = markProps.type;
   const shapeDef = encoding.shape;
   // Vega-Lite's own `size` on a point/circle/square mark is always an
@@ -255,7 +263,7 @@ function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
 }
 
 function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const valueCh = orient === 'horizontal' ? 'x' : 'y';
   const catCh = orient === 'horizontal' ? 'y' : 'x';
   const catCompanionCh = `${catCh}2`;
@@ -268,6 +276,56 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
   // *value* channel (e.g. `y`/`y2` on a vertical bar) instead means an
   // explicit value range (a floating bar from an explicit lo to hi).
   const hasCatCompanion = hasField(enc[catCompanionCh]) || (enc[catCompanionCh] && 'value' in enc[catCompanionCh]);
+  // A bar whose own CATEGORY channel is quantitative too (both x and y
+  // typed `"quantitative"`, e.g. `bar_qq_stack.vl.json` -- a real,
+  // if unusual, VL shape distinct from the bin-interval-companion case
+  // above, which already has its own x1/x2-style handling) can't be drawn
+  // with `Plot.barY`/`barX` at all: both hard-require a genuine band
+  // scale for their own category channel (confirmed empirically -- an
+  // explicit `{type: "linear"}` override throws outright), so Plot has no
+  // way to place a bar at a real continuous position. Handled instead by
+  // `VlQBar` (runtime.js), a custom mark porting real Vega-Lite's own
+  // documented behavior for this shape directly: a continuous position
+  // plus a small fixed-pixel width (`config.bar.continuousBandSize`,
+  // default 5px), not a band. Implicit per-category stacking still
+  // applies here exactly as it does for the ordinary case (`stack.js`'s
+  // own module docstring) -- but since `Plot.stackY`/`stackX` themselves
+  // assume the same band-scale shape this whole branch exists to route
+  // around, the identical cumulative-sum math is instead precomputed as
+  // real data columns via `vlStack()` (already used for the top-level
+  // *explicit* `stack` transform) before the mark ever sees the data.
+  if (isQuantitative(enc[catCh]) && !hasCatCompanion && hasField(enc[catCh]) && !enc[catCh].bin) {
+    const catField = enc[catCh].field;
+    const valueField = hasField(enc[valueCh]) ? enc[valueCh].field : null;
+    // No value channel at all (`bar_1d_dimension_only.vl.json`'s own
+    // shape -- only a quantitative category channel given, no length/
+    // value channel) has nothing to stack; `VlQBar` itself spans the
+    // mark's own full plot width/height for every row in that case (see
+    // its own doc comment), so the data is used as-is, unmaterialized.
+    let markDataVar = dataVar;
+    let startField = null;
+    let endField = null;
+    if (valueField) {
+      markDataVar = `${dataVar}QStacked`;
+      startField = '__qbar_start';
+      endField = '__qbar_end';
+      statements.push(
+        `const ${markDataVar} = vlStack(${dataVar}, {field: ${JSON.stringify(valueField)}, groupby: [${JSON.stringify(catField)}], ` +
+          `as: [${JSON.stringify(startField)}, ${JSON.stringify(endField)}]});`
+      );
+    }
+    const colorDef = enc.color || enc.fill || enc.stroke;
+    const tooltipDef = Array.isArray(enc.tooltip) ? enc.tooltip[0] : enc.tooltip;
+    const qPairs = [
+      ['pos', val(enc[catCh])],
+      startField ? ['valueStart', JSON.stringify(startField)] : null,
+      endField ? ['valueEnd', JSON.stringify(endField)] : null,
+      colorDef ? ['fill', val(colorDef)] : null,
+      tooltipDef ? ['title', val(tooltipDef)] : null,
+      ['orientation', formatValue(orient)],
+    ].filter(Boolean);
+    return {statements, markExpr: `new VlQBar(${markDataVar}, ${objectSource(qPairs)})`};
+  }
   const pairs = hasCatCompanion
     ? [
         [`${catCh}1`, val(enc[catCh])],
@@ -347,7 +405,7 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
 
 function renderLineOrArea(isArea) {
   return function render(encoding, markProps, dataVar, ignoreUnsupported) {
-    const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported);
+    const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
     const domainCh = orient === 'horizontal' ? 'y' : 'x';
     const valueCh = orient === 'horizontal' ? 'x' : 'y';
     const companionCh = `${valueCh}2`;
@@ -375,7 +433,7 @@ function renderLineOrArea(isArea) {
 }
 
 function renderRule(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   // A rule spans the *entire* opposite axis unless a companion x2/y2 gives
   // it a finite extent (matching Vega-Lite's own rule semantics): a rule
   // with only `x` given draws a full-height vertical line at that x;
@@ -399,7 +457,7 @@ function renderRule(encoding, markProps, dataVar, ignoreUnsupported) {
 }
 
 function renderTick(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const valueCh = orient === 'horizontal' ? 'x' : 'y';
   const catCh = valueCh === 'x' ? 'y' : 'x';
   const fn = valueCh === 'x' ? 'tickX' : 'tickY';
@@ -414,7 +472,7 @@ function renderTick(encoding, markProps, dataVar, ignoreUnsupported) {
 }
 
 function renderText(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const pairs = [
     ['x', val(enc.x)],
     ['y', val(enc.y)],
@@ -438,7 +496,7 @@ function renderText(encoding, markProps, dataVar, ignoreUnsupported) {
 }
 
 function renderRect(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   // Both axes ordinal, neither with a companion range (x2/y2) -- the
   // classic full-grid heatmap shape -- uses `Plot.cell` (one discrete cell
   // per (x, y) combination); anything with a real numeric span on either
@@ -464,7 +522,7 @@ function renderRect(encoding, markProps, dataVar, ignoreUnsupported) {
 }
 
 function renderBoxplot(encoding, markProps, dataVar, ignoreUnsupported) {
-  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc, orient} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const valueCh = orient === 'horizontal' ? 'x' : 'y';
   const catCh = valueCh === 'x' ? 'y' : 'x';
   const fn = valueCh === 'x' ? 'boxX' : 'boxY';
@@ -503,7 +561,7 @@ function renderArc(encoding, markProps, dataVar, ignoreUnsupported) {
     }
     throw new Error('Unsupported: an "arc" mark with its own "radius" channel is not yet supported by vl2plot');
   }
-  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const orderField = hasField(enc.order) ? enc.order.field : null;
   const orderStatements = orderField
     ? [
@@ -538,7 +596,7 @@ function renderTrail(encoding, markProps, dataVar, ignoreUnsupported) {
     }
     throw new Error('"trail" mark requires both x and y field encodings');
   }
-  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
   const colorDef = enc.color || enc.stroke;
   const tooltipDef = Array.isArray(enc.tooltip) ? enc.tooltip[0] : enc.tooltip;
   const pairs = [

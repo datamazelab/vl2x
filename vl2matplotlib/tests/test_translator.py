@@ -1052,3 +1052,90 @@ def test_bracket_indexed_field_reads_one_element_of_an_array_valued_column():
     ax = fig.axes[0]
     assert len(ax.patches) == 1
     assert ax.patches[0].get_x() + ax.patches[0].get_width() / 2 == pytest.approx(300, abs=1) or ax.patches[0].get_width() == pytest.approx(300, abs=1)
+
+
+def test_a_bar_implicitly_stacks_by_its_own_category_value_with_no_color_channel():
+    # bar_qq_stack.vl.json's own shape: two rows share the same category
+    # value, no color/detail channel at all -- real Vega-Lite still
+    # stacks them (confirmed against the real compiler's own output: a
+    # "stack" transform with `groupby: ["a"]` even absent any color
+    # channel) -- previously matplotlib drew both rows as two fully-
+    # overlapping, un-stacked bars sharing the same zero baseline, the
+    # taller one completely hiding the shorter.
+    fig, _ = render({
+        "data": {"values": [{"a": 1, "b": 28}, {"a": 1, "b": 55}, {"a": 5, "b": 43}]},
+        "mark": "bar",
+        "encoding": {"x": {"field": "a", "type": "quantitative"}, "y": {"field": "b", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.patches) == 3
+    at_a1 = sorted((p for p in ax.patches if abs(p.get_x() - 1) < 2), key=lambda p: p.get_y())
+    assert len(at_a1) == 2
+    # Stacked: the two segments' own y-ranges should be adjacent, not both
+    # starting from 0 (which would mean they're just overlapping).
+    assert at_a1[0].get_y() + at_a1[0].get_height() == pytest.approx(at_a1[1].get_y(), abs=0.5)
+
+
+def test_an_explicit_orient_wins_over_the_stack_planner_own_x_y_quantitative_guess():
+    # bar_qq_stack_horizontal.vl.json's own shape: mark.orient explicit
+    # "horizontal", x AND y both quantitative -- plan_stacking() has its
+    # own independent (and previously orient-blind) guess at which axis
+    # is the real value channel, which used to silently disagree with
+    # _render_bar()'s own (correct) orientation detection, stacking the
+    # CATEGORY field grouped by the VALUE field -- backwards.
+    fig, code = render({
+        "data": {"values": [{"a": 1, "b": 28}, {"a": 1, "b": 55}, {"a": 5, "b": 43}]},
+        "mark": {"type": "bar", "orient": "horizontal"},
+        "encoding": {"y": {"field": "a", "type": "quantitative"}, "x": {"field": "b", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    assert 'groupby("a")["b"]' in code, f"expected stacking to group by the real category (a), got:\n{code}"
+    ax = fig.axes[0]
+    assert len(ax.patches) == 3
+    at_a1 = sorted((p for p in ax.patches if abs(p.get_y() - 1) < 2), key=lambda p: p.get_x())
+    assert len(at_a1) == 2
+    assert at_a1[0].get_x() + at_a1[0].get_width() == pytest.approx(at_a1[1].get_x(), abs=0.5)
+
+
+def test_an_explicit_y2_companion_on_a_qq_bar_is_not_silently_stacked_via_the_other_axis():
+    # bar_ranged_not_binned.vl.json's own shape: x and y both reference
+    # the SAME quantitative field, with an explicit y2 companion already
+    # giving a complete zero-baseline range -- the implicit-stacking
+    # planner's own per-channel loop previously only checked each
+    # candidate channel's OWN companion (x2 for x, y2 for y): once y was
+    # excluded for having its own y2, it fell through and picked x
+    # instead (which has no x2 of its own), silently stacking a mark that
+    # was never meant to stack at all -- collapsing all 9 rows into one
+    # solid block instead of 9 separate bars at their own real values.
+    fig, _ = render({
+        "data": {"values": [{"b": 28, "b2": 0}, {"b": 55, "b2": 0}, {"b": 43, "b2": 0}]},
+        "mark": {"type": "bar"},
+        "encoding": {
+            "x": {"field": "b", "type": "quantitative"},
+            "y": {"field": "b", "type": "quantitative"},
+            "y2": {"field": "b2"},
+        },
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.patches) == 3
+    heights = sorted(p.get_height() for p in ax.patches)
+    assert heights == pytest.approx([28, 43, 55]), f"expected 3 independent bars at their own real heights, got {heights}"
+
+
+def test_a_genuinely_quantitative_qq_bar_gets_a_narrow_width_not_a_wide_touching_block():
+    # bar_qq_stack.vl.json's own shape -- a plain arbitrary-numeric
+    # quantitative category axis (not temporal) should get a small
+    # reference-bar width (real Vega-Lite's own `continuousBandSize`
+    # convention), not the much wider fraction-of-gap default used for a
+    # temporal category axis (which reads correctly wide, matching a
+    # normal time-series bar chart) -- confirmed live: the old 0.6
+    # multiplier made two categories 4 apart come out 2.4 units wide,
+    # visually indistinguishable from a touching ordinal band.
+    fig, _ = render({
+        "data": {"values": [{"a": 1, "b": 28}, {"a": 5, "b": 43}]},
+        "mark": "bar",
+        "encoding": {"x": {"field": "a", "type": "quantitative"}, "y": {"field": "b", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.patches) == 2
+    for p in ax.patches:
+        assert p.get_width() < 1.5, f"expected a narrow reference-bar width, got {p.get_width()}"

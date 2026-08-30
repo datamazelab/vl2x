@@ -1,9 +1,18 @@
 // Vega-Lite implicitly stacks a bar/area mark's aggregated position channel
-// whenever a color/detail/opacity channel is also present (unless the
-// position channel's own `stack` is explicitly disabled, or that axis is
-// already being dodged via xOffset/yOffset) -- this is a real, mandatory
-// part of the default appearance of the single most common chart shape in
-// the corpus ("bar chart broken down by color"), not an optional nicety.
+// whenever it's grouped by ANYTHING else that could put more than one row
+// at the same category position -- not just a color/detail/opacity channel,
+// but the mark's own CATEGORY position channel too, regardless of whether a
+// color/detail channel is present at all (confirmed against the real
+// compiler's own output for bar_qq_stack.vl.json: `x`/`y` both quantitative,
+// no color at all, two rows sharing the same `x: "a"` value -- its own
+// generated "stack" transform still has `groupby: ["a"]`). `renderStacking
+// Statements()` below already handles a `null` group field correctly (its
+// own `!groupField` branch, previously only reachable via an *explicit*
+// `stack: true` with no color channel) -- unless the position channel's own
+// `stack` is explicitly disabled, or that axis is already being dodged via
+// xOffset/yOffset. This is a real, mandatory part of the default appearance
+// of the single most common chart shape in the corpus ("bar chart broken
+// down by color"), not an optional nicety.
 // D3 has no such built-in behavior, so this computes the stacked baseline
 // (and, for "normalize"/"center", the rescaled top) as an explicit extra
 // data-prep pass, then folds the result back into the *same* `y2`/`x2`
@@ -46,23 +55,37 @@ export function planStacking(mark, encoding) {
     );
     if (offsetSharesField) groupChannel = undefined;
   }
-  // `stack: true`/`"zero"`/`"normalize"`/`"center"` explicitly requested on
-  // the position channel itself still stacks even with no color/detail/
-  // opacity groupby at all (e.g. bar_multi_values_per_categories.vl.json's
-  // own several same-`a`-category rows, distinguished only by a literal
-  // `fill`/`stroke` -- each row is its own implicit stack member, kept in
-  // the data's own given order below since there's no group *field* to
-  // align/densify sparse categories by).
-  const explicitStack = ['x', 'y'].some(ch => {
-    const def = encoding[ch];
-    return def && (def.stack === true || def.stack === 'zero' || def.stack === 'normalize' || def.stack === 'center');
-  });
-  if (!groupChannel && !explicitStack) return null;
-
-  for (const [posChannel, categoryChannel] of [
-    ['y', 'x'],
-    ['x', 'y'],
-  ]) {
+  // No separate "should this even attempt to stack" gate is needed beyond
+  // this point -- every bar/area with a quantitative value channel and a
+  // real category channel implicitly stacks in real Vega-Lite (the module
+  // docstring above), and the loop just below already encodes every other
+  // real precondition (a quantitative value field, a real category field,
+  // no already-explicit x2/y2 range, `stack` not disabled) directly.
+  //
+  // The loop's own default order (`y` before `x`) picks Y as the value
+  // channel whenever it qualifies at all -- silently wrong whenever BOTH
+  // x and y are quantitative (`bar_qq_stack_horizontal.vl.json`'s own
+  // shape) and the mark's own explicit `orient` says otherwise: `x` was
+  // meant to be the value channel there (`orient: "horizontal"`), but the
+  // unconditional `y`-first order stacked `y` (the real CATEGORY) grouped
+  // by `x` (the real VALUE) instead -- backwards, the identical class of
+  // bug already fixed for this exact shape in `marks.js`'s own
+  // orientation detection and in this project's `vl2plot`/`vl2matplotlib`/
+  // `vl2ggplot` siblings. An explicit orient reorders which channel is
+  // tried first; an ambiguous/absent one keeps the original y-first
+  // default.
+  const explicitOrient = mark && typeof mark === 'object' ? mark.orient : undefined;
+  const channelOrder =
+    explicitOrient === 'horizontal'
+      ? [
+          ['x', 'y'],
+          ['y', 'x'],
+        ]
+      : [
+          ['y', 'x'],
+          ['x', 'y'],
+        ];
+  for (const [posChannel, categoryChannel] of channelOrder) {
     const posDef = encoding[posChannel];
     const categoryDef = encoding[categoryChannel];
     if (!posDef || !posDef.field || posDef.type !== 'quantitative') continue;

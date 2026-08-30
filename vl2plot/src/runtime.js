@@ -147,6 +147,68 @@ export class VlTrail extends Plot.Mark {
   }
 }
 
+// Vega-Lite's own "bar with two quantitative position channels" shape
+// (e.g. `bar_qq_stack.vl.json`: `x`/`y` both `type: "quantitative"`, no
+// nominal/ordinal category axis at all) -- Plot's own `Plot.barY`/`barX`
+// hard-require a genuine band scale for their own category channel
+// (confirmed empirically: passing an explicit `{type: "linear"}` override
+// throws `"scale incompatible with channel: linear !== band"` outright),
+// so neither can express this at all. Real Vega-Lite instead centers each
+// bar on a real CONTINUOUS position (`xc`/`yc": {scale: "x"/"y", field:
+// ...}` in its own compiled Vega output) with a small FIXED PIXEL width
+// (`config.bar.continuousBandSize`, default 5px) regardless of the real
+// data-space gap between values -- this mark ports that behavior
+// directly: `pos` resolves through a real continuous `x`/`y` scale (a
+// pixel coordinate by the time `render()` sees it, the same as any other
+// channel scaled this way -- see `VlArc`'s own note on already-resolved
+// channel values), and `valueStart`/`valueEnd` (already resolved through
+// the OTHER axis's own scale, including whatever type it's configured
+// with -- `pow`, `log`, whatever `bar_q_qpow.vl.json` itself asks for)
+// bound the bar's own length; `width` is a plain constant pixel value,
+// never scaled. `valueStart`/`valueEnd` are both optional -- a 1D bar with
+// NO value channel at all (`bar_1d_dimension_only.vl.json`'s own shape:
+// only a quantitative `y` given, no `x`) has nothing to bound the bar's
+// own length by at all; real Vega-Lite's own compiled output for exactly
+// this case spans the mark's own full plot width/height instead
+// (`"x": {"field": {"group": "width"}}, "x2": {"value": 0}` -- ported
+// directly here too via `dimensions`, the one thing `render()` receives
+// that a per-row channel value can't express).
+export class VlQBar extends Plot.Mark {
+  constructor(data, options = {}) {
+    const {pos, valueStart, valueEnd, fill, title, orientation = 'vertical', width = 5} = options;
+    const posScale = orientation === 'vertical' ? 'x' : 'y';
+    const valueScale = orientation === 'vertical' ? 'y' : 'x';
+    const channels = {pos: {value: pos, scale: posScale}};
+    if (valueStart != null) channels.valueStart = {value: valueStart, scale: valueScale};
+    if (valueEnd != null) channels.valueEnd = {value: valueEnd, scale: valueScale};
+    if (fill != null) channels.fill = {value: fill, scale: 'color'};
+    if (title != null) channels.title = {value: title, optional: true};
+    super(data, channels, options, {ariaLabel: 'bar'});
+    this.width = width;
+    this.orientation = orientation;
+  }
+  render(index, scales, values, dimensions, context) {
+    const g = d3.select(context.document.createElementNS('http://www.w3.org/2000/svg', 'g'));
+    const halfWidth = this.width / 2;
+    const hasValue = values.valueStart != null;
+    const fullLo = this.orientation === 'vertical' ? dimensions.marginTop : dimensions.marginLeft;
+    const fullHi = this.orientation === 'vertical' ? dimensions.height - dimensions.marginBottom : dimensions.width - dimensions.marginRight;
+    for (const i of index) {
+      const p = values.pos[i];
+      const lo = hasValue ? Math.min(values.valueStart[i], values.valueEnd[i]) : fullLo;
+      const len = hasValue ? Math.abs(values.valueEnd[i] - values.valueStart[i]) : fullHi - fullLo;
+      const fill = values.fill ? values.fill[i] : 'currentColor';
+      const rect =
+        this.orientation === 'vertical'
+          ? g.append('rect').attr('x', p - halfWidth).attr('y', lo).attr('width', this.width).attr('height', len)
+          : g.append('rect').attr('x', lo).attr('y', p - halfWidth).attr('width', len).attr('height', this.width);
+      rect.attr('fill', fill);
+      if (values.title) rect.append('title').text(values.title[i]);
+    }
+    return g.node();
+  }
+}
+
 // Vega-Lite's *explicit* stack transform: given a value `field` and a
 // `groupby` field list, computes a cumulative running sum of `field`
 // within each group (ordered by `sort`, a list of `{field, order}`),

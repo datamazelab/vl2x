@@ -844,3 +844,104 @@ test('the "flatten" transform explodes an array field into rows, with dotted-pat
   const cys = circles.map(c => Number(c.getAttribute('cy')));
   assert.equal(new Set(cys).size, 3, 'expected 3 distinct y positions (from lc.m), not all collapsed to the same undefined value');
 });
+
+test('a bar/area implicitly stacks by its own category value even with no color/detail channel', async () => {
+  // bar_qq_stack.vl.json's own shape: two rows share the same x, no color
+  // at all -- real Vega-Lite still stacks them (confirmed against the
+  // real compiler's own output: a "stack" transform with `groupby: ["a"]`
+  // even absent any color/detail channel), previously not stacked at all
+  // in vl2plot (silently overlapping instead).
+  const {document} = await renderSpec({
+    data: {values: [{a: 1, b: 28}, {a: 1, b: 55}, {a: 5, b: 43}]},
+    mark: 'bar',
+    encoding: {x: {field: 'a', type: 'quantitative'}, y: {field: 'b', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[aria-label*="axis"]'));
+  assert.equal(rects.length, 3);
+  const atX1 = rects.filter(r => Number(r.getAttribute('x')) < 100);
+  assert.equal(atX1.length, 2, 'expected both a=1 rows drawn at the same x');
+  const segments = atX1
+    .map(r => ({y: Number(r.getAttribute('y')), h: Number(r.getAttribute('height'))}))
+    .sort((a, b) => a.y - b.y);
+  // Stacked: the two segments' own y-ranges should be adjacent, not
+  // overlapping (one segment's own bottom edge meets the other's top).
+  assert.ok(
+    Math.abs(segments[0].y + segments[0].h - segments[1].y) < 1,
+    `expected two adjacent (non-overlapping) stacked segments, got ${JSON.stringify(segments)}`
+  );
+});
+
+test('a bar with both x and y quantitative draws real bars at continuous positions, not band-scale points', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{a: 3000, b: 55}, {a: 3500, b: 28}, {a: 4000, b: 55}]},
+    mark: 'bar',
+    encoding: {x: {field: 'a', type: 'quantitative'}, y: {field: 'b', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[aria-label*="axis"]'));
+  assert.equal(rects.length, 3);
+  const xs = rects.map(r => Number(r.getAttribute('x'))).sort((a, b) => a - b);
+  // Evenly-spaced data (3000, 3500, 4000) on a continuous scale should
+  // land at evenly-spaced pixel positions too -- a band scale would
+  // instead space three ordinal categories evenly regardless of the real
+  // gap between them, which happens to look identical here, so the real
+  // discriminator is the bar's own fixed small width (a band scale would
+  // instead divide the full plot width into 3 wide bands).
+  const widths = rects.map(r => Number(r.getAttribute('width')));
+  for (const w of widths) assert.ok(w < 20, `expected a small fixed-pixel bar width, got ${w}`);
+});
+
+test('a 1D bar with a quantitative category channel and no value channel spans the full plot dimension at a real continuous position', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{b: 0}, {b: 10}, {b: 10}, {b: 20}]},
+    mark: {type: 'bar', orient: 'horizontal'},
+    encoding: {y: {field: 'b', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[aria-label*="axis"]'));
+  assert.equal(rects.length, 4);
+  const ys = rects.map(r => Number(r.getAttribute('y')));
+  assert.equal(new Set(ys).size, 3, 'expected 3 distinct y positions (one per distinct b value)');
+  for (const h of rects.map(r => Number(r.getAttribute('height')))) assert.ok(h < 20, `expected a small fixed-pixel height, got ${h}`);
+});
+
+test('an explicit mark.orient wins over the x/y-both-quantitative orientation heuristic', async () => {
+  const {code} = await renderSpec({
+    data: {values: [{a: 1, b: 28}, {a: 5, b: 43}]},
+    mark: {type: 'bar', orient: 'horizontal'},
+    encoding: {y: {field: 'a', type: 'quantitative'}, x: {field: 'b', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  assert.match(code, /orientation:\s*"horizontal"/);
+});
+
+test('a small explicit height/width gets proportionally smaller margins so bars stay visible', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{d: 1}, {d: 1}, {d: 2}, {d: 3}, {d: 3}, {d: 3}]},
+    width: 300,
+    height: 50,
+    mark: 'bar',
+    encoding: {x: {field: 'd', type: 'quantitative', bin: {maxbins: 20}}, y: {aggregate: 'count', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[aria-label*="axis"]'));
+  const heights = rects.map(r => Number(r.getAttribute('height')));
+  assert.ok(Math.max(...heights) > 5, `expected at least one real, visible bar height, got heights=${heights}`);
+});
+
+test('a joinaggregate transform joins a per-group aggregate back onto every row, not just its own group', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{cat: 'a', v: 8}, {cat: 'b', v: 2}, {cat: 'c', v: 4}, {cat: 'd', v: 8}, {cat: 'e', v: 2}]},
+    transform: [
+      {joinaggregate: [{op: 'sum', field: 'v', as: 'total'}]},
+      {calculate: 'datum.v / datum.total * 100', as: 'pct'},
+    ],
+    mark: 'bar',
+    encoding: {x: {field: 'pct', type: 'quantitative'}, y: {field: 'cat', type: 'nominal'}},
+  }, {ignoreUnsupported: true});
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[aria-label*="axis"]'));
+  assert.equal(rects.length, 5);
+  const widths = rects.map(r => Number(r.getAttribute('width')));
+  // Not all bars spanning the full width (the NaN-propagation bug this
+  // fixes) -- real proportions 8:2:4:8:2 of a 24 total.
+  assert.ok(new Set(widths.map(w => Math.round(w))).size > 1, `expected varied bar widths reflecting real percentages, got ${widths}`);
+  const maxWidth = Math.max(...widths);
+  const minWidth = Math.min(...widths);
+  assert.ok(maxWidth / minWidth > 3, `expected the largest bar (8) to be ~4x the smallest (2), got ratio ${maxWidth / minWidth}`);
+});

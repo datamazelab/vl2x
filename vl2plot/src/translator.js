@@ -361,6 +361,28 @@ function buildPlotCallSource(markExprs, scaleOptions, size, facet, indent) {
   if (size.subtitle) lines.push(`${inner}subtitle: ${formatValue(size.subtitle)},`);
   if (size.w) lines.push(`${inner}width: ${size.w},`);
   if (size.h) lines.push(`${inner}height: ${size.h},`);
+  // Plot's own DEFAULT margins (dynamically sized per axis, but commonly
+  // ~20px top/right, ~30px bottom, ~40px left) can, combined, consume
+  // most or all of a deliberately small explicit `height`/`width`
+  // (`bar_1d_binned.vl.json`'s own `"height": 50` -- confirmed
+  // empirically to leave every single bar with a literal `height="0"`,
+  // not just "hard to see": marginTop (20) + marginBottom (30) alone
+  // already equal the whole 50px). Scaled down proportionally instead of
+  // overridden to some other fixed constant (mirroring `vl2d3`'s own
+  // identical fix for the identical problem in its own faceted-panel
+  // code) -- only when `size.h`/`size.w` is a genuine NUMBER, not a
+  // runtime expression string (a faceted chart's own runtime-computed
+  // total height, see `translateFacet()`'s own `adjustedSize`, is by
+  // construction already `perPanelHeight * a real row count`, never this
+  // small relative to its own content).
+  if (typeof size.h === 'number' && size.h <= 60) {
+    lines.push(`${inner}marginTop: ${Math.max(1, Math.round(size.h * 0.3))},`);
+    lines.push(`${inner}marginBottom: ${Math.max(1, Math.round(size.h * 0.4))},`);
+  }
+  if (typeof size.w === 'number' && size.w < 80) {
+    lines.push(`${inner}marginLeft: ${Math.max(1, Math.round(size.w * 0.3))},`);
+    lines.push(`${inner}marginRight: ${Math.max(1, Math.round(size.w * 0.1))},`);
+  }
   if (facet) {
     const facetInner = '  '.repeat(indent + 2);
     const facetLines = [`${inner}facet: {`, `${facetInner}data: ${facet.dataVar},`];
@@ -861,7 +883,7 @@ export function specToCode(spec, options = {}) {
 
   const bodyText = bodyLines.join('\n');
   const needsD3 = /\bd3\.\w+\(/.test(bodyText);
-  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlFlatten', 'vlDensity', 'VlArc', 'VlTrail', 'vlWindow', 'vlArgAggregate', 'vlFacetSortValues', 'vlApplyMinBandSize'].filter(name =>
+  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlFlatten', 'vlDensity', 'VlArc', 'VlTrail', 'VlQBar', 'vlWindow', 'vlArgAggregate', 'vlFacetSortValues', 'vlApplyMinBandSize'].filter(name =>
     new RegExp(`\\b${name}\\(`).test(bodyText)
   );
 

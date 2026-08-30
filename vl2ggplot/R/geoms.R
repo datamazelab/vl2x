@@ -809,6 +809,55 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       identical(encoding$x$type, "quantitative") && !is.null(encoding$y) && !identical(encoding$y$type, "quantitative")) {
     fixed[["orientation"]] <- '"y"'
   }
+  # The heuristic just above can't tell which axis is really the value one
+  # at all when BOTH x and y are quantitative (bar_qq_stack_horizontal.vl
+  # .json's own shape -- neither side of its own `!identical(...,
+  # "quantitative")` check is ever true) -- an explicit `mark.orient`
+  # always settles this instead (already the deciding factor for the two
+  # `is.null(x)`/`is.null(y)` 1D cases above; extended here to the
+  # "both quantitative" 2D case too), since ggplot2's own default geom_col
+  # orientation ("x") would otherwise always win regardless of what the
+  # spec's own explicit `orient: "horizontal"` said -- confirmed live:
+  # without this, x/y stayed mapped to the wrong (swapped) roles entirely,
+  # not just the wrong orientation.
+  if (mark_type == "bar" && is.null(fixed[["orientation"]]) &&
+      identical(encoding$x$type, "quantitative") && identical(encoding$y$type, "quantitative")) {
+    if (identical(mark_props[["orient"]], "horizontal")) {
+      fixed[["orientation"]] <- '"y"'
+    } else if (identical(mark_props[["orient"]], "vertical")) {
+      fixed[["orientation"]] <- '"x"'
+    }
+  }
+  # Both x and y quantitative (the same shape just above) also needs an
+  # explicit `width` override -- absent one, ggplot2's own default for a
+  # continuous position axis (`0.9 * resolution(x)`, the smallest gap
+  # between any two distinct x values) spans most of the way to the
+  # NEXT bar (confirmed live: bar_qq_stack.vl.json's own two categories 4
+  # apart came out 3.6 data-units wide, visibly touching/crowding its
+  # neighbor) -- real Vega-Lite instead uses a small FIXED pixel width
+  # (`config.bar.continuousBandSize`, 5px) regardless of the data-space
+  # gap, which ggplot2 has no direct equivalent for (its own `width` is
+  # always in DATA units, not pixels) -- approximated here as a small
+  # FRACTION of that same nearest-neighbor gap (already computed the
+  # identical way for the 1D-dimension-only case above) instead of
+  # ggplot2's own much wider 90% default, close enough to read as a
+  # deliberately narrow, non-touching bar without needing real pixel
+  # geometry.
+  if (mark_type == "bar" && identical(encoding$x$type, "quantitative") && identical(encoding$y$type, "quantitative") &&
+      is.null(fixed[["width"]])) {
+    # `data_arg` is NULL for the common single-layer case (the geom just
+    # inherits the top-level `ggplot(chart_data)` call's own data instead
+    # of repeating `data = chart_data` on itself) -- the real data
+    # variable name is still available as `extent_data_var` even then.
+    width_data_ref <- data_arg %||% extent_data_var
+    cat_field <- if (identical(fixed[["orientation"]], '"y"')) encoding$y$field else encoding$x$field
+    if (!is.null(cat_field) && !is.null(width_data_ref)) {
+      fixed[["width"]] <- sprintf(
+        "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) * 0.15 else 0.5 })(%s[[%s]])",
+        width_data_ref, deparse(cat_field)
+      )
+    }
+  }
   # `stack: "normalize"` on the aggregated value axis asks for each
   # x-category's (or y-category's, for a horizontal bar) stacked values to
   # be rescaled to fractions summing to 1 -- ggplot2's own equivalent is

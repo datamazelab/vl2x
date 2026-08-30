@@ -570,8 +570,27 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         # the equivalent "at least draw something" fallback).
         width_var = f"__{cat_channel}_bar_width_{data_var}"
         fallback = "pd.Timedelta(days=1)" if cat_scale_type == "temporal" else "0.8"
+        # A *temporal* category axis (a bar per year/month/day) reads
+        # naturally with a bar close to filling its own gap -- matching
+        # real Vega-Lite's own visual convention there, so this keeps the
+        # wider 0.6 multiplier. A genuinely arbitrary-numeric quantitative
+        # axis (`bar_qq_stack.vl.json`'s own `x`/`y` both plain
+        # `"quantitative"`, no timeUnit at all) is a materially different
+        # VL convention instead: a small, near-constant reference bar
+        # (`config.bar.continuousBandSize`, a fixed 5px in the real
+        # renderer) regardless of the real data-space gap between values
+        # -- 0.6 of that gap reads as one wide touching block instead
+        # (confirmed live: bar_qq_stack.vl.json's own two categories 4
+        # apart came out 2.4 data-units wide, visually indistinguishable
+        # from an ordinal band even though the x-position itself is
+        # already correctly continuous). matplotlib has no direct fixed-
+        # pixel-width equivalent (its own `width=` is always in data
+        # units), so this is approximated as a much smaller fraction of
+        # that same nearest-neighbor gap instead, mirroring the identical
+        # fix already made for vl2ggplot's own equivalent case.
+        multiplier = "0.6" if cat_scale_type == "temporal" else "0.15"
         stmts.append(
-            f"{width_var} = ((({cat_col}).max() - ({cat_col}).min()) / max(({cat_col}).nunique() - 1, 1)) * 0.6 "
+            f"{width_var} = ((({cat_col}).max() - ({cat_col}).min()) / max(({cat_col}).nunique() - 1, 1)) * {multiplier} "
             f"if ({cat_col}).nunique() > 1 else {fallback}"
         )
         width_expr = width_var

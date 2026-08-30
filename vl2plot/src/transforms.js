@@ -6,14 +6,24 @@
 // explicit (an aggregate transform always lists its own `groupby` fields),
 // so they need no channel-inference logic, just a direct translation.
 //
-// v1 scope: filter, calculate, aggregate, bin, timeUnit, flatten, stack,
-// density, window. Anything else throws a clear "unsupported" error naming
-// the transform, unless `ignoreUnsupported` is set, in which case the step
-// is skipped entirely.
+// v1 scope: filter, calculate, aggregate, joinaggregate, bin, timeUnit,
+// flatten, stack, density, window. Anything else throws a clear
+// "unsupported" error naming the transform, unless `ignoreUnsupported` is
+// set, in which case the step is skipped entirely.
 
 import {filterToExpr, translateExpr} from './expr.js';
 import {isSupportedD3AggregateOp, aggregateExpr} from './aggops.js';
 import {isSupportedTimeUnit, timeUnitExpr} from './timeunit.js';
+
+// A fresh intermediate variable name per `joinaggregate` step -- needs one
+// (unlike every other transform in this file, which reassigns `dataVar` in
+// a single self-contained statement) since the per-group aggregate map has
+// to be computed once and then looked up once per row, not recomputed
+// per-row (an O(n^2) rollup-inside-a-map would still be *correct*, just
+// needlessly slow on a real corpus-sized dataset). An ever-incrementing
+// counter guarantees a distinct name even if `joinaggregate` appears more
+// than once in the same spec's own transform pipeline.
+let joinAggregateCounter = 0;
 
 // Mirrors `vlWindow()`'s own supported-op set (see `runtime.js`) --
 // percentile/selection ops with no simple direct equivalent (percent_rank,
@@ -83,6 +93,44 @@ function renderOne(t, dataVar, ignoreUnsupported) {
   }
   if ('flatten' in t) {
     return [`${dataVar} = vlFlatten(${dataVar}, {fields: ${JSON.stringify(t.flatten)}, as: ${JSON.stringify(t.as)}});`];
+  }
+  if ('joinaggregate' in t) {
+    // Like the top-level `aggregate` transform just above -- same
+    // groupby/op/field/as shape -- but JOINS the per-group aggregate back
+    // onto every ORIGINAL row instead of collapsing to one row per group
+    // (`bar_percent_of_total.vl.json`'s own shape: every activity's own
+    // row keeps its own identity, gaining a new `TotalTime` column that's
+    // the SAME value -- the grand total -- across every row, empty
+    // `groupby` meaning one single global group). Previously entirely
+    // unsupported, silently skipped under `--ignore-unsupported` -- every
+    // downstream reference to the never-created `as` column (this spec's
+    // own `datum.Time/datum.TotalTime * 100`) evaluated to `NaN`, which
+    // then propagated silently through Plot's own scale/stack machinery
+    // into a visually-plausible-looking but completely wrong chart (every
+    // bar spanning the full domain width, indistinguishable from an
+    // accidental 100%-normalized stack, though unrelated to the stack
+    // offset itself).
+    if (!ignoreUnsupported) {
+      for (const {op} of t.joinaggregate) {
+        if (op !== 'count' && !isSupportedD3AggregateOp(op)) {
+          throw new Error(`Unsupported aggregate op: "${op}"`);
+        }
+      }
+    }
+    const groupby = t.groupby || [];
+    const valueAssigns = t.joinaggregate.map(({op, field, as}) => {
+      const accessor = field ? `d => d[${JSON.stringify(field)}]` : undefined;
+      return `${JSON.stringify(as)}: ${aggregateExpr(op, 'rows', accessor, ignoreUnsupported)}`;
+    });
+    const reducer = `rows => ({${valueAssigns.join(', ')}})`;
+    const keyFn = groupby.length
+      ? `d => JSON.stringify([${groupby.map(f => `d[${JSON.stringify(f)}]`).join(', ')}])`
+      : `() => 0`;
+    const mapVar = `__joinagg${++joinAggregateCounter}`;
+    return [
+      `const ${mapVar} = d3.rollup(${dataVar}, ${reducer}, ${keyFn});`,
+      `${dataVar} = ${dataVar}.map(d => ({...d, ...${mapVar}.get((${keyFn})(d))}));`,
+    ];
   }
   if ('stack' in t) {
     const opts = {

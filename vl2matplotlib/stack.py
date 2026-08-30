@@ -1,12 +1,29 @@
 """Implicit per-mark stacking: Vega-Lite automatically stacks a `bar`/`area`
-mark's own value channel when a `color`/`detail` channel also groups it (and
-stacking isn't explicitly turned off) -- matplotlib has nothing resembling
-this built in (unlike ggplot2's `position_stack()`), so it's computed
-directly as two new columns, `<field>_stack0`/`<field>_stack1` (the
-segment's own bottom/top), via a `groupby(position).cumsum()` -- pandas'
-own cumulative sum, grouped by the position field, *is* the stack: each
-row's running total (minus its own value, for the bottom edge) is exactly
-where that row's own segment starts.
+mark's own value channel whenever it's grouped by ANYTHING else that could
+put more than one row at the same category position -- not just a `color`/
+`detail` channel (this project's own earlier, incomplete understanding),
+but the mark's own CATEGORY position channel too, regardless of whether a
+color/detail channel is present at all. Confirmed against the real
+compiler's own output for bar_qq_stack.vl.json (`x`/`y` both quantitative,
+no color at all, two rows sharing the same `x: "a"` value): its own
+generated `"stack"` transform still has `groupby: ["a"]` -- Vega-Lite
+always implicitly stacks a bar/area's own value channel, grouped by every
+OTHER channel that distinguishes rows, whether that's color/detail or just
+the category position itself (confirmed live: matplotlib previously drew
+both `a=1` rows as two un-stacked, fully-overlapping bars sharing the same
+baseline, the taller one completely hiding the shorter -- "3 bars" in the
+data looking like only 2 were ever drawn). matplotlib has nothing
+resembling real stacking built in (unlike ggplot2's `position_stack()`),
+so it's computed directly as two new columns, `<field>_stack0`/
+`<field>_stack1` (the segment's own bottom/top), via a
+`groupby(position).cumsum()` -- pandas' own cumulative sum, grouped by the
+position field, *is* the stack: each row's running total (minus its own
+value, for the bottom edge) is exactly where that row's own segment
+starts. A `color`/`detail` channel, when ALSO present, only ever
+determines *sort order within* one category's own stack (which segment
+sits on top of which) -- it was never actually part of the groupby key
+itself even before this fix, so this fix is a pure precondition relaxation,
+not a change to the underlying math.
 
 Three modes, all sharing that same cumsum-based shape: `"zero"` (the
 default -- stacks from a zero baseline, as above), `"normalize"` (each
@@ -51,24 +68,56 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
     if encoding.get("xOffset") or encoding.get("yOffset"):
         return None
 
-    # The value axis is whichever of x/y is quantitative with no companion
-    # range of its own already (an explicit x2/y2 already fully specifies
-    # the shape -- nothing left to stack). `is_quantitative()` (not a bare
-    # `type` check) so an `aggregate`/`bin`-implied quantitative channel
-    # with no explicit `type` at all -- the same common shape fixed
+    # An explicit x2/y2 companion range on EITHER axis already fully
+    # specifies the mark's own shape -- nothing left to stack, full stop
+    # (`bar_ranged_not_binned.vl.json`'s own shape: `x`/`y` both `"b"`,
+    # `y2: {"field": "b2"}` -- an explicit, already-complete zero-baseline
+    # range). Bails out here, before the per-channel loop below even
+    # picks a `pos_channel`, rather than each channel only checking its
+    # OWN same-name companion (`x2` for `x`, `y2` for `y`): once `y` was
+    # excluded for having its own `y2`, the loop used to fall through and
+    # pick `x` as the "value" channel instead, even though `x` (with no
+    # `x2` of its own) looked stackable in isolation -- silently stacking
+    # a mark that was never meant to stack at all, since the real signal
+    # ("this shape already has an explicit range") lived on the *other*
+    # channel from the one it ended up choosing.
+    if encoding.get("x2") or encoding.get("y2"):
+        return None
+
+    # The value axis is whichever of x/y is quantitative. `is_quantitative()`
+    # (not a bare `type` check) so an `aggregate`/`bin`-implied quantitative
+    # channel with no explicit `type` at all -- the same common shape fixed
     # elsewhere for bar orientation/width -- still triggers stacking.
     from .scales import is_quantitative
 
-    for channel in ("y", "x"):
-        d = encoding.get(channel)
-        if not isinstance(d, dict) or not is_quantitative(d) or not d.get("field"):
-            continue
-        if encoding.get(f"{channel}2"):
-            continue
-        pos_channel = channel
-        break
-    else:
-        return None
+    explicit_orient = mark.get("orient") if isinstance(mark, dict) else None
+    pos_channel = None
+    # When BOTH x and y are quantitative (`bar_qq_stack_horizontal.vl
+    # .json`'s own shape), which one is the real VALUE axis is genuinely
+    # ambiguous from the encoding alone -- an explicit `mark.orient`
+    # (already the deciding factor `_render_bar()`'s own orientation
+    # detection uses) has to win here too, or this function's own
+    # independent, cruder "just pick whichever of y/x comes first" guess
+    # can silently disagree with it: confirmed live on exactly this spec,
+    # stacking "a" (the real CATEGORY) grouped by "b" (the real VALUE) --
+    # backwards -- because it always checked "y" before "x" regardless of
+    # `orient: "horizontal"` already saying x was the value channel.
+    if explicit_orient in ("horizontal", "vertical"):
+        candidate = "x" if explicit_orient == "horizontal" else "y"
+        d = encoding.get(candidate)
+        if isinstance(d, dict) and is_quantitative(d) and d.get("field") and not encoding.get(f"{candidate}2"):
+            pos_channel = candidate
+    if pos_channel is None:
+        for channel in ("y", "x"):
+            d = encoding.get(channel)
+            if not isinstance(d, dict) or not is_quantitative(d) or not d.get("field"):
+                continue
+            if encoding.get(f"{channel}2"):
+                continue
+            pos_channel = channel
+            break
+        else:
+            return None
 
     # A *continuous* color/opacity field (`bar_invalid_color_show_
     # override.vl.json`'s own `color: {field: "c", type: "quantitative"}`)
@@ -77,15 +126,15 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
     # it as a `group_field` here stacked bars by whatever `pos_channel`'s
     # own category happened to repeat on, silently wrong (and, since
     # `_render_bar()`'s own draw path never wired continuous color in at
-    # all either, also colorless).
+    # all either, also colorless). Optional -- see the module docstring
+    # above for why this is no longer required for stacking to apply at
+    # all, only for determining sort order *within* one category's stack.
     group_channel = None
     for ch in ("color", "detail", "opacity"):
         d = encoding.get(ch)
         if isinstance(d, dict) and d.get("field") and not is_quantitative(d):
             group_channel = ch
             break
-    if group_channel is None:
-        return None
 
     category_channel = "x" if pos_channel == "y" else "y"
     category_def = encoding.get(category_channel)
@@ -106,7 +155,7 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
         "pos_channel": pos_channel,
         "value_field": encoding[pos_channel]["field"],
         "category_field": category_def["field"],
-        "group_field": encoding[group_channel]["field"],
+        "group_field": encoding[group_channel]["field"] if group_channel else None,
         "mode": mode,
     }
 
@@ -118,7 +167,12 @@ def render_stacking_statements(data_var: str, plan: dict) -> list[str]:
     mode = plan.get("mode", "zero")
     start_col = f"{field}_stack0"
     end_col = f"{field}_stack1"
-    stmts = [f"{data_var} = {data_var}.sort_values([{cat!r}, {group!r}]).reset_index(drop=True)"]
+    # No color/detail group at all (see the module docstring) -- sort by
+    # category alone, keeping each category's own rows in their existing
+    # relative (stable-sort) order rather than a second key that doesn't
+    # exist.
+    sort_keys = [cat, group] if group else [cat]
+    stmts = [f"{data_var} = {data_var}.sort_values({sort_keys!r}).reset_index(drop=True)"]
 
     if mode == "normalize":
         # Normalize the per-row *value* first (each category's own rows

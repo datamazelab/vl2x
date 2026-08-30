@@ -1,18 +1,35 @@
-// Vega-Lite implicitly stacks a `bar`/`area` mark's own value channel when a
-// `color`/`detail` channel also groups it (unless stacking is explicitly
-// turned off) -- Plot already has this exact behavior built into
-// `Plot.stackY`/`Plot.stackX`, including Vega-Lite's own three offset
-// modes (`Plot.stackY({offset: "normalize"|"center"}, ...)`, default zero
-// otherwise), so this module only ever needs to decide *whether* to wrap a
-// mark's own options in one of those two transform functions -- no
-// hand-computed cumulative sum needed at all, unlike every other sibling's
-// own stack.js/stack.py.
+// Vega-Lite implicitly stacks a `bar`/`area` mark's own value channel
+// whenever it's grouped by ANYTHING else that could put more than one row
+// at the same category position -- not just a `color`/`detail` channel
+// (this project's own earlier, incomplete understanding), but the mark's
+// own CATEGORY position channel too, regardless of whether a color/detail
+// channel is present at all. Confirmed against the real compiler's own
+// output for bar_qq_stack.vl.json (`x`/`y` both quantitative, no color at
+// all, two rows sharing the same `x: "a"` value): its own generated
+// `"stack"` transform still has `groupby: ["a"]` -- Vega-Lite always
+// implicitly stacks a bar/area's own value channel, grouped by every
+// OTHER channel that distinguishes rows, whether that's color/detail or
+// just the category position itself. Plot already has this exact
+// behavior built into `Plot.stackY`/`Plot.stackX` (confirmed empirically:
+// `Plot.stackY({x: "a", y: "b"})`, no color/detail channel at all, still
+// groups and stacks by `x`'s own value), including Vega-Lite's own three
+// offset modes (`Plot.stackY({offset: "normalize"|"center"}, ...)`,
+// default zero otherwise), so this module only ever needs to decide
+// *whether* to wrap a mark's own options in one of those two transform
+// functions at all -- no hand-computed cumulative sum, and no groupby key
+// of its own to compute, since Plot's own transform already groups by
+// every field-valued channel in the same options object automatically.
+//
+// For the ordinary "one row per category" case (by far the most common
+// shape in practice) this is a complete no-op -- each category's own
+// group has exactly one row, so "stacking" it trivially reduces to
+// `[0, value]`, identical to not stacking at all -- so always applying it
+// (once the mark/value-channel qualifies at all) is safe, not just
+// correct for the genuinely-repeated-category case.
 
-import {isQuantitative} from './encoding.js';
-
-// Auto-stacked whenever a color/detail group is present, with no explicit
-// `stack` setting needed -- Vega-Lite's own implicit-stacking convention
-// for these two mark types specifically.
+// Auto-stacked whenever this mark type qualifies at all -- Vega-Lite's own
+// implicit-stacking convention for these two mark types specifically (no
+// color/detail channel required, see the module docstring above).
 const IMPLICIT_STACK_MARKS = new Set(['bar', 'area']);
 // Any other mark (currently just `text`, a value label overlaid on an
 // already-stacked bar/area) only stacks when the spec *explicitly* sets
@@ -35,11 +52,6 @@ export function planStack(markType, encoding, orientation) {
   if (encoding.xOffset || encoding.yOffset) return null;
 
   const valueChannel = orientation === 'horizontal' ? 'x' : 'y';
-  const groupChannel = ['color', 'fill', 'stroke', 'detail'].find(
-    ch => encoding[ch] && typeof encoding[ch] === 'object' && typeof encoding[ch].field === 'string' && !isQuantitative(encoding[ch])
-  );
-  if (!groupChannel) return null;
-
   const valueDef = encoding[valueChannel];
   if (!valueDef || typeof valueDef !== 'object' || !valueDef.field) return null;
 

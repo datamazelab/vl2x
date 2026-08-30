@@ -1244,6 +1244,19 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
       lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
       lines.push(`    .attr("width", ${dims.widthMinusRightExpr} - ${dims.marginLeftExpr})`);
     }
+  } else if (encoding.x && encoding.y && markProps.orient === 'horizontal') {
+    // Same "both quantitative" shape as the plain branch just below,
+    // transposed: an explicit `mark.orient: "horizontal"` (e.g.
+    // bar_qq_stack_horizontal.vl.json) means Y is the real position axis
+    // and X is the value -- the un-conditioned branch below always drew
+    // vertically regardless (x as position, y as value), silently
+    // ignoring `orient` entirely whenever BOTH channels were quantitative
+    // (every OTHER orientation-conflict case in this file already checks
+    // `markProps.orient`; this shape was the one gap left).
+    lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - 2.5)`);
+    lines.push(`    .attr("height", 5)`);
+    lines.push(`    .attr("x", d => Math.min(x(0), x(d[${JSON.stringify(encoding.x.field)}])))`);
+    lines.push(`    .attr("width", d => Math.abs(x(0) - x(d[${JSON.stringify(encoding.x.field)}])))`);
   } else if (encoding.x && encoding.y) {
     // Both position channels are continuous (no band/ordinal axis, no
     // temporal axis, no x2/y2 range) -- e.g. a Q-Q-style bar chart with two
@@ -1251,7 +1264,8 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // fixed-width bar per row at the x position, from the y-zero baseline
     // up to the row's y value, using its own `config.bar.continuousBandSize`
     // default (5px) since there's no data-driven band width to derive one
-    // from on either axis.
+    // from on either axis. (An explicit `orient: "horizontal"` -- the
+    // transposed shape -- is handled by the branch just above instead.)
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - 2.5)`);
     lines.push(`    .attr("width", 5)`);
     lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);

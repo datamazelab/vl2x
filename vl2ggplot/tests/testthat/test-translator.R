@@ -199,3 +199,47 @@ test_that("facet/repeat throw a clear error for unsupported shapes", {
   }')
   expect_error(vegalite_to_ggplot(spec), "row/column mapping")
 })
+
+test_that("a bar implicitly stacks by its own category value with no color/detail channel", {
+  # bar_qq_stack.vl.json's own shape: two rows share the same category
+  # value, no color/detail channel at all -- real Vega-Lite still stacks
+  # them (confirmed against the real compiler's own output: a "stack"
+  # transform with groupby: ["a"] even absent any color channel).
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": 1, "b": 28}, {"a": 1, "b": 55}, {"a": 5, "b": 43}]},
+    "mark": "bar",
+    "encoding": {"x": {"field": "a", "type": "quantitative"}, "y": {"field": "b", "type": "quantitative"}}
+  }')
+  r <- run_spec(spec)
+  d <- r$built$data[[1]]
+  expect_equal(nrow(d), 3)
+  at_a1 <- d[abs(d$x - 1) < 0.5, ]
+  expect_equal(nrow(at_a1), 2)
+  # Stacked: the two segments should be adjacent (one's ymax meets the
+  # other's ymin), not both starting from 0 (which would mean overlap).
+  expect_equal(sort(at_a1$ymax)[1], sort(at_a1$ymin)[2])
+})
+
+test_that("an explicit mark.orient wins over the both-quantitative orientation guess, with a narrow real width", {
+  # bar_qq_stack_horizontal.vl.json's own shape: mark.orient explicit
+  # "horizontal", x AND y both quantitative -- ggplot2's own default
+  # geom_col orientation ("x") previously always won regardless, drawing
+  # vertical bars with the category/value roles effectively swapped.
+  spec <- spec_from_json('{
+    "data": {"values": [{"a": 1, "b": 28}, {"a": 1, "b": 55}, {"a": 5, "b": 43}]},
+    "mark": {"type": "bar", "orient": "horizontal"},
+    "encoding": {"y": {"field": "a", "type": "quantitative"}, "x": {"field": "b", "type": "quantitative"}}
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, 'orientation = "y"')
+  r <- run_spec(spec)
+  d <- r$built$data[[1]]
+  expect_equal(nrow(d), 3)
+  at_a1 <- d[abs(d$y - 1) < 0.5, ]
+  expect_equal(nrow(at_a1), 2)
+  # Stacked along x this time (horizontal): adjacent segments, not overlap.
+  expect_equal(sort(at_a1$xmax)[1], sort(at_a1$xmin)[2])
+  # Narrow bars (not ggplot2's own much-wider 90%-of-resolution default,
+  # which would span most of the way to the neighboring category at a=5).
+  expect_true(all(d$ymax - d$ymin < 1))
+})
