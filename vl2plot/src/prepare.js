@@ -25,7 +25,15 @@ const GROUP_KEY_CHANNELS = ['x', 'y', 'color', 'fill', 'stroke', 'opacity', 'siz
 // Every channel a mark's own options object can carry a `field` on --
 // consulted when deciding whether a channel participates in an implicit
 // groupby (see `hasField()` below).
-const ALL_CHANNELS = ['x', 'y', 'x2', 'y2', 'color', 'fill', 'stroke', 'opacity', 'size', 'symbol', 'r', 'text', 'title'];
+// `detail` (e.g. `detail: {timeUnit: "year", field: "date"}`, a common
+// "one line per year" idiom -- repeat_child_layer.vl.json's own shape)
+// was previously missing here entirely: it maps onto Plot's own `z`
+// channel (marks.js's `commonChannels()`), which still needs its own
+// timeUnit applied exactly the same way any other channel's does, but
+// silently kept the raw, untruncated field instead -- confirmed
+// empirically to leave `z` grouping by the exact (per-row-unique)
+// timestamp rather than by year, effectively grouping nothing at all.
+const ALL_CHANNELS = ['x', 'y', 'x2', 'y2', 'color', 'fill', 'stroke', 'opacity', 'size', 'symbol', 'r', 'text', 'title', 'detail'];
 
 function fieldRef(rowVar, field) {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field) ? `${rowVar}.${field}` : `${rowVar}[${JSON.stringify(field)}]`;

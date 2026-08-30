@@ -425,8 +425,20 @@ function renderLineOrArea(isArea) {
       !isArea ? ['strokeWidth', strokeWidthValue] : null,
       orderField ? ['sort', formatValue(orderField)] : null,
     ].filter(Boolean);
+    // An inline `aggregate`/`bin` on a line/area's own value channel (e.g.
+    // `y: {aggregate: "mean", field: "temp_max"}`, one point per distinct
+    // x -- averaging across every year sharing that x, a common "one line
+    // per group, averaged over some other dimension" idiom) was previously
+    // never even looked at here -- `renderBar()`/`renderDot()` already
+    // call `planTransform()` and thread its result through, but this
+    // function hardcoded `null` instead, so the mark drew one point per
+    // RAW row instead of one per aggregated group. Confirmed empirically
+    // that `Plot.line(data, Plot.groupX({y: "mean"}, {...}))` works
+    // exactly as well as it does for `Plot.dot`/`Plot.barY` -- Plot's own
+    // transform wrapper doesn't care which mark it's wrapping.
+    const transformPlan = planTransform(enc, ignoreUnsupported);
     const stackPlan = planStack(isArea ? 'area' : 'line', enc, orient);
-    const wrapped = wrapTransforms(pairs, null, stackPlan);
+    const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
     const fn = isArea ? (orient === 'horizontal' ? 'areaX' : 'areaY') : 'line';
     return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
   };

@@ -945,3 +945,38 @@ test('a joinaggregate transform joins a per-group aggregate back onto every row,
   const minWidth = Math.min(...widths);
   assert.ok(maxWidth / minWidth > 3, `expected the largest bar (8) to be ~4x the smallest (2), got ratio ${maxWidth / minWidth}`);
 });
+
+test('a line mark applies its own inline aggregate, not just bar/point', async () => {
+  // repeat_child_layer.vl.json's own shape: a line mark with `y:
+  // {aggregate: "mean", field: ...}` -- previously renderLineOrArea()
+  // never called planTransform() at all (unlike renderBar()/renderDot()),
+  // silently drawing one point per raw row instead of one per aggregated
+  // group.
+  const {document} = await renderSpec({
+    data: {values: [{m: 'Jan', v: 10}, {m: 'Jan', v: 20}, {m: 'Feb', v: 15}, {m: 'Feb', v: 25}]},
+    mark: 'line',
+    encoding: {x: {field: 'm', type: 'nominal'}, y: {field: 'v', type: 'quantitative', aggregate: 'mean'}},
+  }, {ignoreUnsupported: true});
+  const [path] = marksOf(document, 'path');
+  const d = path.getAttribute('d');
+  const points = [...d.matchAll(/[ML]([\d.]+),([\d.]+)/g)];
+  assert.equal(points.length, 2, `expected one aggregated point per category (2), got: ${d}`);
+});
+
+test('a detail channel with its own timeUnit is truncated, not left as the raw field', async () => {
+  // repeat_child_layer.vl.json's own shape: `detail: {timeUnit: "year",
+  // field: "date"}` (grouping lines by year) -- `detail` was previously
+  // entirely missing from applyTimeUnits()'s own channel list, leaving
+  // the raw (per-row-unique) date used as the z/grouping key instead of
+  // the year it was truncated to.
+  const {code} = await renderSpec({
+    data: {values: [{date: '2020-01-01', v: 1}]},
+    mark: 'line',
+    encoding: {
+      x: {field: 'date', type: 'temporal'},
+      y: {field: 'v', type: 'quantitative'},
+      detail: {field: 'date', timeUnit: 'year'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /z:\s*"year_date"/);
+});

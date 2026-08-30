@@ -1171,6 +1171,23 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
         `    .attr("y", d => ${y.isNominalVar} ? y(d[${JSON.stringify(encoding.y.field)}]) : y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`
       );
       lines.push(`    .attr("height", d => ${y.isNominalVar} ? y.bandwidth() : ${yBarWidthVar})`);
+    } else if (encoding.y && !yBand && encoding.y.type === 'quantitative') {
+      // Same reasoning as the `yAmbiguous` branch just above, but for a
+      // CONFIRMED (not merely ambiguous) quantitative y -- e.g.
+      // bar_qq_stack_horizontal.vl.json's own `y: {field: "a", type:
+      // "quantitative"}`, a Q-Q-style bar's own category axis, itself
+      // quantitative too. `x2`'s presence still means y is never a real
+      // value axis here regardless of its own confirmed type, so this
+      // needs a reference-band-centered-on-y treatment, not the zero-
+      // baseline fallback just below (which, left uncaught here, drew one
+      // giant bar per row from pixel-y(0) out to each row's own y
+      // position instead of a normal-height reference band) -- a plain
+      // fixed 5px (`config.bar.continuousBandSize`, the same convention
+      // the fully-continuous `encoding.x && encoding.y` branch elsewhere
+      // in this function already uses), not `yBarWidthVar` (only ever
+      // declared for the temporal/ambiguous cases above, not this one).
+      lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - 2.5)`);
+      lines.push(`    .attr("height", 5)`);
     } else if (encoding.y) {
       lines.push(`    .attr("y", d => Math.min(y(0), y(d[${JSON.stringify(encoding.y.field)}])))`);
       lines.push(`    .attr("height", d => Math.abs(y(0) - y(d[${JSON.stringify(encoding.y.field)}])))`);

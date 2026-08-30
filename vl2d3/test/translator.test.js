@@ -286,6 +286,36 @@ test('the "flatten" transform explodes an array field into rows, with dotted-pat
   assert.equal(new Set(cys).size, 3, 'expected 3 distinct y positions (from lc.m), not all collapsed to the same undefined value');
 });
 
+test('a bar with both x and y quantitative and an explicit orient stacks and orients correctly', async () => {
+  // bar_qq_stack_horizontal.vl.json's own shape: mark.orient explicit
+  // "horizontal", x AND y both quantitative, two rows sharing the same
+  // category value (needing implicit stacking, no color channel at all).
+  // Previously: (1) stacking picked y (the real category) as the value
+  // channel regardless of orient, backwards; (2) even after fixing that,
+  // the category axis (y) fell through to a zero-baseline treatment
+  // instead of a small fixed-height reference band, drawing one giant
+  // bar per row instead of a normal-height one.
+  const {document} = await renderSpec({
+    data: {values: [{a: 1, b: 28}, {a: 1, b: 55}, {a: 5, b: 43}]},
+    mark: {type: 'bar', orient: 'horizontal'},
+    encoding: {y: {field: 'a', type: 'quantitative'}, x: {field: 'b', type: 'quantitative'}},
+  }, {ignoreUnsupported: true});
+  const rects = marksOf(document, 'rect');
+  assert.equal(rects.length, 3);
+  const heights = rects.map(r => Number(r.getAttribute('height')));
+  for (const h of heights) assert.ok(h < 20, `expected a small fixed-pixel height (horizontal bar), got ${h}`);
+  const byY = new Map();
+  for (const r of rects) {
+    const y = Math.round(Number(r.getAttribute('y')));
+    if (!byY.has(y)) byY.set(y, []);
+    byY.get(y).push(r);
+  }
+  const atA1 = [...byY.values()].find(group => group.length === 2);
+  assert.ok(atA1, `expected two rows sharing the same y (a=1, stacked), got y groups: ${[...byY.keys()]}`);
+  const segs = atA1.map(r => ({x: Number(r.getAttribute('x')), w: Number(r.getAttribute('width'))})).sort((a, b) => a.x - b.x);
+  assert.ok(Math.abs(segs[0].x + segs[0].w - segs[1].x) < 1, `expected two adjacent (stacked) segments along x, got ${JSON.stringify(segs)}`);
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(
