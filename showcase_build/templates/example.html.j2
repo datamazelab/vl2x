@@ -187,14 +187,12 @@
   // is a pure CSS visibility flip, no re-render needed.
   var tabButtons = document.querySelectorAll('.tab-btn');
   var tabPanels = document.querySelectorAll('.tab-panel');
+  function activateTab(name) {
+    tabButtons.forEach(function (b) { b.classList.toggle('active', b.dataset.tab === name); });
+    tabPanels.forEach(function (p) { p.classList.toggle('active', p.dataset.tabPanel === name); });
+  }
   tabButtons.forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      tabButtons.forEach(function (b) { b.classList.remove('active'); });
-      tabPanels.forEach(function (p) { p.classList.remove('active'); });
-      btn.classList.add('active');
-      var target = document.querySelector('.tab-panel[data-tab-panel="' + btn.dataset.tab + '"]');
-      if (target) target.classList.add('active');
-    });
+    btn.addEventListener('click', function () { activateTab(btn.dataset.tab); });
   });
 
   // "Show all visualizations": a `gallery-mode` class on <body> switches
@@ -220,15 +218,32 @@
       a.href = url.toString();
     });
   }
+  function setGalleryMode(isGallery) {
+    applyView(isGallery);
+    var url = new URL(location.href);
+    if (isGallery) url.searchParams.set('view', 'gallery');
+    else url.searchParams.delete('view');
+    history.replaceState(null, '', url);
+  }
   applyView(new URLSearchParams(location.search).get('view') === 'gallery');
   viewButtons.forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var isGallery = btn.dataset.view === 'gallery';
-      applyView(isGallery);
-      var url = new URL(location.href);
-      if (isGallery) url.searchParams.set('view', 'gallery');
-      else url.searchParams.delete('view');
-      history.replaceState(null, '', url);
+    btn.addEventListener('click', function () { setGalleryMode(btn.dataset.view === 'gallery'); });
+  });
+
+  // Clicking a rendered visualization while in gallery mode ("show all
+  // visualizations") jumps straight to that tool's own tab in compare
+  // mode, rather than requiring "switch back to compare, then find and
+  // click the right tab" as two separate steps -- e.g. clicking the D3
+  // render switches to compare mode with the D3 tab active. Only wired
+  // up in gallery mode (`.tab-panel`'s own `cursor: pointer`/hover
+  // outline in style.css is scoped identically) -- in compare mode only
+  // one panel is visible at a time already, so clicking it doing nothing
+  // is the expected, unsurprising behavior.
+  tabPanels.forEach(function (panel) {
+    panel.addEventListener('click', function () {
+      if (!document.body.classList.contains('gallery-mode')) return;
+      activateTab(panel.dataset.tabPanel);
+      setGalleryMode(false);
     });
   });
 

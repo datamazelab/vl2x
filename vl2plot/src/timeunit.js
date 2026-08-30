@@ -38,8 +38,30 @@ const local = {
   minutes: d => `new Date(${REF_YEAR}, 0, 1, 0, ${d}.getMinutes())`,
   seconds: d => `new Date(${REF_YEAR}, 0, 1, 0, 0, ${d}.getSeconds())`,
   monthdate: d => `new Date(${REF_YEAR}, ${d}.getMonth(), ${d}.getDate())`,
+  // "week" (cyclic -- collapses every year down to the same ~52 Sunday-
+  // starting week buckets, matching Vega's own `d3.timeWeek`-based
+  // convention: week boundaries always fall on a Sunday, not a fixed
+  // day-of-month the way `month`/`quarter` above trivially reuse
+  // `getMonth()` alone for) reuses the exact same day-of-year formula
+  // `dayofyear` above already computes (`Math.ceil((d - Jan0) / 864e5)`,
+  // inlined here rather than factored out since every entry in this
+  // table is its own self-contained expression) to first find which
+  // Sunday-numbered week (0-indexed) this date's own year places it in
+  // (the standard `floor((dayOfYear - 1 + firstWeekdayOfYear) / 7)`
+  // formula), then reconstructs the *same* relative week within the
+  // shared reference year.
+  week: d =>
+    `new Date(${REF_YEAR}, 0, 1 + Math.floor((Math.ceil((${d} - new Date(${d}.getFullYear(), 0, 0)) / 864e5) - 1 + new Date(${d}.getFullYear(), 0, 1).getDay()) / 7) * 7)`,
   yearmonth: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), 1)`,
   yearmonthdate: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate())`,
+  // "yearweek" (monotonic -- a real calendar week, year preserved): floors
+  // to that week's own Sunday. Subtracting `getDay()` (0 for Sunday) from
+  // `getDate()` can go negative (e.g. the 1st of the month landing mid-
+  // week) or past a month's own end -- both cases correctly roll over
+  // into the neighboring month/year on their own, since the `Date`
+  // constructor always normalizes an out-of-range day-of-month argument
+  // rather than throwing.
+  yearweek: d => `new Date(${d}.getFullYear(), ${d}.getMonth(), ${d}.getDate() - ${d}.getDay())`,
   yearquarter: d => `new Date(${d}.getFullYear(), Math.floor(${d}.getMonth() / 3) * 3, 1)`,
 };
 

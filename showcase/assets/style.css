@@ -464,6 +464,11 @@ body.gallery-mode .source-path-toggle {
 body.gallery-mode .tab-panel {
   display: flex !important;
   flex-direction: column;
+  cursor: pointer;
+}
+body.gallery-mode .tab-panel:hover {
+  outline: 2px solid var(--header-bg);
+  outline-offset: -1px;
 }
 
 .render-note {

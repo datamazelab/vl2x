@@ -1174,6 +1174,16 @@ def _render_point(encoding, mark_props, data_var, ax_var, ignore_unsupported) ->
         size_expr = f"{data_var}[{size_def['field']!r}]"
     elif isinstance(size_def, dict) and "value" in size_def:
         size_expr = format_value(size_def["value"])
+    elif isinstance(mark_props.get("size"), (int, float)):
+        # A static `mark: {"size": N}` (no `encoding.size` at all) --
+        # `param_expr.vl.json`'s own shape, a mark-level property bound to
+        # `{"expr": "..."}` and already resolved to a plain number by
+        # `translator.py`'s own `_resolve_param_expr_shapes()` by the time
+        # this runs. Previously never consulted at all (only an
+        # *encoding*-channel `size` was), so this silently fell back to
+        # matplotlib's own default marker size (36) regardless of what the
+        # spec asked for.
+        size_expr = format_value(mark_props["size"])
     stmts += size_stmts
     alpha = _opacity_value(encoding, mark_props)
 

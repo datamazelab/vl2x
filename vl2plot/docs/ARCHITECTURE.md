@@ -752,6 +752,183 @@ as opposed to a standalone chart's much larger default). This is
 purely a default-value fix, not a new code path: a child spec with its own
 explicit `width`/`height` is left untouched.
 
+## The facet-sort fix's own regression: a reordered `fy` domain collapsed stacking
+
+The facet-sort fix above (a custom `fy`/`fx` scale `domain` override) turned
+out to have a real regression of its own, caught only by actually
+rendering the real corpus spec (`trellis_area_sort_array.vl.json`) rather
+than a synthetic small-data unit test: a row-faceted, color-grouped
+**stacked** area (`Plot.stackY`) degenerated into a flat, zero-height
+shape in *every* facet once the `fy` domain was reordered away from
+Plot's own default ascending order -- confirmed by isolating the exact
+combination in a standalone Plot script (no vl2plot involved at all):
+`facet: {data, y: "symbol"}` plus a reordered `fy: {domain: [...]}`
+plus `Plot.stackY({fill: "symbol", ...})`, with no explicit `fy` channel
+on the mark itself, silently produces the flat degenerate shape; adding
+`fy: "symbol"` directly onto the mark's own options (redundant with the
+top-level facet when the domain isn't reordered) fixes it. Plot's own
+"auto-facet a mark whose data is the same array reference as facet.data"
+heuristic apparently doesn't feed a stack transform's own per-facet
+grouping correctly once the `fy` scale's domain has been overridden away
+from what it would otherwise infer.
+
+The fix (`commonChannels()`, `marks.js`, threaded down via
+`translateFacet()`'s own `facetChannels` context) makes every mark drawn
+inside `translateFacet()` explicitly carry its own `fx`/`fy` channel
+matching the facet, unconditionally -- not just when a reordering is
+present, since it's a no-op either way when the domain isn't reordered
+(confirmed empirically) and this sidesteps needing to special-case
+exactly which Plot-internal condition triggers the bug.
+
+## A facet's own `width`/`height` sizes ONE panel, not the whole grid
+
+A second, larger-blast-radius bug found while chasing the same spec: even
+after the stacking regression above was fixed, the chart still rendered
+empty. Vega-Lite's own `width`/`height` on a faceted spec is the size of
+ONE panel -- `trellis_area_sort_array.vl.json`'s own `"height": 40` means
+each of its 4 symbol panels is 40px tall. Plot's own top-level `width`/
+`height` instead size the ENTIRE faceted figure. Passing 40 straight
+through as if it already meant the whole figure starves each of the 4
+rows down to ~10px once Plot's own internal facet-row division applies --
+confirmed to be exactly enough to tip a *stacked* area's own per-facet
+geometry into the same flat, zero-height degenerate shape the fix above
+addresses for a totally unrelated reason (this time a genuine "not enough
+real pixels available" case, not a scale-domain quirk).
+
+Fixed in `translateFacet()`: the real total figure height/width is
+computed at *runtime* (`new Set(data.map(d => d[rowField])).size`, since a
+URL-sourced dataset's own distinct-row-value count isn't known at code-
+generation time) and multiplied against the per-panel number before it's
+spliced into `buildPlotCallSource()`'s own `width`/`height` lines (which
+already just interpolate whatever expression they're given verbatim, so a
+runtime variable name works exactly like a literal number would). Not
+handled: a `{"step": n}`-shaped per-category panel size (`panelSize()`
+only ever resolves a plain number) -- a narrower, separate gap.
+
+## A wrapped facet (`encoding.facet`, no `row`/`column` split) had no grid at all
+
+`encoding.facet: {field, columns: N}` (e.g. `trellis_barley.vl.json`'s own
+`columns: 2` across 8 `site` panels) -- a *wrapped* facet, as opposed to a
+`row`/`column` split -- wasn't even recognized as a facet by
+`extractEncodingFacet()` at all (it only ever looked at `row`/`column`,
+missing this third, `encoding.facet`-as-its-own-channel spelling
+entirely), so the whole `facet` channel was silently dropped and every
+panel rendered combined into one. Once recognized, there's still no Plot
+equivalent to wrap N panels per row from a single field -- Plot's own
+faceting is a strict 2-axis grid (`fx` times `fy`, confirmed absent any
+`wrap` option in Plot's own `facet.js` source), never "wrap N panels per
+row from one field's own distinct values."
+
+Rendered instead as N genuinely independent `Plot.plot()` calls (one per
+distinct facet value, each titled with that real value, each drawing only
+that value's own filtered rows), arranged in a real CSS grid with the
+requested (or, absent one, single-row) column count --
+`translateWrappedFacet()`, the same "independent panels in a wrapper div"
+strategy `hconcat`/`vconcat` already use for their own unsupported-
+composition fallback. Distinct values are only knowable once the data has
+loaded (a URL-sourced dataset, the common case), so grouping and sorting
+both happen at runtime; an aggregate-op sort (`sort: {op, field}`, e.g.
+trellis_barley's own `{op: "median", field: "yield"}` -- order panels by
+each site's own median yield) is computed via a new runtime helper,
+`vlFacetSortValues()`. Known, documented gaps: each panel computes its own
+LOCAL x/y/color scale domain rather than one shared across every panel
+the way Vega-Lite's own default facet behavior would; a `{"step": n}`-
+shaped panel size isn't handled.
+
+## A dodged bar's own band can round all the way down to zero, not just "thin"
+
+`bar_grouped_thin.vl.json` (551 directors, each with its own `xOffset`-
+dodged sub-bars, in a 500px-wide chart) rendered nothing visible at all --
+confirmed via direct DOM inspection that every single `<rect>` had a
+literal `width="0"`, not merely a hard-to-see sub-pixel value. Reproduced
+independently of vl2plot entirely with a plain Plot script at the same
+facet density: Plot's own band-width computation for a dodge (`xOffset`
+turned into a real `fx` facet, see the dodge/facet section above) rounds
+all the way to a hard zero once there's not enough width to go around,
+confirmed via the raw `rect.outerHTML` (`width="0"`, not a rounded-off
+tiny decimal). Real Vega-Lite never lets this happen --
+`config.mark.minBandSize`/`config.bar.minBandSize` (default **0.25px**,
+confirmed against the real compiler's own output for this exact spec:
+`"width": {"signal": "max(0.25, bandwidth('xOffset'))"}`) clamps a bar's
+own band size to always stay visible, a floor Plot has no equivalent of.
+
+Plot has no hook to apply a clamp *during* its own render (no custom
+`className`-scoped fixup point, no override of the internal bandwidth
+computation), so the fix is a DOM fix-up applied immediately after the
+enclosing `Plot.plot({...})` call returns: `renderBar()` (`marks.js`)
+detects a dodge is active, assigns the mark a unique `className` (spliced
+in as one of the mark's own *pre-transform* options -- confirmed
+empirically that Plot reads `className` off there, not off whatever a
+`Plot.groupX`/`stackY` transform wrapper's own return value happens to
+carry, and that Plot applies it to the mark's enclosing `<g>`, not to each
+individual `<rect>`), and returns a `postFixups` entry describing the
+clamp needed. `translateStandalone()` wraps the whole `Plot.plot({...})`
+expression in a self-invoking function (`wrapWithPostFixups()`) that
+captures the node, calls the new `vlApplyMinBandSize()` runtime helper
+(widens/heightens any too-small `<rect>`, re-centering it on its own
+original midpoint so the fix-up only ever changes size, never apparent
+position), and returns it -- self-contained, with no dependency on
+whatever variable name the eventual caller assigns the expression to.
+`config.mark.minBandSize`/`config.bar.minBandSize` needed `root.config`
+threading into `ctx` for the first time in this project (previously
+`config` wasn't read anywhere at all); only this one config value is
+wired through so far, and only for `bar` -- a `tick` mark has the
+identical real Vega-Lite default but isn't handled here, a documented
+narrower gap. Not threaded through `translateFacet()`/`translateMulti()`
+either (only the plain standalone-unit path) -- neither of the two
+reported specs needs it there, so it wasn't attempted.
+
+## `week`/`yearweek` timeUnits were simply missing
+
+Both were entirely absent from `timeunit.js`'s own bucketing table --
+any spec using either (`bar_grouped_timeunit_yearweek.vl.json`) fell
+through to the generic "unsupported timeUnit, left untruncated" fallback
+under `--ignore-unsupported`, silently drawing one bar per exact
+timestamp instead of one per week. Added following the same convention
+every other entry in this table already uses (plain local-time `Date`
+getters, no `d3` dependency): `yearweek` (monotonic -- includes "year")
+floors to that week's own real Sunday (`getDate() - getDay()`, which
+correctly rolls over a month/year boundary on its own, since the `Date`
+constructor always normalizes an out-of-range day-of-month rather than
+throwing); `week` (cyclic -- collapses every year down to the same ~52
+Sunday-starting buckets, mirroring `month`/`quarter`'s own existing
+reference-year convention) reuses the exact `dayofyear` formula already in
+this same table to find which Sunday-numbered week a date falls in, then
+reconstructs the equivalent date within the shared reference year.
+Verified correct in isolation against plain, directly-constructed `Date`
+objects (no string-parsing ambiguity): two dates in the same relative week
+across different years both collapse to the identical reference-year
+bucket for `week`; `yearweek` of a known Monday resolves to the correct
+preceding Sunday, real year preserved.
+
+**A separate, pre-existing, and considerably larger bug surfaced while
+verifying this against the real corpus spec**, not fixed here: a bare
+date-only ISO string (`"1970-01-01"`, extremely common in real datasets,
+including the `cars.json` dataset this exact spec's own filter and
+`xOffset` grouping depend on) parses in JS as **UTC midnight**, but every
+`timeUnit` bucketing formula in this file (this one included) reads it
+back via **local**-time `Date` getters (`getFullYear()`/`getMonth()`/
+`getDate()`/`getDay()`). On any machine whose own local timezone has a
+negative UTC offset (confirmed on the machine used for this session: UTC
+-5), that mismatch shifts the *apparent* local date backward by one full
+day -- confirmed directly: `new Date("1970-01-01").getFullYear()` reads
+back as `1969`, not `1970`. For a `year`/`yearmonth`/etc. bucket this is
+usually invisible (the same off-by-one shift lands in the same bucket
+almost always), but for a spec whose own filter/grouping logic happens to
+land right on a year boundary (as this one's `range: [1970, 1971]` year
+filter does), the shift silently moves entire years' worth of rows into
+the wrong bucket or out of the filter's own range entirely -- confirmed
+by tracing this exact spec's own real data through the pipeline by hand:
+the two facet groups the chart actually drew turned out to correspond to
+model years 1971 and 1972 shifted backward into what looked like 1970 and
+1971, not the real 1970/1971 data the spec asked for at all. This affects
+every cyclic/local-getter timeUnit in this file, not just the two added
+here, and needs a fix at the `data.js` date-coercion layer (parsing a
+date-only string as local midnight instead of relying on the `Date`
+constructor's own UTC-for-date-only/local-for-datetime split) -- out of
+scope for this pass, called out here so it isn't mistaken for a `week`/
+`yearweek`-specific defect.
+
 ## Validation methodology
 
 Like `vl2d3`, `vl2plot` targets a lower-level toolkit than `vl2altair`/
@@ -765,8 +942,8 @@ ways rather than a plain pass/fail:
   Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing (`test/validate-examples.js`, strict mode): **499/633
-OK, 134/633 skipped, 0/633 failed**.
+At the time of writing (`test/validate-examples.js`, strict mode): **500/633
+OK, 133/633 skipped, 0/633 failed**.
 
 A second, stricter harness (`test/validate-rendering.js`) runs the same
 corpus the way the showcase actually does — `{ignoreUnsupported: true}` —

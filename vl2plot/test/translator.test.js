@@ -693,3 +693,154 @@ test('hconcat children with no explicit width fall back to a small default, not 
   assert.equal(widths.length, 2);
   for (const w of widths) assert.ok(w < 640, `expected a small default width, got ${w}`);
 });
+
+test('a row-faceted, stacked area chart with an explicit per-panel height renders real (non-flat) shapes in every facet', async () => {
+  // Vega-Lite's own `height` on a faceted spec is the size of ONE panel,
+  // not the whole grid -- passing it straight through as Plot's own
+  // top-level `height` (the whole figure's height) starves each of the 4
+  // facets down to a sliver, which for a *stacked* mark degenerates every
+  // facet's own geometry into a flat, zero-height line (a real Plot
+  // stacking quirk once the available height per facet gets too small,
+  // not merely "a bit cramped"). The fix scales the real total height by
+  // the actual facet-row count (computed at runtime from the data).
+  const {document} = await renderSpec({
+    data: {
+      values: [
+        {date: '2000-01-01', price: 10, symbol: 'A'}, {date: '2000-02-01', price: 12, symbol: 'A'},
+        {date: '2000-01-01', price: 20, symbol: 'B'}, {date: '2000-02-01', price: 22, symbol: 'B'},
+        {date: '2000-01-01', price: 30, symbol: 'C'}, {date: '2000-02-01', price: 32, symbol: 'C'},
+        {date: '2000-01-01', price: 40, symbol: 'D'}, {date: '2000-02-01', price: 42, symbol: 'D'},
+      ],
+    },
+    width: 300,
+    height: 40,
+    mark: 'area',
+    encoding: {
+      x: {field: 'date', type: 'temporal'},
+      y: {field: 'price', type: 'quantitative'},
+      color: {field: 'symbol', type: 'nominal'},
+      row: {field: 'symbol', type: 'nominal'},
+    },
+  }, {ignoreUnsupported: true});
+  const paths = [...document.querySelectorAll('path')].filter(p => (p.getAttribute('d') || '').length > 15);
+  assert.equal(paths.length, 4, `expected one area path per facet, got ${paths.length}`);
+  for (const p of paths) {
+    const ys = [...p.getAttribute('d').matchAll(/[ML]-?[\d.]+,(-?[\d.]+)/g)].map(m => Number(m[1]));
+    const spread = Math.max(...ys) - Math.min(...ys);
+    assert.ok(spread > 1, `expected a real (non-flat) shape with y-spread > 1px, got d="${p.getAttribute('d')}"`);
+  }
+});
+
+test('a wrapped facet (encoding.facet with columns, no row/column split) renders a real N-column grid, one real panel per distinct value', async () => {
+  const {document} = await renderSpec({
+    data: {
+      values: [
+        {site: 'A', v: 1}, {site: 'A', v: 2},
+        {site: 'B', v: 3}, {site: 'B', v: 4},
+        {site: 'C', v: 5}, {site: 'C', v: 6},
+      ],
+    },
+    mark: 'point',
+    encoding: {
+      facet: {field: 'site', type: 'nominal', columns: 2},
+      x: {field: 'v', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  const svgs = document.querySelectorAll('svg');
+  assert.ok(svgs.length >= 3, `expected at least one panel per distinct site, got ${svgs.length} svgs`);
+  const grid = [...document.querySelectorAll('div')].find(d => d.style.display === 'grid');
+  assert.ok(grid, 'expected a CSS grid wrapper div');
+  assert.equal(grid.style.gridTemplateColumns, 'repeat(2, auto)');
+  const dots = document.querySelectorAll('circle');
+  assert.equal(dots.length, 6, 'expected all 6 rows drawn across the 3 panels combined');
+});
+
+test('a dodged bar with too many categories for its own width stays visible (a real min-band-size floor), not a literal 0-width rect', async () => {
+  // Plot's own computed band width for a dodge (xOffset -> fx facet, see
+  // catChannelPairs()) collapses all the way to a literal `width="0"`
+  // once there are enough categories crammed into too little space --
+  // confirmed against bar_grouped_thin.vl.json (551 directors in 500px).
+  // Real Vega-Lite never lets a bar go fully invisible
+  // (`config.mark.minBandSize`, default 0.25px) -- reproduced here with a
+  // deliberately extreme category count in a narrow chart.
+  const values = [];
+  for (let i = 0; i < 300; i++) values.push({cat: 'c' + i, sub: 's0', v: i});
+  const {document} = await renderSpec({
+    data: {values},
+    width: 100,
+    mark: 'bar',
+    encoding: {
+      x: {field: 'cat', type: 'nominal'},
+      xOffset: {field: 'sub', type: 'nominal'},
+      y: {field: 'v', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  const widths = [...document.querySelectorAll('rect')].map(r => Number(r.getAttribute('width'))).filter(w => !Number.isNaN(w));
+  assert.ok(widths.length > 0);
+  for (const w of widths) assert.ok(w > 0, `expected every bar to stay visible (width > 0), got ${w}`);
+});
+
+test('an explicit config.bar.minBandSize overrides the default floor', async () => {
+  const values = [];
+  for (let i = 0; i < 300; i++) values.push({cat: 'c' + i, sub: 's0', v: i});
+  const {document} = await renderSpec({
+    data: {values},
+    width: 100,
+    config: {bar: {minBandSize: 4}},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'cat', type: 'nominal'},
+      xOffset: {field: 'sub', type: 'nominal'},
+      y: {field: 'v', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  const widths = [...document.querySelectorAll('rect')].map(r => Number(r.getAttribute('width'))).filter(w => !Number.isNaN(w));
+  assert.ok(widths.length > 0);
+  for (const w of widths) assert.ok(w >= 4, `expected every bar to respect the explicit 4px floor, got ${w}`);
+});
+
+test('yearweek/week timeUnits bucket to a real Sunday-starting week, not left untruncated', async () => {
+  const {code} = await renderSpec({
+    data: {values: [{d: '2021-03-15T12:00:00', v: 1}]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'd', type: 'temporal', timeUnit: 'yearweek'},
+      y: {field: 'v', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.ok(!/unsupported timeUnit/.test(code), `expected yearweek to be a real, supported timeUnit, got:\n${code}`);
+  assert.match(code, /getDate\(\)\s*-\s*.*\.getDay\(\)/, 'expected a real Sunday-of-week floor expression');
+});
+
+test('a literal point/circle size:{value} is converted area-to-radius, not used as a raw pixel radius', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{a: 1, b: 2}]},
+    mark: 'point',
+    encoding: {
+      x: {field: 'a', type: 'quantitative'},
+      y: {field: 'b', type: 'quantitative'},
+      size: {value: 100},
+    },
+  }, {ignoreUnsupported: true});
+  const [circle] = document.querySelectorAll('circle');
+  assert.ok(circle);
+  const r = Number(circle.getAttribute('r'));
+  // sqrt(100 / pi) =~ 5.64 -- not a literal 100px radius.
+  assert.ok(r < 10, `expected a real area-to-radius conversion (~5.64px), got r=${r}`);
+});
+
+test('the "flatten" transform explodes an array field into rows, with dotted-path access to its own sub-fields', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{id: 'a', lc: [{t: 1, m: 10}, {t: 2, m: 20}]}, {id: 'b', lc: [{t: 1, m: 5}]}]},
+    transform: [{flatten: ['lc']}],
+    mark: 'point',
+    encoding: {
+      x: {field: 'lc.t', type: 'quantitative'},
+      y: {field: 'lc.m', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  const circles = [...document.querySelectorAll('circle')];
+  assert.equal(circles.length, 3, 'expected 2+1=3 exploded rows drawn');
+  const cys = circles.map(c => Number(c.getAttribute('cy')));
+  assert.equal(new Set(cys).size, 3, 'expected 3 distinct y positions (from lc.m), not all collapsed to the same undefined value');
+});

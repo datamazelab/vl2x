@@ -242,6 +242,50 @@ test('a trail mark renders a real variable-width ribbon, not a constant-width li
   assert.ok(Math.max(...radii) > Math.min(...radii) * 2, 'expected the middle (large-size) point to have a visibly larger radius than the small-size ends');
 });
 
+test('a faceted, stacked bar chart computes its shared domain from the stacked total, not raw per-row values', async () => {
+  const {vegaLiteToD3Code} = await import('../src/index.js');
+  // A raw "yield" reading (1-10) has nothing to do with a bar's own real
+  // length once every row for a given (variety, site) collapses into one
+  // summed value, further summed again across every site sharing that
+  // variety (the real stacked total) -- confirmed against
+  // trellis_stacked_bar.vl.json to previously produce a shared domain
+  // based on individual readings, making every bar run far past it
+  // (visually indistinguishable from an accidental "normalize" stack).
+  const code = vegaLiteToD3Code(
+    {
+      facet: {field: 'year', type: 'nominal'},
+      spec: {
+        data: {values: []},
+        mark: 'bar',
+        encoding: {
+          x: {field: 'yield', type: 'quantitative', aggregate: 'sum'},
+          y: {field: 'variety', type: 'nominal'},
+          color: {field: 'site', type: 'nominal'},
+        },
+      },
+    },
+    {ignoreUnsupported: true}
+  );
+  assert.match(code, /d3\.rollup\(facetData, rows => d3\.sum\(rows, d => d\["yield"\]\)/, 'expected the shared domain to aggregate via the same rollup used for the real per-panel stacking, not a raw min/max over "yield"');
+  assert.doesNotMatch(code, /__facetXDomain = \[Math\.min\(0, d3\.min\(facetData, d => d\["yield"\]\)/, 'expected the naive raw-field domain NOT to be used once the channel has its own aggregate');
+});
+
+test('the "flatten" transform explodes an array field into rows, with dotted-path access to its own sub-fields', async () => {
+  const {document} = await renderSpec({
+    data: {values: [{id: 'a', lc: [{t: 1, m: 10}, {t: 2, m: 20}]}, {id: 'b', lc: [{t: 1, m: 5}]}]},
+    transform: [{flatten: ['lc']}],
+    mark: 'point',
+    encoding: {
+      x: {field: 'lc.t', type: 'quantitative'},
+      y: {field: 'lc.m', type: 'quantitative'},
+    },
+  });
+  const circles = [...document.querySelectorAll('circle')];
+  assert.equal(circles.length, 3, 'expected 2+1=3 exploded rows drawn');
+  const cys = circles.map(c => Number(c.getAttribute('cy')));
+  assert.equal(new Set(cys).size, 3, 'expected 3 distinct y positions (from lc.m), not all collapsed to the same undefined value');
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

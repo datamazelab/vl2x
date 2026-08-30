@@ -154,7 +154,8 @@ without the flag. See `src/translator.js`'s module docstring and
 | Single unit view (`mark` + `encoding`) | ✅ |
 | `layer` (including nested layer-of-layers) | ✅ — one shared `Plot.plot()`, one `marks` array |
 | `hconcat`, `vconcat`, `concat` | ✅ — independent `Plot.plot()` calls in a flex/grid wrapper (Plot has no native multi-plot layout); a child with no explicit `width`/`height` of its own defaults to a small 200x200 size rather than Plot's own much larger standalone default, so panels actually sit side by side instead of each one alone wrapping onto its own line |
-| `facet` (single-dimension, plain-unit template), and `row`/`column` as plain *encoding* channels (a more common-in-practice alternative spelling), including an explicit `sort: [...]` panel order | ✅ — Plot's own native `facet: {data, x, y}` option, no hand-built grid; a facet field's own `sort` becomes a real `fx`/`fy` scale `domain` override |
+| `facet` (single-dimension, plain-unit template), and `row`/`column` as plain *encoding* channels (a more common-in-practice alternative spelling), including an explicit `sort: [...]`/`{op, field}` panel order | ✅ — Plot's own native `facet: {data, x, y}` option, no hand-built grid; a facet field's own `sort` becomes a real `fx`/`fy` scale `domain` override |
+| `encoding.facet` (a *wrapped* facet, no `row`/`column` split, e.g. `columns: 2`) | ✅ — Plot has no native "wrap N per row from one field" facet mode, so this renders N independent `Plot.plot()` calls (one real panel per distinct value, titled with that value) in a real CSS grid instead; each panel computes its own local scale domain rather than one shared across every panel |
 | `facet` (nested facet-within-facet, or faceting a layered template) | ❌ |
 | `repeat`: `{layer: [...]}`, `{row: [...]}`/`{column: [...]}`, and the bare array shorthand (with a sibling `columns: N`) | ✅ — each expands into the equivalent ordinary `layer`/`vconcat`/`concat` composition (reusing all of that composition's own logic) after substituting every `{"repeat": key}` token |
 | `repeat`: `row` *and* `column` together (a 2D grid, e.g. a scatterplot matrix) | ❌ |
@@ -172,6 +173,8 @@ without the flag. See `src/translator.js`'s module docstring and
 | Top-level `transform: [{"aggregate": [{"op": "argmax"/"argmin", ...}]}]` plus the bracket-indexed field it produces (`argmax_field['Other Field']`) | ✅ — a real row-lookup reducer, and a generic bracket-index field flattener (`translator.js`'s `flattenBracketFields()`) |
 | Implicit per-mark `stack` (`bar`/`area` colored by `color`/`detail`), plus an explicit `stack` on a `text` label overlaid on one | ✅ — Plot's own native `offset: "normalize"/"center"` for bar/area; `text` stacks only when `stack` is set explicitly (no Vega-Lite convention auto-stacks a label) |
 | Top-level `transform`: `filter`, `calculate`, `aggregate`, `bin`, `timeUnit`, `stack`, `density`, `window` | ✅ — `stack`/`density`/`window` via a shared runtime helper (`src/runtime.js`), since none has a native Plot *data-array* transform equivalent (`density` is a real Gaussian-kernel KDE, `window` a real SQL-window-function-style computation, neither an approximation) |
+| `week`/`yearweek` timeUnits | ✅ — a real Sunday-starting week floor (`yearweek`, real year kept) or a reference-year cyclic week bucket (`week`), plain local-`Date`-getter math matching every other entry in `timeunit.js`, no `d3` dependency |
+| `config.mark.minBandSize`/`config.bar.minBandSize` (a dodged bar's own band never shrinks to fully invisible) | ✅ (bar only) — Plot's own computed band width can round all the way to a literal 0px at high enough category density; fixed up as a DOM post-process immediately after the enclosing `Plot.plot()` call returns, matching real Vega-Lite's own default 0.25px floor |
 | Top-level `transform`: `joinaggregate`, `fold`, `pivot`, `lookup`, `flatten`, `sort`, `impute` | ❌ |
 | Vega expression strings (`filter`/`calculate`) | ⚠️ best-effort: `datum` → row var, `Math.*` functions, date-component extraction, `length()`/`substring()`/`indexof()`/`format()`/`isValid()`/`if()`; anything else passes through as literal text and fails loudly at chart-render time rather than silently miscalculating |
 | `params`/`selection` (live interactivity) | ❌ |
@@ -192,7 +195,7 @@ a plain pass/fail:
   not to implement yet. Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **499/633 OK, 134/633 skipped (documented
+At the time of writing: **500/633 OK, 133/633 skipped (documented
 boundaries above), 0/633 failed**. A second, stricter harness
 (`test/validate-rendering.js`) additionally inspects the *rendered SVG
 geometry* of every `--ignore-unsupported` run (not just whether

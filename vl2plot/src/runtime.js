@@ -178,6 +178,57 @@ export function vlFlattenOneLevel(data) {
   });
 }
 
+// Vega-Lite's `flatten` transform: explodes each row into N rows, one per
+// element of the named array field(s) (multiple fields are zipped
+// together by index, per VL's own documented behavior; a row whose
+// array(s) don't reach length N gets `undefined` for the shorter one(s)
+// past their own end) -- every other, non-flattened field is copied
+// through unchanged onto each new row. A row with no array at all in any
+// listed field (length 0) passes through as a single unchanged row rather
+// than disappearing.
+//
+// Unlike `vlFlattenOneLevel()` above (a completely different feature this
+// shares a name with only by English-language coincidence, not a Vega-
+// Lite one -- that one runs once, up front, on freshly-loaded data, to
+// make an *already*-nested object field's own sub-properties reachable by
+// a plain dotted key) this is the real `"flatten": [...]` transform verb:
+// an ARRAY field explodes into rows, and each new row's own copy of that
+// field becomes one array ELEMENT (typically itself a nested object,
+// e.g. vconcat_flatten.vl.json's own `"lc": [{"time":1,"mag":18.5}, ...]`
+// exploding into one row per `{time, mag}` pair) -- not a flat scalar.
+// Downstream encoding channels referencing a dotted path into that
+// per-row object (`"lc.time"`) need it flattened into a real key the
+// exact same way `vlFlattenOneLevel()` already does for ordinary nested
+// data, so that exact same one-level dotted-key expansion is applied
+// directly to each newly exploded row here, rather than requiring a
+// second, separate flattening pass over the whole (now much larger)
+// result afterward.
+export function vlFlatten(data, {fields, as}) {
+  const outNames = Array.isArray(as) && as.length === fields.length ? as : fields;
+  const out = [];
+  for (const row of data) {
+    const n = Math.max(0, ...fields.map(f => (Array.isArray(row[f]) ? row[f].length : 0)));
+    if (n === 0) {
+      out.push(row);
+      continue;
+    }
+    for (let i = 0; i < n; i++) {
+      const newRow = {...row};
+      fields.forEach((f, j) => {
+        newRow[outNames[j]] = Array.isArray(row[f]) ? row[f][i] : undefined;
+      });
+      for (const name of outNames) {
+        const v = newRow[name];
+        if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) {
+          for (const [k2, v2] of Object.entries(v)) newRow[`${name}.${k2}`] = v2;
+        }
+      }
+      out.push(newRow);
+    }
+  }
+  return out;
+}
+
 // Vega-Lite's `density` transform: a kernel density estimate of one
 // field, replacing the data with (by default) `value`/`density` sample
 // points tracing the estimated curve -- optionally one curve per
@@ -391,6 +442,75 @@ export function vlArgAggregate(data, {compareField, mode, groupby = []}) {
     out.push(best);
   }
   return out;
+}
+
+// A wrapped facet's own distinct values, in the order its panels should
+// actually be drawn -- `groupField`'s own distinct values, sorted either
+// by their own natural value (no `sortField`, e.g. a plain `sort:
+// "descending"`/absent sort) or by an aggregate reduced from `sortField`
+// within each group (a `sort: {op, field}` def, e.g. trellis_barley.vl
+// .json's own `sort: {op: "median", field: "yield"}` -- one site's own
+// panels ordered by that site's own median yield, not by the site name
+// itself). Used by a wrapped `encoding.facet` (no `row`/`column` split) --
+// Plot has no native "wrap N panels per row from one field" facet mode of
+// its own (only a strict 2-axis `fx` x `fy` grid), so that case is
+// rendered as N independent `Plot.plot()` calls instead (translator.js),
+// one per value this function returns, laid out in a real CSS grid.
+export function vlFacetSortValues(rows, {groupField, sortField, op = 'mean', order = 'ascending'}) {
+  const groups = new Map();
+  for (const r of rows) {
+    const k = r[groupField];
+    if (!groups.has(k)) groups.set(k, sortField !== undefined ? [] : k);
+    if (sortField !== undefined) groups.get(k).push(r[sortField]);
+  }
+  const reduce =
+    {
+      count: vs => vs.length,
+      sum: vs => vs.reduce((a, b) => a + b, 0),
+      mean: vs => vs.reduce((a, b) => a + b, 0) / vs.length,
+      average: vs => vs.reduce((a, b) => a + b, 0) / vs.length,
+      median: vs => {
+        const s = [...vs].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+      },
+      min: vs => Math.min(...vs),
+      max: vs => Math.max(...vs),
+    }[op] || (vs => vs.reduce((a, b) => a + b, 0) / vs.length);
+  const entries = Array.from(groups, ([key, vs]) => [key, sortField !== undefined ? reduce(vs) : key]);
+  entries.sort((a, b) => (a[1] > b[1] ? 1 : a[1] < b[1] ? -1 : 0));
+  if (order === 'descending') entries.reverse();
+  return entries.map(([key]) => key);
+}
+
+// Vega-Lite's `config.mark.minBandSize`/`config.<mark-type>.minBandSize`
+// (default 0.25px): a bar/tick's own band-scale-computed width/height is
+// clamped to never go BELOW this minimum, keeping it visible even when an
+// extreme category count leaves each one an almost-zero-width sliver
+// (confirmed against the real compiler's own output for
+// bar_grouped_thin.vl.json: `"width": {"signal": "max(0.25,
+// bandwidth('xOffset'))"}`). Plot has no equivalent clamp of its own --
+// confirmed empirically that a `Plot.barY` mark whose own dodge/offset
+// scale computes a sub-pixel bandwidth renders a literal `width="0"`, not
+// a barely-visible sliver -- so this widens (or heightens) every
+// already-rendered `<rect>` matching `className` back up to `minSize`,
+// re-centering it on its own original midpoint (the same center-
+// preserving clamp the real compiler's own `spacingAndSizeOffset` logic
+// applies) so the fix-up never shifts a bar's own apparent position, only
+// its size.
+export function vlApplyMinBandSize(node, {className, dimension, minSize}) {
+  const posAttr = dimension === 'width' ? 'x' : 'y';
+  // Plot renders `className` onto the mark's own enclosing `<g>` (e.g.
+  // `<g aria-label="bar" class="...">`), not onto each individual
+  // `<rect>` -- confirmed empirically.
+  for (const rect of node.querySelectorAll(`g.${className} rect`)) {
+    const size = Number(rect.getAttribute(dimension));
+    if (!(size < minSize)) continue;
+    const pos = Number(rect.getAttribute(posAttr));
+    rect.setAttribute(dimension, String(minSize));
+    rect.setAttribute(posAttr, String(pos - (minSize - size) / 2));
+  }
+  return node;
 }
 
 export function vlStack(data, {field, groupby = [], sort = [], offset = 'zero', as}) {

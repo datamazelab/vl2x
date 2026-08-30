@@ -582,3 +582,83 @@ def translate_expr(expr: str) -> str:
 
 def expr_uses_math(expr: str) -> bool:
     return "math." in translate_expr(expr)
+
+
+class _JSUndefined:
+    """Stands in for an unresolved name/attribute during a *static* expr
+    evaluation (see `resolve_static_expr` below) -- a top-level `params`
+    array entry with a bound `value` this project can actually read, or
+    any name genuinely undefined in JS too, gets a real Python value
+    instead; a live *selection* reference (e.g. `sel.Miles_per_Gallon`,
+    `param_expr.vl.json`'s own bar_bullet_expr_bind.vl.json alike -- no
+    interactivity is implemented) has no such value and needs to behave
+    like JS's own `undefined` for arithmetic and truthiness, not raise a
+    Python `AttributeError`/`TypeError` the moment it's touched. Every
+    arithmetic op propagates (mirroring `undefined + x === NaN` in JS,
+    itself contagious), attribute access on it stays `undefined` too
+    (`sel.field` when `sel` itself is undefined), and it's falsy -- so a
+    real Vega expression's own `sel.field * 10 || 75` fallback idiom
+    resolves to the fallback exactly the way it would in a live Vega-Lite
+    render with nothing actually selected.
+    """
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "undefined"
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, _JSUndefined) or other is None
+
+    def __getattr__(self, _name):
+        return _JSUndefined()
+
+    def _propagate(self, *_args, **_kwargs):
+        return self
+
+    __mul__ = __rmul__ = __add__ = __radd__ = _propagate
+    __sub__ = __rsub__ = __truediv__ = __rtruediv__ = _propagate
+    __neg__ = __pos__ = _propagate
+
+
+class _ExprEnv(dict):
+    """An eval() namespace where a missing name resolves to `_JSUndefined()`
+    instead of raising `NameError` -- see `_JSUndefined`'s own docstring for
+    why that's the right behavior here, not a bug to guard against."""
+
+    def __missing__(self, _key):
+        return _JSUndefined()
+
+
+def resolve_static_expr(expr: str, params: dict):
+    """Evaluate a Vega expression string to a concrete Python value *once*,
+    at translate time -- for a scalar context with no per-row `datum` at
+    all: a top-level `params` array entry's own `expr`-derived default
+    value, or a mark-level property/`encoding.<channel>.datum` bound via
+    `{"expr": "..."}` (as opposed to `calculate`/`filter`'s own per-row
+    `translate_expr()`, which instead produces a Python expression *string*
+    meant to run inside a generated `lambda row: ...`). `params` is every
+    already-resolved top-level param's own name -> value (a bound param
+    referencing an earlier one, e.g. bar_bullet_expr_bind.vl.json's own
+    `"innerBarSize": {"expr": "height/2"}`, sees it already resolved here,
+    since callers resolve the `params` array in its own given declaration
+    order). Any name this expression references that ISN'T a known param
+    (almost always a live selection, e.g. `sel.Miles_per_Gallon` -- no
+    interactivity is implemented) resolves to `_JSUndefined()` rather than
+    crashing, so a `... || fallback` idiom still resolves to a sane
+    constant instead of leaving the whole mark/property untranslatable.
+    Returns `None` (and the caller falls back to leaving the raw `{"expr":
+    ...}` untouched) if evaluation still fails outright (a construct this
+    project's own deliberately-simple expression translator doesn't cover
+    at all, e.g. a function call with no static equivalent).
+    """
+    py_expr = translate_expr(expr)
+    env = _ExprEnv(params)
+    try:
+        result = eval(py_expr, {"math": __import__("math")}, env)  # noqa: S307
+    except Exception:
+        return None
+    if isinstance(result, _JSUndefined):
+        return None
+    return result

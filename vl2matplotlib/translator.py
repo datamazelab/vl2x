@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 
 from .data import render_data_load, render_quantitative_coercion, render_temporal_coercion
+from .expr import resolve_static_expr
 from .literals import try_black_format
 from .marks import render_mark
 from .prepare import prepare_encoding
@@ -65,6 +66,11 @@ class Emitter:
         # `vl2ggplot`'s identical conditional `library(vl2ggplot)` header
         # logic for its own shared runtime helpers.
         self.uses_runtime: set[str] = set()
+        # Every top-level `params` array entry's own name -> resolved
+        # concrete value (see `_resolve_top_level_params()`) -- populated
+        # once, up front, by `translate_top()`; a live selection param (no
+        # static default) is deliberately absent, not merely `None`.
+        self.params: dict = {}
 
     def new_var(self, hint: str) -> str:
         n = self._counts.get(hint, 0) + 1
@@ -194,6 +200,45 @@ def _collect_quantitative_fields(encoding: dict, transform_list: list) -> list[s
     return sorted(set(fields))
 
 
+_BRACKET_INDEX_FIELD_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]$")
+
+
+def _collect_bracket_index_fields(encoding: dict) -> list[str]:
+    """Vega-Lite's own bracket-index field shorthand -- `"field":
+    "ranges[2]"` (bar_bullet_expr_bind.vl.json's own bullet-chart idiom),
+    naming one specific ELEMENT of a row's own array-valued column
+    directly, not a nested-object drill-down (that's `_unescape_field_refs
+    ()`'s own concern, an unrelated dotted-path spelling) and not a
+    top-level `aggregate` transform's own bracket-indexed *result* lookup
+    either (a wholly different Vega-Lite feature this project doesn't
+    otherwise support). No pandas column is ever literally named this way
+    on load, so left untouched, every downstream `data_var["ranges[2]"]`
+    column access raises a bare `KeyError` -- collected here (scanning
+    every channel's own `field`, not just the position-like ones
+    `_collect_quantitative_fields()` limits itself to, since a bracket
+    index can appear on any channel) so `render_bracket_field_materialization()`
+    can pre-compute a REAL column of that exact name before anything else
+    reads it."""
+    fields = []
+    for d in encoding.values():
+        for one in d if isinstance(d, list) else [d]:
+            if isinstance(one, dict) and isinstance(one.get("field"), str) and _BRACKET_INDEX_FIELD_RE.match(one["field"]):
+                fields.append(one["field"])
+    return sorted(set(fields))
+
+
+def render_bracket_field_materialization(data_var: str, fields: list[str]) -> list[str]:
+    stmts = []
+    for f in fields:
+        m = _BRACKET_INDEX_FIELD_RE.match(f)
+        base, idx = m.group(1), int(m.group(2))
+        stmts.append(
+            f"if {base!r} in {data_var}.columns: {data_var}[{f!r}] = {data_var}[{base!r}].apply("
+            f"lambda v: v[{idx}] if isinstance(v, (list, tuple)) and len(v) > {idx} else None)"
+        )
+    return stmts
+
+
 def _mark_channels_comment(path: str, mark_path_suffix: str, encoding: dict) -> str:
     parts = [f"{path}{mark_path_suffix}"] + [f"{path}encoding.{ch}" for ch in encoding]
     return ", ".join(parts)
@@ -218,6 +263,9 @@ def translate_unit(node: dict, emitter: Emitter, hint: str, ax_var: str, ignore_
         emitter.add_stmt(s)
     quantitative_fields = _collect_quantitative_fields(node.get("encoding", {}), node.get("transform") or [])
     for s in render_quantitative_coercion(data_var, quantitative_fields):
+        emitter.add_stmt(s)
+    bracket_fields = _collect_bracket_index_fields(node.get("encoding", {}) or {})
+    for s in render_bracket_field_materialization(data_var, bracket_fields):
         emitter.add_stmt(s)
 
     transform_list = node.get("transform")
@@ -781,9 +829,74 @@ def _fallback_geo_position(node: object) -> None:
             _fallback_geo_position(item)
 
 
+def _resolve_top_level_params(params_list: list | None) -> dict:
+    """A top-level `params` array entry's own name -> concrete Python value
+    -- a bound `value` (a slider's own default, the common case, e.g.
+    `rule_params.vl.json`'s own `"strokeWidth": {"name": "strokeWidth",
+    "value": 2, "bind": {...}}`) is read directly; an `expr`-only entry
+    (`bar_bullet_expr_bind.vl.json`'s own `"innerBarSize": {"expr":
+    "height/2"}`, itself derived from an *earlier* param) is resolved via
+    `resolve_static_expr()` against every param already resolved so far --
+    resolved strictly in the array's own given order, since Vega-Lite
+    itself requires a param referencing another to be declared after it. A
+    live *selection* param (`"select": {...}`, no static default at all)
+    is deliberately left OUT of the returned dict rather than guessed at --
+    any expression referencing it by name then correctly falls back to
+    `_JSUndefined()` (see `expr.py`) instead of a wrong constant.
+    """
+    resolved: dict = {}
+    for p in params_list or []:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        if not isinstance(name, str):
+            continue
+        if "value" in p:
+            resolved[name] = p["value"]
+        elif isinstance(p.get("expr"), str):
+            value = resolve_static_expr(p["expr"], resolved)
+            if value is not None:
+                resolved[name] = value
+    return resolved
+
+
+def _resolve_param_expr_shapes(node: object, params: dict) -> None:
+    """A mark-level property or `encoding.<channel>.datum` bound to
+    `{"expr": "..."}` (as opposed to a per-row `calculate`/`filter`
+    expression) is a scalar, resolvable once at translate time -- neither
+    `marks.py` nor `encoding.py` otherwise knows what to do with a raw
+    `{"expr": ...}` dict where a plain literal value is expected (splicing
+    it straight through as a literal Python dict crashes the generated
+    script the moment matplotlib tries to actually use it, e.g. comparing
+    an `alpha={"expr": "opacityVar/100"}` against a numeric range).
+    Replaces any dict shaped as *exactly* `{"expr": S}` found anywhere in
+    the spec tree with its own resolved value in place -- walked
+    recursively (mirroring `_unescape_field_refs()`'s identical traversal),
+    since a mark/encoding can live at any depth (a unit view, a layer
+    child, a facet/repeat template). Left untouched (and so still
+    passed through as a raw dict, same as before this existed) whenever
+    `resolve_static_expr()` can't statically resolve it at all -- a
+    construct this project's own deliberately-simple expression translator
+    doesn't cover, better to fail loudly downstream than silently guess.
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, dict) and set(v.keys()) == {"expr"} and isinstance(v["expr"], str):
+                resolved = resolve_static_expr(v["expr"], params)
+                if resolved is not None:
+                    node[k] = resolved
+                    continue
+            _resolve_param_expr_shapes(v, params)
+    elif isinstance(node, list):
+        for item in node:
+            _resolve_param_expr_shapes(item, params)
+
+
 def translate_top(root: dict, emitter: Emitter, hint: str, ignore_unsupported: bool = False) -> str:
     _unescape_field_refs(root)
     _fallback_geo_position(root)
+    emitter.params = _resolve_top_level_params(root.get("params"))
+    _resolve_param_expr_shapes(root, emitter.params)
     shorthand = _rewrite_encoding_facet_shorthand(root)
     if shorthand is not None:
         return translate_facet(shorthand, emitter, hint, ignore_unsupported)

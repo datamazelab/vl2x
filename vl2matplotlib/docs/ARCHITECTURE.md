@@ -1258,6 +1258,83 @@ previous round's 8 failures, `waterfall_chart.vl.json` and `wheat_wages.
 vl.json`, are now fixed outright). 8 new regression tests cover this
 round's fixes.
 
+## v2.7: bound `params`, static `{"expr": ...}` resolution, and bracket-indexed fields
+
+Prompted by "iterate over the matplotlib failures, prioritize and fix the
+most common ones": of the (strict-mode) failing corpus specs, 3 of 6
+shared one root cause -- a top-level bound `param` (a slider's own
+default) or its value referenced via `{"expr": "..."}` somewhere else in
+the spec was never resolved at all, previously spliced straight through
+as a raw Python `dict` literal wherever matplotlib expected a plain
+scalar and crashing the moment it was actually used.
+
+- **`_resolve_top_level_params()`** (`translator.py`) reads the top-level
+  `params` array once, up front, into a real name -> Python-value dict.
+  A bound `value` (the common case, e.g. `rule_params.vl.json`'s own
+  `{"name": "x", "value": 25, "bind": {...}}`) is read directly; an
+  `expr`-only entry (`bar_bullet_expr_bind.vl.json`'s own `"innerBarSize":
+  {"expr": "height/2"}`, itself derived from an earlier param) is resolved
+  against every param already resolved so far -- strictly in the array's
+  own given order, since Vega-Lite requires a param referencing another to
+  be declared after it. A live *selection* param (`"select": {...}`, no
+  static default at all) is deliberately left OUT of the dict rather than
+  guessed at.
+- **`resolve_static_expr()`/`_JSUndefined`/`_ExprEnv`** (`expr.py`) is the
+  new static evaluator this needs -- distinct from the existing
+  `translate_expr()` (which produces a Python expression *string* meant to
+  run inside a generated per-row `lambda row: ...`, the right shape for
+  `calculate`/`filter` but not for a scalar mark property resolved once at
+  translate time). Reuses `translate_expr()`'s own JS-to-Python rewriting,
+  then `eval()`s the result through a custom namespace where any name
+  that ISN'T a known, resolved param resolves to a `_JSUndefined` sentinel
+  instead of raising `NameError` -- every arithmetic op and attribute
+  access on it propagates (`sel.Miles_per_Gallon` when `sel` itself is
+  unresolved), and it's falsy, so `param_expr.vl.json`'s own `"size":
+  {"expr": "sel.Miles_per_Gallon * 10 || 75"}` (`sel` a live selection,
+  no interactivity implemented) correctly resolves to the literal `75`
+  fallback -- matching what a real Vega-Lite render shows with nothing
+  actually selected, rather than crashing on `None * 10` the way a naive
+  substitution would.
+- **`_resolve_param_expr_shapes()`** (`translator.py`) walks the whole spec
+  tree once (mirroring `_unescape_field_refs()`'s identical traversal:
+  a mark/encoding can live at any depth -- a unit view, a layer child, a
+  facet/repeat template) and replaces any dict shaped as *exactly*
+  `{"expr": S}` -- a mark-level property (`rule_params.vl.json`'s own
+  `strokeWidth`/`strokeDash`/`strokeCap`) or an `encoding.<channel>.datum`
+  alike (that same spec's own `x`/`y`/`x2`/`y2`, each `{"datum": {"expr":
+  "paramName"}}`) -- with its own resolved literal value in place. Because
+  this runs once, early, on the raw spec dict, every existing renderer
+  downstream sees a plain scalar exactly the way it already handles a
+  literal `value` -- no renderer-side changes needed for most of them.
+  One *was* still needed: `_render_point()` only ever read `encoding.size`
+  (an encoding channel), never a mark-level `mark.size` -- `param_expr.
+  vl.json`'s own resolved size silently fell back to matplotlib's own
+  default marker size (36) instead. Fixed alongside, matching how
+  `_opacity_value()` already read `mark_props` correctly for the
+  identical mark-vs-encoding distinction.
+- **Bracket-indexed field access** (`"field": "ranges[2]"`,
+  `bar_bullet_expr_bind.vl.json`'s own bullet-chart idiom for reading one
+  specific element of a row's own array-valued `ranges`/`measures`/
+  `markers` column -- a real, distinct Vega-Lite feature from a nested-
+  object dotted path, or from an `aggregate` transform's own bracket-
+  indexed row lookup) had no real pandas column of that literal name to
+  find at all, raising a bare `KeyError("ranges[2]")`.
+  `_collect_bracket_index_fields()`/`render_bracket_field_materialization()`
+  (`translator.py`) scan every channel's own `field` (not just the
+  position-like ones `_collect_quantitative_fields()` limits itself to,
+  since a bracket index can appear on any channel) and pre-compute a real
+  column of that exact name (`.apply(lambda v: v[i] if ... else None)`)
+  right after data load, so every existing `field`-reading code path
+  downstream works completely unchanged.
+
+Net effect on the strict-mode corpus: **525/633 OK, 105/633 skipped,
+3/633 failed** (up from v2.6's 522/105/6 -- all 3 of that round's
+`param`/selection failures are now fixed outright; the 3 remaining
+failures -- an embedded-CSV-format data source, a `geoshape`-with-
+projection map, and a field name that is itself a SQL-expression-shaped
+string -- are each their own unrelated, narrow gap, not attempted this
+round). 5 new regression tests cover this round's fixes.
+
 ## Corpus validation methodology
 
 Like `vl2d3`/`vl2ggplot` (and unlike `vl2altair`/`vl2vlapi`, which validate
@@ -1273,7 +1350,7 @@ yet." `tests/validate_examples.py` instead buckets every spec in
   documented scope boundary, see the feature table in `README.md`).
 - **Failed** — anything else. A real bug, worth investigating.
 
-At the time of writing: **522/633 OK, 105/633 skipped, 6/633 failed** (v1
+At the time of writing: **525/633 OK, 105/633 skipped, 3/633 failed** (v1
 launched at 368/249/16; v2 closed the gap to 439/177/17 — see "v2: new
 marks, and the gap between 'renders' and 'renders correctly'" above; v2.1
 reached 472/154/17 — see "v2.1: grouped bars, conditional color, nested
@@ -1287,24 +1364,28 @@ vconcat sizing" above; v2.5 reached 515/110/8 — see "v2.5: text color,
 size/log scales, a new `trail` mark, and two more transforms" above; v2.6
 reached 522/105/6 — see "v2.6: window semantics, orientation, dodge+stack,
 and disabled color scales" above, and fixed two of v2.5's own residual 8
-failures outright, `waterfall_chart.vl.json`/`wheat_wages.vl.json`). The
-showcase's own best-effort (`ignore_unsupported=True`) build — exercising
-every fallback path, a wider sample than this strict-mode check — went
-from 547/633 to 579/633 over v2.2, to 578/633 over v2.3 (noise-level;
-v2.3's fixes mostly changed *how* an already-non-crashing spec renders,
-not whether it crashed), to 586/633 over v2.4 (the `density`/`pivot`
-transform support this time genuinely turning prior crashes into clean
-renders), to 588/633 over v2.5 (the `quantile` transform and new `trail`
-mark again genuinely turning prior crashes/skips into clean renders), then
-to **594/633** over v2.6 (the `stack` transform and the mosaic/aggregate-
-naming fixes it exposed). `tests/validate_rendering.py` runs the same
-corpus a
+failures outright, `waterfall_chart.vl.json`/`wheat_wages.vl.json`; v2.7
+reached 525/105/3 — see "v2.7: bound `params`, static `{"expr": ...}`
+resolution, and bracket-indexed fields" above, fixing all 3 of v2.6's own
+residual `param`/selection failures outright). The showcase's own
+best-effort (`ignore_unsupported=True`) build — exercising every fallback
+path, a wider sample than this strict-mode check — went from 547/633 to
+579/633 over v2.2, to 578/633 over v2.3 (noise-level; v2.3's fixes mostly
+changed *how* an already-non-crashing spec renders, not whether it
+crashed), to 586/633 over v2.4 (the `density`/`pivot` transform support
+this time genuinely turning prior crashes into clean renders), to
+588/633 over v2.5 (the `quantile` transform and new `trail` mark again
+genuinely turning prior crashes/skips into clean renders), to 594/633
+over v2.6 (the `stack` transform and the mosaic/aggregate-naming fixes it
+exposed), then to **598/633** over v2.7 (the bound-`params`/`{"expr":
+...}` and bracket-indexed-field fixes). `tests/validate_rendering.py`
+runs the same corpus a
 second way: for every spec that translates *and* executes cleanly, it
 introspects the resulting `Figure`'s own `Axes` children
 (`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) for two failure
 shapes an exception-only check can't catch — a script that runs without
 error but draws nothing at all, and one that draws only NaN-valued
-(off-screen) geometry. Neither occurred: **0/522 OK renders are empty or
+(off-screen) geometry. Neither occurred: **0/525 OK renders are empty or
 all-NaN** (note this check can't catch `parallel_coordinate.vl.json`'s
 own subtler failure — v2.5's own section above — since its line data is
 technically non-empty and non-NaN, just visually flattened to a sliver

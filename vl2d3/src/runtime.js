@@ -58,6 +58,52 @@ export function vlTrailPath(context, points) {
   }
 }
 
+// Vega-Lite's `flatten` transform: explodes each row into N rows, one per
+// element of the named array field(s) (multiple fields are zipped
+// together by index, per VL's own documented behavior -- a row whose
+// array(s) don't reach length N gets `undefined` for the shorter one(s)
+// past their own end); every other, non-flattened field is copied
+// through unchanged onto each new row. A row with no array at all in any
+// listed field (length 0) passes through as a single unchanged row rather
+// than disappearing.
+//
+// Each exploded row's own copy of a flattened field becomes one array
+// ELEMENT (typically itself a nested object, e.g. vconcat_flatten.vl
+// .json's own `"lc": [{"time":1,"mag":18.5}, ...]` exploding into one row
+// per `{time, mag}` pair), not a flat scalar -- but every accessor this
+// project generates reads a field by its own full, literal name
+// (`d[JSON.stringify(field)]`, marks.js's own `accessor()`), never a
+// nested-path traversal, so a downstream `"lc.time"`-style dotted
+// reference needs a REAL top-level key of that exact name, not a `time`
+// property one level down inside a nested `lc` object. That one-level
+// dotted-key expansion is applied directly to each newly exploded row
+// here, rather than requiring a second, separate pass over the data.
+export function vlFlatten(data, {fields, as}) {
+  const outNames = Array.isArray(as) && as.length === fields.length ? as : fields;
+  const out = [];
+  for (const row of data) {
+    const n = Math.max(0, ...fields.map(f => (Array.isArray(row[f]) ? row[f].length : 0)));
+    if (n === 0) {
+      out.push(row);
+      continue;
+    }
+    for (let i = 0; i < n; i++) {
+      const newRow = {...row};
+      fields.forEach((f, j) => {
+        newRow[outNames[j]] = Array.isArray(row[f]) ? row[f][i] : undefined;
+      });
+      for (const name of outNames) {
+        const v = newRow[name];
+        if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) {
+          for (const [k2, v2] of Object.entries(v)) newRow[`${name}.${k2}`] = v2;
+        }
+      }
+      out.push(newRow);
+    }
+  }
+  return out;
+}
+
 // Vega-Lite's `pivot` transform: for each distinct `groupby` combination,
 // spread the distinct values of `field` out into their own columns, each
 // holding the `op`-aggregated `value` of the matching rows. `op` defaults

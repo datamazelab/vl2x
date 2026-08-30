@@ -3,6 +3,7 @@
 // a plain column) into a D3 scale declaration.
 
 import {formatValue} from './literals.js';
+import {aggregateExpr} from './aggops.js';
 
 const SCHEME_ORDINAL = {
   tableau10: 'schemeTableau10',
@@ -339,6 +340,42 @@ export function sharedChannelDomainExpr(channel, def, dataVar, zeroBaseline = fa
     return zeroDomainFromData(dataVar, def.field);
   }
   return domainFromData(dataVar, def.field);
+}
+
+// The shared domain a faceted, AGGREGATED value channel needs -- distinct
+// from sharedChannelDomainExpr() above, which only ever takes a plain
+// min/max over the raw, un-aggregated field values. That's silently wrong
+// the moment the value channel carries its own `aggregate` (e.g. `{"x":
+// {"aggregate": "sum", "field": "yield"}}`): individual raw "yield"
+// readings (a handful to a few hundred) have nothing to do with the real
+// bar length once many rows collapse into one summed value per category
+// (which can run into the thousands) -- confirmed against
+// trellis_stacked_bar.vl.json, whose own shared x-domain came out based on
+// individual yield readings while every bar's own real length was a sum
+// across an entire variety+site group, making every bar in every facet
+// panel run far past the domain's own upper bound (visually
+// indistinguishable from an accidental "normalize" stack, though the
+// actual bug has nothing to do with the stack *offset* itself).
+//
+// When `groupField` is also given (this same channel is being *stacked*
+// by a color/detail groupby, not just aggregated -- see stack.js's own
+// `planStacking()`), the real total a reader needs headroom for is the
+// STACKED total (every group's own aggregate summed together per
+// category), not any single group's own aggregate alone -- computed here
+// via a second rollup layer that sums the inner (per-group) values back
+// together per (facetKey, category).
+export function sharedAggregatedDomainExpr(dataVar, {facetKeyExpr, categoryField, groupField, field, op, zeroBaseline}) {
+  const acc = field != null ? `d => d[${JSON.stringify(field)}]` : undefined;
+  const perGroupAgg = aggregateExpr(op, 'rows', acc);
+  const rollupArgs = [`rows => ${perGroupAgg}`, `d => (${facetKeyExpr})`, `d => d[${JSON.stringify(categoryField)}]`];
+  if (groupField) rollupArgs.push(`d => d[${JSON.stringify(groupField)}]`);
+  const rollupExpr = `d3.rollup(${dataVar}, ${rollupArgs.join(', ')})`;
+  const totalsExpr = groupField
+    ? `Array.from(${rollupExpr}, ([, byCat]) => Array.from(byCat, ([, byGroup]) => d3.sum(byGroup.values()))).flat()`
+    : `Array.from(${rollupExpr}, ([, byCat]) => Array.from(byCat.values())).flat()`;
+  return zeroBaseline
+    ? `[Math.min(0, d3.min(${totalsExpr})), Math.max(0, d3.max(${totalsExpr}))]`
+    : `d3.extent(${totalsExpr})`;
 }
 
 // `config.scale.invalid.<channel>.value` (e.g. bar_invalid_color_show_override.vl.json's

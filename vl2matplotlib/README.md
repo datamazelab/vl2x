@@ -171,7 +171,9 @@ without the argument. See `translator.py`'s and each module's own
 | A `DateTime` literal `datum` (`{"datum": {"year": 2006}}`, e.g. a rule mark's reference line) | ✅ → a real `pd.Timestamp` |
 | CSS `rgb(...)`/`rgba(...)` function-syntax color values | ✅ → a matplotlib `(r, g, b[, a])` float tuple |
 | A gradient fill (`{gradient: "linear", stops: [...]}`) | ✅ → the gradient's own last stop, as a flat color (matplotlib has no built-in true gradient fill) |
-| `params`/`selection` (interactivity) | ❌ a static image has nothing to bind to |
+| `params`/`selection` interactivity (actually reacting to a click/brush/slider at view time) | ❌ a static image has nothing to bind to |
+| A top-level bound `param`'s own default `value`, and a mark property/`encoding.<channel>.datum` given as `{"expr": "..."}` (a slider-bound constant, not live interactivity) | ✅ — resolved once to a real Python literal at translate time; a name in the expression that isn't a known param (almost always a live selection reference, e.g. `sel.field`) resolves like JS's own falsy `undefined`, so a `... \|\| fallback` idiom still resolves to a sane constant |
+| A bracket-indexed field (`"field": "ranges[2]"`, one element of a row's own array-valued column) | ✅ — materialized as a real column of that exact name right after data load |
 | Nested/dot-path (`"a.b"`) and escaped-literal-dot (`"a\\.b"`) field references, `data.format.property` (a JSON envelope's own record-array path) | ✅ |
 | A `type: "quantitative"` field whose raw JSON values are strings (`"0.14"`, not `0.14`) | ✅ → coerced via `pd.to_numeric()`, mirroring the same coercion `temporal` fields already get |
 | Data formats: inline `values` (incl. a bare scalar array's implicit `{"data": v}` record wrap), CSV/TSV/JSON via `url` | ✅ |
@@ -193,8 +195,8 @@ ways instead of a plain pass/fail:
   not to implement yet (an `"Unsupported: ..."` error). Expected, not a bug.
 - **Failed** — anything else. A real bug.
 
-At the time of writing: **522/633 OK, 105/633 skipped (documented
-boundaries above), 6/633 failed** against the corpus's real-world example
+At the time of writing: **525/633 OK, 105/633 skipped (documented
+boundaries above), 3/633 failed** against the corpus's real-world example
 specs (v1 launched at 368/249/16; v2 reached 439/177/17 — new marks, and
 fixing marks that silently rendered nothing; v2.1 reached 472/154/17 —
 grouped bars, conditional color, nested fields, a shared runtime module;
@@ -205,26 +207,26 @@ stacking, value-based color mapping, and N-way binning" below; v2.4
 reached 512/113/8 — see "v2.4: two new transforms, per-panel/child color
 sharing, and hconcat/vconcat sizing" below; v2.5 reached 515/110/8 — see
 "v2.5: text color, size/log scales, a new `trail` mark, and two more
-transforms" below; this pass reached 522/105/6 — see "v2.6: window
-semantics, orientation, dodge+stack, and disabled color scales" below,
-which also fixed two of v2.5's own residual failures outright, the
-JS-`+` ones). The residual failures are each their own narrow gap: a
-`param`/selection-bound literal or expression value used where a plain
-scalar is expected (3: `bar_bullet_expr_bind`, `param_expr`,
-`rule_params`), an embedded-CSV-format data source (1), a
+transforms" below; v2.6 reached 522/105/6 — see "v2.6: window semantics,
+orientation, dodge+stack, and disabled color scales" below, which also
+fixed two of v2.5's own residual failures outright, the JS-`+` ones; this
+pass reached 525/105/3 — see "v2.7: bound `params`, static `{"expr": ...}`
+resolution, and bracket-indexed fields" below, which fixed the 3
+`param`/selection failures outright). The residual failures are each their
+own narrow gap: an embedded-CSV-format data source (1), a
 `geoshape`-with-projection map (1, distinct from the plain-scatter
 `longitude`/`latitude` fallback added in v2.3 — see below), and a field
 name that is itself a SQL-expression-shaped string (1). See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full list, and for
 the showcase's own best-effort (`ignore_unsupported=True`) build — a wider
 sample than this strict-mode corpus check, since it also exercises every
-fallback path — **594/633** render without error.
+fallback path — **598/633** render without error.
 
 A second harness, `tests/validate_rendering.py`, additionally executes
 every OK spec's generated code and introspects the resulting `Figure`'s own
 `Axes` children (`ax.patches`/`ax.lines`/`ax.collections`/`ax.texts`) to
 catch a script that "succeeds" but silently draws nothing, or draws only
-NaN-valued geometry: **0/522 OK renders are empty or all-NaN**.
+NaN-valued geometry: **0/525 OK renders are empty or all-NaN**.
 
 ## Shared runtime helpers
 
@@ -525,6 +527,61 @@ showcase examples:
 `parallel_coordinate.vl.json` (reported alongside these) remains
 unfixed — see v2.5's own entry above for the diagnosis, unchanged this
 round.
+
+## v2.7: bound `params`, static `{"expr": ...}` resolution, and bracket-indexed fields
+
+Top-level `params` and any value bound via `{"expr": "..."}` were entirely
+unhandled before this round — a slider-bound param's own default `value`
+was never read at all, and a mark-level property or `encoding.<channel>.
+datum` given as `{"expr": "..."}` was spliced straight through as a raw
+Python `dict` literal wherever matplotlib expected a plain scalar,
+crashing the moment it was actually used (`bar_bullet_expr_bind.vl.json`,
+`param_expr.vl.json`, `rule_params.vl.json` — all three of v2.6's own
+residual `param`/selection failures).
+
+- **`_resolve_top_level_params()`** (`translator.py`) resolves every
+  top-level `params` array entry into a real Python value up front — a
+  bound `value` directly, or an `expr`-only entry (e.g. `bar_bullet_
+  expr_bind.vl.json`'s own `"innerBarSize": {"expr": "height/2"}`,
+  derived from an earlier param) via the new static evaluator below,
+  resolved strictly in the array's own declaration order so a later param
+  can reference an earlier one. A live *selection* param (`"select":
+  {...}`, no static default) is deliberately left unresolved rather than
+  guessed at.
+- **`resolve_static_expr()`** (`expr.py`) evaluates a Vega expression
+  string to a concrete Python value once, reusing the existing
+  JS-to-Python `translate_expr()` rewriter but evaluating the result
+  through a custom namespace (`_JSUndefined`/`_ExprEnv`) where any name
+  that ISN'T a known, resolved param — almost always a live selection
+  reference, e.g. `param_expr.vl.json`'s own `sel.Miles_per_Gallon * 10
+  || 75` — behaves like JS's own `undefined` (every arithmetic op and
+  attribute access propagates it, and it's falsy), so a real Vega
+  expression's own `... || fallback` idiom resolves to the fallback
+  exactly the way a live Vega-Lite render does with nothing selected,
+  rather than raising `NameError`/`TypeError`.
+- **`_resolve_param_expr_shapes()`** (`translator.py`) walks the whole spec
+  tree once (mirroring `_unescape_field_refs()`'s identical traversal) and
+  replaces any dict shaped as exactly `{"expr": S}` — wherever it appears,
+  a mark-level property or an encoding channel's own `datum` alike — with
+  its own resolved literal value in place, so every existing renderer
+  downstream sees a plain scalar exactly the way it already handles a
+  literal `value`, no renderer-side changes needed at all for most of
+  them. One renderer-side fix was still needed: `_render_point()` only
+  ever read `encoding.size`, never a mark-level `mark.size` — silently
+  falling back to matplotlib's own default marker size (36) regardless of
+  what a resolved `{"expr": ...}` size property actually said. Fixed
+  alongside (matching how `_opacity_value()` already read `mark_props`
+  correctly).
+- **Bracket-indexed field access** (`"field": "ranges[2]"`, Vega-Lite's
+  own bullet-chart idiom for reading one specific element of a row's own
+  array-valued column — distinct from a nested-object dotted path, and
+  from an `aggregate` transform's own bracket-indexed row lookup) had no
+  real pandas column of that literal name to find, raising a bare
+  `KeyError`. `_collect_bracket_index_fields()`/
+  `render_bracket_field_materialization()` (`translator.py`) pre-compute a
+  real column of that exact name (via `.apply(lambda v: v[i])`) right
+  after data load, so every existing `field`-reading code path downstream
+  works unchanged.
 
 ## Testing
 

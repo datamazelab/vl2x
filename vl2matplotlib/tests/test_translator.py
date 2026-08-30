@@ -984,3 +984,71 @@ def test_shape_channel_varies_marker_by_the_same_color_field():
     assert len(ax.collections) == 2
     paths = [c.get_paths()[0].vertices.tobytes() for c in ax.collections]
     assert paths[0] != paths[1]
+
+
+def test_a_bound_param_expr_resolves_to_its_own_default_value():
+    # rule_params.vl.json's own shape: a slider-bound top-level param
+    # (a static `value`, no live interactivity needed) referenced via
+    # `datum: {"expr": "paramName"}` -- should resolve to a real literal
+    # (25), not a raw, un-evaluatable `{"expr": ...}` dict spliced
+    # straight into the generated `axvline(x=...)` call.
+    fig, code = render({
+        "params": [{"name": "x", "value": 25, "bind": {"input": "range", "min": 1, "max": 100}}],
+        "data": {"values": [{}]},
+        "mark": "rule",
+        "encoding": {"x": {"datum": {"expr": "x"}, "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.lines) == 1
+    assert ax.lines[0].get_xdata()[0] == 25
+    assert '"expr"' not in code and "'expr'" not in code
+
+
+def test_an_unresolvable_expr_falls_back_via_the_js_style_or_operator():
+    # param_expr.vl.json's own shape: `size: {"expr": "sel.field * 10 ||
+    # 75"}` -- `sel` is a live selection param with no static value at
+    # all (no interactivity is implemented), so the expression should
+    # fall back to its own literal `75`, matching what a real Vega-Lite
+    # render shows with nothing actually selected -- not crash trying to
+    # multiply `None`/raise `NameError` on the unresolved `sel`.
+    fig, _ = render({
+        "params": [{"name": "sel", "select": {"type": "point", "fields": ["v"]}}],
+        "data": {"values": [{"x": 1, "y": 2}]},
+        "mark": {"type": "point", "size": {"expr": "sel.v * 10 || 75"}},
+        "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "y", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.collections) == 1
+    sizes = ax.collections[0].get_sizes()
+    assert len(sizes) == 1 and sizes[0] == 75
+
+
+def test_a_param_expr_referencing_an_earlier_param_resolves_in_declaration_order():
+    # bar_bullet_expr_bind.vl.json's own shape: a param with no bound
+    # `value` of its own, only an `expr` deriving it from an earlier
+    # param in the same `params` array.
+    fig, _ = render({
+        "params": [
+            {"name": "height", "value": 20, "bind": {"input": "range", "min": 1, "max": 100}},
+            {"name": "innerBarSize", "expr": "height/2"},
+        ],
+        "data": {"values": [{"v": 5}]},
+        "mark": {"type": "bar", "size": {"expr": "innerBarSize"}},
+        "encoding": {"x": {"field": "v", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    assert len(fig.axes[0].patches) == 1
+
+
+def test_bracket_indexed_field_reads_one_element_of_an_array_valued_column():
+    # bar_bullet_expr_bind.vl.json's own shape: `"field": "ranges[2]"`
+    # names one specific element of a row's own array-valued "ranges"
+    # column -- should materialize a real column of that literal name,
+    # not raise KeyError("ranges[2]") trying to look it up directly.
+    fig, _ = render({
+        "data": {"values": [{"ranges": [150, 225, 300]}]},
+        "mark": "bar",
+        "encoding": {"x": {"field": "ranges[2]", "type": "quantitative"}},
+    }, ignore_unsupported=True)
+    ax = fig.axes[0]
+    assert len(ax.patches) == 1
+    assert ax.patches[0].get_x() + ax.patches[0].get_width() / 2 == pytest.approx(300, abs=1) or ax.patches[0].get_width() == pytest.approx(300, abs=1)

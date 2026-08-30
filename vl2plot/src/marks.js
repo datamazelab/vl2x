@@ -11,6 +11,13 @@ import {channelValue, effectiveType, isQuantitative, hasField} from './encoding.
 import {applyTimeUnits, planTransform} from './prepare.js';
 import {planStack} from './stack.js';
 
+// A fresh CSS class name per dodged bar mark needing a min-band-size
+// fix-up (renderBar()'s own `postFixups`) -- only needs to be unique
+// within one generated file's own output; an ever-incrementing counter
+// across the whole process guarantees that trivially, with no reset
+// needed between separate specToCode() calls.
+let barFixupCounter = 0;
+
 // A channel value ready to splice into a Plot options object -- a bare
 // field-name/literal expression already rendered as JS source by
 // `channelValue()`, or `undefined` (omit the key entirely) when the VL
@@ -219,11 +226,27 @@ function renderDot(encoding, markProps, dataVar, ignoreUnsupported) {
   const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported);
   const markType = markProps.type;
   const shapeDef = encoding.shape;
+  // Vega-Lite's own `size` on a point/circle/square mark is always an
+  // AREA (in square points), never a raw radius -- converted to a real
+  // pixel radius via `sqrt(area / pi)` for a *field*-driven size too, but
+  // that conversion happens through Plot's own `r` scale (a sqrt scale by
+  // default, matching Plot's own area-correct convention for radius), so
+  // `val(enc.size)` alone is already correct there. A *literal*
+  // `size: {"value": N}` bypasses Plot's own scale machinery entirely,
+  // though (a constant channel value is used as a raw pixel radius
+  // as-is, Plot's own documented behavior for any visual channel given a
+  // bare constant) -- so a literal size value needs this exact same
+  // area-to-radius conversion applied by hand here instead, or it's
+  // splices straight through as a literal PIXEL RADIUS instead of an
+  // area (confirmed against vconcat_flatten.vl.json's own `size: {value:
+  // 100}`: a 100px-radius circle -- gigantic -- instead of the ~5.6px
+  // real Vega-Lite draws for the same area).
+  const sizeValue = isRealChannel(enc.size) && enc.size.field ? val(enc.size) : 'value' in (enc.size || {}) ? formatValue(Math.sqrt(enc.size.value / Math.PI)) : val(enc.size);
   const pairs = [
     ...catChannelPairs(enc, 'x'),
     ...catChannelPairs(enc, 'y'),
     ...commonChannels(enc, markType, markProps),
-    ['r', val(enc.size)],
+    ['r', sizeValue],
     ['symbol', val(shapeDef)],
   ];
   const transformPlan = planTransform(enc, ignoreUnsupported);
@@ -276,6 +299,49 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
   const stackPlan = planStack('bar', enc, orient);
   const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
   const fn = orient === 'horizontal' ? 'barX' : 'barY';
+  // A dodged/grouped bar's own sub-band (xOffset/yOffset, turned into a
+  // real Plot `fx`/`fy` facet -- see catChannelPairs()) can end up so
+  // narrow (many categories sharing little total width, e.g.
+  // bar_grouped_thin.vl.json's own 551 directors in a 500px chart) that
+  // Plot's own computed band width rounds all the way down to a literal
+  // `width="0"` -- confirmed empirically, not merely "very thin." Real
+  // Vega-Lite never lets this happen: `config.mark.minBandSize`/
+  // `config.bar.minBandSize` (default 0.25px) clamps a bar's own band
+  // size to always stay visible (confirmed against the real compiler's
+  // own output: `"width": {"signal": "max(0.25, bandwidth('xOffset'))"}`).
+  // Plot has no equivalent clamp of its own and no hook to apply one
+  // *during* its own render, so this mark gets a unique `className` here
+  // and the actual widening happens as a DOM fix-up immediately after the
+  // enclosing `Plot.plot()` call returns (see buildPlotCallSource() in
+  // translator.js, which wraps the whole call in an IIFE precisely so it
+  // has a `node` reference to fix up before returning it) -- only when a
+  // dodge is actually active on the category channel; an un-dodged bar's
+  // own band is governed by the *facet*-level `x`/`y` scale directly
+  // (already a real, visible band even at high cardinality, since it's
+  // never split further by an offset scale) and was never observed to
+  // collapse to zero the same way.
+  const offsetCh = `${catCh}Offset`;
+  if (isRealChannel(enc[offsetCh])) {
+    const config = markProps.__config || {};
+    const minSize = (config.bar && config.bar.minBandSize) ?? (config.mark && config.mark.minBandSize) ?? 0.25;
+    const className = `vl2plotBar${++barFixupCounter}`;
+    // `className` is threaded in as one of `pairs` (rather than spliced
+    // onto the outer `wrapped` result via object-spread) so it survives a
+    // `Plot.groupX`/`stackY`-wrapped mark too -- confirmed empirically
+    // that Plot reads `className` off the mark's own PRE-transform
+    // options object (whatever's passed as `Plot.groupX(outputs, HERE)`),
+    // not off whatever a transform function's own return value happens to
+    // carry; spreading over the transformed result silently dropped it
+    // instead of erroring, the kind of bug easy to miss without directly
+    // checking the rendered DOM (Plot applies `className` to the mark's
+    // own enclosing `<g>`, not to each individual `<rect>`).
+    const wrappedWithClass = wrapTransforms([...pairs, ['className', JSON.stringify(className)]], transformPlan, stackPlan);
+    return {
+      statements,
+      markExpr: `Plot.${fn}(${dataVar}, ${wrappedWithClass})`,
+      postFixups: [{className, dimension: orient === 'horizontal' ? 'height' : 'width', minSize}],
+    };
+  }
   return {statements, markExpr: `Plot.${fn}(${dataVar}, ${wrapped})`};
 }
 
@@ -502,7 +568,7 @@ const RENDERERS = {
   trail: renderTrail,
 };
 
-export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false, facetChannels) {
+export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false, facetChannels, config) {
   const markType = typeof mark === 'string' ? mark : mark.type;
   const markProps = typeof mark === 'string' ? {} : mark;
   const renderer = RENDERERS[markType];
@@ -517,5 +583,5 @@ export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false, f
   // that already forwards `markProps` into commonChannels() picks this up
   // for free, with no signature change needed anywhere else -- see
   // commonChannels()'s own comment for why this needs to exist at all.
-  return renderer(encoding, {...markProps, type: markType, __facetChannels: facetChannels}, dataVar, ignoreUnsupported);
+  return renderer(encoding, {...markProps, type: markType, __facetChannels: facetChannels, __config: config}, dataVar, ignoreUnsupported);
 }

@@ -293,7 +293,7 @@ function translateUnit(node, ctx, path) {
   const {statements: bracketStmts, encoding: flattenedEncoding} = flattenBracketFields(encoding, dataVar);
   statements.push(...bracketStmts);
   encoding = flattenedEncoding;
-  const {statements: markStmts, markExpr} = renderMark(node.mark, encoding, dataVar, ctx.ignoreUnsupported, ctx.facetChannels);
+  const {statements: markStmts, markExpr, postFixups} = renderMark(node.mark, encoding, dataVar, ctx.ignoreUnsupported, ctx.facetChannels, ctx.config);
   statements.push(...markStmts);
   if (markExpr) {
     const channels = ['mark', ...Object.keys(encoding).map(ch => `encoding.${ch}`)];
@@ -301,19 +301,20 @@ function translateUnit(node, ctx, path) {
   }
 
   const markType = typeof node.mark === 'string' ? node.mark : node.mark && node.mark.type;
-  return {statements, dataVar, markExpr, scaleOptions: collectScaleOptions(encoding, markType, ctx.ignoreUnsupported)};
+  return {statements, dataVar, markExpr, postFixups, scaleOptions: collectScaleOptions(encoding, markType, ctx.ignoreUnsupported)};
 }
 
 // Translates a `layer` composition (or a plain unit view, treated as a
 // trivial one-mark "layer") into one shared `Plot.plot()`'s worth of marks.
 function translateLayerOrUnit(node, ctx, path) {
   if (!('layer' in node)) {
-    const {statements, markExpr, scaleOptions} = translateUnit(node, ctx, path);
-    return {statements, markExprs: markExpr ? [markExpr] : [], scaleOptions};
+    const {statements, markExpr, scaleOptions, postFixups} = translateUnit(node, ctx, path);
+    return {statements, markExprs: markExpr ? [markExpr] : [], scaleOptions, postFixups: postFixups || []};
   }
   const statements = [];
   const markExprs = [];
   let scaleOptions = {};
+  const postFixups = [];
   node.layer.forEach((child, i) => {
     const merged = mergeDown(child, node);
     const childPath = `${path}layer[${i}].`;
@@ -328,8 +329,9 @@ function translateLayerOrUnit(node, ctx, path) {
     statements.push(...sub.statements);
     markExprs.push(...sub.markExprs);
     scaleOptions = mergeScaleOptions(scaleOptions, sub.scaleOptions);
+    postFixups.push(...(sub.postFixups || []));
   });
-  return {statements, markExprs, scaleOptions};
+  return {statements, markExprs, scaleOptions, postFixups};
 }
 
 function panelSize(node) {
@@ -374,6 +376,132 @@ function buildPlotCallSource(markExprs, scaleOptions, size, facet, indent) {
   return lines.join('\n');
 }
 
+// A *wrapped* facet -- `encoding.facet: {field, columns: N}`, no `row`/
+// `column` split (e.g. trellis_barley.vl.json's own `columns: 2` across 8
+// `site` panels) -- has no equivalent in Plot's own faceting at all: Plot
+// only ever supports a strict 2-axis grid (`fx` times `fy`, one real scale
+// each), never "wrap N panels per row from a single field." Rendered
+// instead as N genuinely independent `Plot.plot()` calls (one per
+// distinct facet value, each titled with that real value, each drawing
+// only that value's own filtered rows), arranged in a real CSS grid with
+// the requested (or, absent one, a single-row) column count -- the same
+// "independent panels in a wrapper div" strategy `hconcat`/`vconcat`
+// already use for their own unsupported-composition fallback, just with
+// the group membership only knowable once the data has actually loaded
+// (a URL-sourced dataset, the common case) rather than at code-generation
+// time.
+//
+// Known gaps, left undone rather than half-faked: each panel computes its
+// own LOCAL x/y/color scale domain from only that panel's own rows, not a
+// domain shared across every panel the way Vega-Lite's own default facet
+// behavior would (matching `buildRuntimeFacetPanels()`'s own identical,
+// separately-documented gap in `vl2d3`); a `{"step": n}`-shaped per-
+// category panel size isn't handled (only a plain pixel number is).
+function translateWrappedFacet(node, facetDef, ctx, path) {
+  const field = facetDef.field;
+  const template = {...node.spec};
+  const merged = mergeDown(template, {data: node.data, transform: node.transform});
+  const size = panelSize(node.spec);
+
+  // A wrapped facet's own template being itself further composed (layered,
+  // or facet-within-facet) needs each independent per-value panel to
+  // repeat that same inner composition, which the single shared markExpr
+  // this function builds can't express -- not attempted in v1, matching
+  // the identical restriction the row/column facet case (translateFacet)
+  // already has for its own template.
+  if (merged.facet || merged.layer) {
+    if (ctx.ignoreUnsupported) {
+      const sub = translateLayerOrUnit(merged, ctx, `${path}spec.`);
+      const plotSrc = buildPlotCallSource(sub.markExprs, sub.scaleOptions, size, null, 1);
+      return {
+        statements: [`// vl2plot: a wrapped facet's own template can't itself be layered/faceted yet, rendering it unfaceted (--ignore-unsupported)`, ...sub.statements],
+        plotSrc,
+      };
+    }
+    throw new Error("Unsupported: a wrapped facet's own template can't itself be layered or further-faceted");
+  }
+
+  const unit = translateUnit(merged, ctx, `${path}spec.`);
+  // An unsupported mark inside the facet's own template (e.g. `geoshape`)
+  // renders no mark at all (renderMark()'s own --ignore-unsupported skip)
+  // -- an empty *real* Plot.plot() node here, matching the fallback every
+  // other "nothing to draw" case in this file already returns, not a bare
+  // `null` (which would blow up the caller's own unconditional
+  // `container.appendChild(...)`).
+  if (!unit.markExpr) {
+    return {statements: unit.statements, plotSrc: `Plot.plot({document: container.ownerDocument, marks: []})`};
+  }
+
+  const statements = [...unit.statements];
+
+  // Every distinct value of the facet field, in the order its own panel
+  // should actually be drawn -- an explicit array is used as-is (filtered
+  // down to values actually present, in case the array names more than
+  // the data has); an aggregate-op sort (`{op, field}`, e.g. by each
+  // group's own median of some other field) or a plain ascending/
+  // descending request is computed at runtime instead (vlFacetSortValues,
+  // runtime.js), since neither is knowable from the spec text alone.
+  const orderVar = newVar('facetOrder');
+  if (Array.isArray(facetDef.sort)) {
+    statements.push(
+      `const ${orderVar} = ${JSON.stringify(facetDef.sort)}.filter(v => new Set(${unit.dataVar}.map(d => d[${JSON.stringify(field)}])).has(v));`
+    );
+  } else if (facetDef.sort && typeof facetDef.sort === 'object' && facetDef.sort.field) {
+    const order = facetDef.sort.order === 'descending' ? 'descending' : 'ascending';
+    statements.push(
+      `const ${orderVar} = vlFacetSortValues(${unit.dataVar}, {groupField: ${JSON.stringify(field)}, ` +
+        `sortField: ${JSON.stringify(facetDef.sort.field)}, op: ${JSON.stringify(facetDef.sort.op || 'mean')}, order: ${JSON.stringify(order)}});`
+    );
+  } else {
+    const order = facetDef.sort === 'descending' ? 'descending' : 'ascending';
+    statements.push(`const ${orderVar} = vlFacetSortValues(${unit.dataVar}, {groupField: ${JSON.stringify(field)}, order: ${JSON.stringify(order)}});`);
+  }
+
+  const columnsVar = newVar('facetCols');
+  // Absent an explicit `columns`, Vega-Lite's own real behavior wraps
+  // based on the available container width at render time -- a genuinely
+  // dynamic layout decision Plot has no equivalent hook for either;
+  // falling back to one single row (every value's own column count) is
+  // at least deterministic and matches this project's own existing
+  // simplification for a `row`/`column`-less facet.
+  statements.push(`const ${columnsVar} = ${typeof facetDef.columns === 'number' ? facetDef.columns : `${orderVar}.length`};`);
+
+  // Not self-appended to `container` here -- matching `translateMulti()`'s
+  // own identical wrapper-node convention, attaching a wrapper to whatever
+  // element it actually belongs under (the page's own top-level container,
+  // *or* a specific cell of some further-enclosing `hconcat`/`vconcat`
+  // this facet is itself nested inside) is always the caller's own
+  // responsibility -- see `isWrapper` below.
+  const wrapperVar = newVar('facetWrap');
+  statements.push(
+    `const ${wrapperVar} = container.ownerDocument.createElement('div');`,
+    `${wrapperVar}.style.display = 'grid';`,
+    `${wrapperVar}.style.gridTemplateColumns = \`repeat(\${${columnsVar}}, auto)\`;`,
+    `${wrapperVar}.style.gap = '1em';`
+  );
+
+  // `unit.markExpr` was built against the SHARED `unit.dataVar` (the full,
+  // unfiltered dataset) -- swapped here for a per-iteration filtered
+  // variable via a plain identifier substitution, safe and unambiguous
+  // since `newVar()` always mints a fresh name never reused anywhere else
+  // in the generated file.
+  const groupDataVar = newVar('facetGroupData');
+  const markExprForGroup = unit.markExpr.split(unit.dataVar).join(groupDataVar);
+  const pad = '  ';
+  const inner = '    ';
+  statements.push(`for (const __facetValue of ${orderVar}) {`);
+  statements.push(`${pad}const ${groupDataVar} = ${unit.dataVar}.filter(d => d[${JSON.stringify(field)}] === __facetValue);`);
+  statements.push(`${pad}const groupNode = Plot.plot({`, `${inner}document: container.ownerDocument,`, `${inner}title: String(__facetValue),`);
+  if (typeof size.w === 'number') statements.push(`${inner}width: ${size.w},`);
+  if (typeof size.h === 'number') statements.push(`${inner}height: ${size.h},`);
+  statements.push(...renderScaleBlock(unit.scaleOptions, 2));
+  statements.push(`${inner}marks: [`, `${inner}  ${markExprForGroup},`, `${inner}],`, `${pad}});`);
+  statements.push(`${pad}${wrapperVar}.appendChild(groupNode);`);
+  statements.push(`}`);
+
+  return {statements, plotSrc: wrapperVar, isWrapper: true};
+}
+
 function translateFacet(node, ctx, path) {
   const facetDef = node.facet;
   if (!facetDef || typeof facetDef !== 'object') {
@@ -383,6 +511,7 @@ function translateFacet(node, ctx, path) {
   const rowField = facetDef.row && facetDef.row.field;
   const colField = facetDef.column && facetDef.column.field;
   const plainField = !rowField && !colField ? facetDef.field : null;
+  if (plainField) return translateWrappedFacet(node, facetDef, ctx, path);
 
   // `sort` (and any other scale-shaped override) on a `row`/`column`/plain
   // facet field def -- e.g. an explicit `sort: [...]` array requesting a
@@ -462,14 +591,65 @@ function translateFacet(node, ctx, path) {
   const unit = translateUnit(merged, {...ctx, facetChannels: facetChannelsCtx}, `${path}spec.`);
   const facet = {dataVar: unit.dataVar, x: colField || plainField, y: rowField};
   const scaleOptions = {...unit.scaleOptions, ...facetScaleOptions};
-  const plotSrc = buildPlotCallSource(unit.markExpr ? [unit.markExpr] : [], scaleOptions, size, facet, 1);
-  return {statements: unit.statements, plotSrc};
+
+  // Vega-Lite's own `width`/`height` on a faceted spec sizes ONE PANEL,
+  // not the whole faceted grid -- but Plot's own top-level `width`/
+  // `height` options size the entire faceted figure. Passing a per-panel
+  // number straight through (as if it already meant the whole figure)
+  // starves every row/column down to a sliver of its real share once
+  // there's more than one of them -- confirmed empirically to degenerate
+  // a stacked area's own per-facet geometry into a flat, zero-height line
+  // once the real available height per row drops far enough below what
+  // the mark's own margins need (a silent-correctness bug: it still
+  // "renders," just as an invisible flat line). The actual distinct-value
+  // COUNT for a row/column facet isn't knowable at code-generation time
+  // for a URL-sourced dataset (the common case), so the real total figure
+  // size is computed here at RUNTIME instead of baked in as a literal --
+  // `size.h`/`size.w` (a plain number) get spliced as a raw expression,
+  // not a literal, into `buildPlotCallSource()`'s own `width`/`height`
+  // lines (which already just interpolate `size.w`/`size.h` directly, no
+  // change needed there). A `{"step": n}`-shaped per-category size isn't
+  // handled here (`panelSize()` only ever resolves a plain number; that
+  // shape needs its own per-panel *category count* first, a separate,
+  // narrower gap left undone).
+  const sizeStmts = [];
+  let adjustedSize = size;
+  if (rowField && size.h != null) {
+    const rowCountVar = newVar('facetRowCount');
+    sizeStmts.push(`const ${rowCountVar} = new Set(${unit.dataVar}.map(d => d[${JSON.stringify(rowField)}])).size;`);
+    adjustedSize = {...adjustedSize, h: `${size.h} * ${rowCountVar}`};
+  }
+  if (colField && size.w != null) {
+    const colCountVar = newVar('facetColCount');
+    sizeStmts.push(`const ${colCountVar} = new Set(${unit.dataVar}.map(d => d[${JSON.stringify(colField)}])).size;`);
+    adjustedSize = {...adjustedSize, w: `${size.w} * ${colCountVar}`};
+  }
+
+  const plotSrc = buildPlotCallSource(unit.markExpr ? [unit.markExpr] : [], scaleOptions, adjustedSize, facet, 1);
+  return {statements: [...unit.statements, ...sizeStmts], plotSrc};
 }
 
 function translateStandalone(node, ctx, path) {
   const sub = translateLayerOrUnit(node, ctx, path);
-  const plotSrc = buildPlotCallSource(sub.markExprs, sub.scaleOptions, panelSize(node), null, 1);
+  let plotSrc = buildPlotCallSource(sub.markExprs, sub.scaleOptions, panelSize(node), null, 1);
+  plotSrc = wrapWithPostFixups(plotSrc, sub.postFixups);
   return {statements: sub.statements, plotSrc};
+}
+
+// A bar mark's own min-band-size fix-up (renderBar()'s own `postFixups`,
+// marks.js) has to run AFTER the enclosing `Plot.plot({...})` call has
+// actually returned a real node -- there's no hook to run code *during*
+// Plot's own render, and by the time `plotSrc` here is just a plain
+// expression string, nothing yet has a variable name to apply a fix-up
+// to. Wrapping the whole expression in a self-invoking function sidesteps
+// needing one: it captures the node in its own local variable, applies
+// every pending fix-up, and returns the (mutated in place) node -- self-
+// contained, with no dependency on whatever variable name the *caller*
+// eventually assigns this same expression to.
+function wrapWithPostFixups(plotSrc, postFixups) {
+  if (!postFixups || !postFixups.length) return plotSrc;
+  const calls = postFixups.map(f => `vlApplyMinBandSize(__node, ${JSON.stringify(f)});`).join(' ');
+  return `(() => { const __node = ${plotSrc}; ${calls} return __node; })()`;
 }
 
 function translateMulti(node, ctx, key, path) {
@@ -539,9 +719,19 @@ function translateMulti(node, ctx, key, path) {
 function extractEncodingFacet(node) {
   const encoding = node.encoding;
   if (!encoding || typeof encoding !== 'object') return null;
-  const {row, column, ...restEncoding} = encoding;
-  if (!row && !column) return null;
-  const facetDef = {};
+  const {row, column, facet, ...restEncoding} = encoding;
+  if (!row && !column && !facet) return null;
+  // `encoding.facet: {field, columns, sort}` (a *wrapped* facet spelled as
+  // its own encoding channel, e.g. trellis_barley.vl.json) is a distinct
+  // third spelling from `row`/`column`-as-encoding-channels -- and from
+  // the *other* meaning of a bare top-level `node.facet` (the `{"facet":
+  // {...}, "spec": {...}}` composition operator this same function's
+  // caller already dispatches on separately). `row`/`column` win if
+  // somehow present alongside it (an unusual, likely-invalid combination);
+  // otherwise `facet`'s own def is used as-is (translateFacet() already
+  // knows how to read a plain `{field, columns, sort}` shape, since that's
+  // exactly `node.facet`'s own shape for the "wrapped" case too).
+  const facetDef = row || column ? {} : facet || {};
   if (row) facetDef.row = row;
   if (column) facetDef.column = column;
   const {data, transform, ...specRest} = node;
@@ -655,7 +845,7 @@ export function specToCode(spec, options = {}) {
   }
 
   varCounts = {};
-  const ctx = {ignoreUnsupported, includeSourcePaths, hint: 'chart'};
+  const ctx = {ignoreUnsupported, includeSourcePaths, hint: 'chart', config: root.config || {}};
   const {statements, plotSrc, isWrapper} = translateNode(root, ctx, '');
 
   const bodyLines = [];
@@ -671,7 +861,7 @@ export function specToCode(spec, options = {}) {
 
   const bodyText = bodyLines.join('\n');
   const needsD3 = /\bd3\.\w+\(/.test(bodyText);
-  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlDensity', 'VlArc', 'VlTrail', 'vlWindow', 'vlArgAggregate'].filter(name =>
+  const runtimeHelpers = ['vlStack', 'vlFlattenOneLevel', 'vlFlatten', 'vlDensity', 'VlArc', 'VlTrail', 'vlWindow', 'vlArgAggregate', 'vlFacetSortValues', 'vlApplyMinBandSize'].filter(name =>
     new RegExp(`\\b${name}\\(`).test(bodyText)
   );
 

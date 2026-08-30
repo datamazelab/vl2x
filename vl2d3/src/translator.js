@@ -29,16 +29,18 @@ import {
   resolveRadiusScale,
   resolveOffsetScale,
   sharedChannelDomainExpr,
+  sharedAggregatedDomainExpr,
 } from './scales.js';
 import {renderMark} from './marks.js';
 import {formatValue} from './literals.js';
 import {extractDateFunctionFields} from './expr.js';
 import {timeUnitExpr, isSupportedTimeUnit, cyclicLabelExpr} from './timeunit.js';
+import {isSupportedAggregateOp} from './aggops.js';
 
 // Every function name runtime.js exports, in preference order for the
 // generated `import {...} from "./vl2d3-runtime.js"` line -- see
 // specToCode()'s conditional-import logic below.
-const RUNTIME_EXPORTS = ['vlPivot', 'vlTrailPath'];
+const RUNTIME_EXPORTS = ['vlPivot', 'vlTrailPath', 'vlFlatten'];
 
 const UNSUPPORTED_COMPOSITIONS = ['facet', 'repeat', 'concat', 'hconcat', 'vconcat'];
 const GEO_CHANNELS = ['longitude', 'latitude', 'longitude2', 'latitude2'];
@@ -1312,13 +1314,61 @@ function buildRuntimeFacetPanels(root, facetInfo, fnName, ignoreUnsupported, pre
   renderTemporalCoercion('facetData', temporalFields).forEach(b);
   if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
 
-  for (const ch of sharedDomainChannels) {
-    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData', sharedDomainZeroBaseline[ch])};`);
-  }
-
   const keyExpr = facetDef.timeUnit
     ? timeUnitExpr(facetDef.timeUnit, `d[${JSON.stringify(facetDef.field)}]`, ignoreUnsupported)
     : `d[${JSON.stringify(facetDef.field)}]`;
+
+  for (const ch of sharedDomainChannels) {
+    // A plain min/max over the *raw* field (sharedChannelDomainExpr's own
+    // only mode) is wrong the moment this channel carries its own
+    // `aggregate` -- individual raw readings have nothing to do with the
+    // real bar length once many rows collapse into one aggregated value
+    // per category (confirmed against trellis_stacked_bar.vl.json: every
+    // bar's own real length is a SUM across an entire variety+site group,
+    // while the naive shared domain was based on individual yield
+    // readings, so every bar ran far past its own domain -- visually
+    // indistinguishable from an accidental "normalize" stack, though
+    // unrelated to the stack offset itself). Only applies to the mark's
+    // own aggregated *value* channel (a plain string op, not `argmax`/
+    // `argmin`'s row-lookup shape, which isn't a bar/area value channel in
+    // practice) -- every other shared-domain channel (color, a non-
+    // aggregated position channel, ...) keeps the original plain-min/max
+    // path.
+    const def = sharedDomainDefs[ch];
+    if ((ch === 'x' || ch === 'y') && ch === positionValueChannel && typeof def.aggregate === 'string' && isSupportedAggregateOp(def.aggregate)) {
+      const categoryChannel = ch === 'x' ? 'y' : 'x';
+      const categoryDef = templateSpec.encoding[categoryChannel];
+      let groupField = null;
+      for (const gc of ['color', 'detail', 'opacity']) {
+        const gdef = templateSpec.encoding[gc];
+        if (gdef && gdef.field) {
+          groupField = gdef.field;
+          break;
+        }
+      }
+      // A color/detail groupby sharing the SAME field as a dodge
+      // (xOffset/yOffset) on this axis is a dodge, not a stack (see
+      // stack.js's own `planStacking()` for the identical exclusion) --
+      // each dodge slot draws its own independent bar, never summed
+      // together with its siblings, so the domain shouldn't sum them
+      // together either.
+      const offsetDef = templateSpec.encoding[`${ch}Offset`];
+      if (offsetDef && offsetDef.field === groupField) groupField = null;
+      b(
+        `const ${sharedDomainVars[ch]} = ${sharedAggregatedDomainExpr('facetData', {
+          facetKeyExpr: keyExpr,
+          categoryField: categoryDef && categoryDef.field,
+          groupField,
+          field: def.field,
+          op: def.aggregate,
+          zeroBaseline: sharedDomainZeroBaseline[ch],
+        })};`
+      );
+    } else {
+      b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, def, 'facetData', sharedDomainZeroBaseline[ch])};`);
+    }
+  }
+
   b(`facetData = facetData.map(d => ({...d, "__facetKey": ${keyExpr}}));`);
   b(`const __facetGroups = Array.from(d3.group(facetData, d => d["__facetKey"]), ([key, rows]) => ({key, rows}));`);
   // An explicit `sort: {field: ...}` orders panels by that field's value
@@ -1524,16 +1574,48 @@ function buildRuntimeFacetGrid(root, facetDef, fnName, ignoreUnsupported, prefix
   renderTemporalCoercion('facetData', temporalFields).forEach(b);
   if (wrapperTransform.length) renderTransforms(wrapperTransform, 'facetData', ignoreUnsupported).forEach(b);
 
-  for (const ch of sharedDomainChannels) {
-    b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, sharedDomainDefs[ch], 'facetData', sharedDomainZeroBaseline[ch])};`);
-  }
-
   const rowKeyExpr = rowDef.timeUnit
     ? timeUnitExpr(rowDef.timeUnit, `d[${JSON.stringify(rowDef.field)}]`, ignoreUnsupported)
     : `d[${JSON.stringify(rowDef.field)}]`;
   const colKeyExpr = colDef.timeUnit
     ? timeUnitExpr(colDef.timeUnit, `d[${JSON.stringify(colDef.field)}]`, ignoreUnsupported)
     : `d[${JSON.stringify(colDef.field)}]`;
+
+  // See buildRuntimeFacetPanels()'s identical (and more fully commented)
+  // fix -- a plain min/max over the raw field is wrong once this channel
+  // carries its own `aggregate`; the combined (row, column) key is used as
+  // this grid's own "facet key" (one true panel per pair) so the shared
+  // domain reflects the real max within a single grid cell, not across
+  // the whole grid combined.
+  for (const ch of sharedDomainChannels) {
+    const def = sharedDomainDefs[ch];
+    if ((ch === 'x' || ch === 'y') && ch === positionValueChannel && typeof def.aggregate === 'string' && isSupportedAggregateOp(def.aggregate)) {
+      const categoryChannel = ch === 'x' ? 'y' : 'x';
+      const categoryDef = templateSpec.encoding[categoryChannel];
+      let groupField = null;
+      for (const gc of ['color', 'detail', 'opacity']) {
+        const gdef = templateSpec.encoding[gc];
+        if (gdef && gdef.field) {
+          groupField = gdef.field;
+          break;
+        }
+      }
+      const offsetDef = templateSpec.encoding[`${ch}Offset`];
+      if (offsetDef && offsetDef.field === groupField) groupField = null;
+      b(
+        `const ${sharedDomainVars[ch]} = ${sharedAggregatedDomainExpr('facetData', {
+          facetKeyExpr: `JSON.stringify([${rowKeyExpr}, ${colKeyExpr}])`,
+          categoryField: categoryDef && categoryDef.field,
+          groupField,
+          field: def.field,
+          op: def.aggregate,
+          zeroBaseline: sharedDomainZeroBaseline[ch],
+        })};`
+      );
+    } else {
+      b(`const ${sharedDomainVars[ch]} = ${sharedChannelDomainExpr(ch, def, 'facetData', sharedDomainZeroBaseline[ch])};`);
+    }
+  }
   b(`facetData = facetData.map(d => ({...d, "__facetRowKey": ${rowKeyExpr}, "__facetColKey": ${colKeyExpr}}));`);
   b(`const __facetRowValues = Array.from(new Set(facetData.map(d => d["__facetRowKey"])));`);
   b(`const __facetColValues = Array.from(new Set(facetData.map(d => d["__facetColKey"])));`);

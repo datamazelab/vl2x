@@ -1,17 +1,8 @@
-===== bar_bullet_expr_bind.vl.json =====
-'ranges[2]'
-
 ===== embedded_csv.vl.json =====
 DataFrame constructor not properly called!
 
 ===== geo_circle.vl.json =====
 'int' object is not subscriptable
-
-===== param_expr.vl.json =====
-'<=' not supported between instances of 'int' and 'dict'
-
-===== rule_params.vl.json =====
-unhashable type: 'dict'
 
 ===== time_parse_binnedutc_with_escaped_field.vl.json =====
 "monthly(date_trunc(\\'day\\', date))"

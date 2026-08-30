@@ -142,6 +142,9 @@ function renderOne(t, dataVar, ignoreUnsupported) {
       `  }).flat();`,
     ];
   }
+  if ('flatten' in t) {
+    return [`${dataVar} = vlFlatten(${dataVar}, {fields: ${JSON.stringify(t.flatten)}, as: ${JSON.stringify(t.as)}});`];
+  }
   if ('fold' in t) {
     return renderFoldTransform(t, dataVar);
   }

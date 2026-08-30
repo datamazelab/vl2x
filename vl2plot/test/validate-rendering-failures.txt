@@ -209,15 +209,15 @@ export default async function chart(container, options = {}) {
     marks: [
       Plot.dot(chartData, {
     fill: () => "gray",
-    r: 1,
+    r: 0.5641895835477563,
   }),
       Plot.dot(chartData2, {
     fill: () => "steelblue",
-    r: 1,
+    r: 0.5641895835477563,
   }),
       Plot.dot(chartData3, {
     fill: () => "firebrick",
-    r: 1,
+    r: 0.5641895835477563,
   }),
     ],
   });
@@ -240,7 +240,7 @@ export default async function chart(container, options = {}) {
     height: 560,
     marks: [
       Plot.dot(chartData2, {
-    r: 10,
+    r: 1.7841241161527712,
   }),
     ],
   });
@@ -302,7 +302,7 @@ export default async function chart(container, options = {}) {
     marks: [
       Plot.dot(chartData2, {
     fill: () => "steelblue",
-    r: 10,
+    r: 1.7841241161527712,
   }),
     ],
   });
@@ -396,7 +396,7 @@ export default async function chart(container, options = {}) {
     marks: [
       Plot.dot(chartData2, {
     fill: () => "gray",
-    r: 5,
+    r: 1.2615662610100802,
   }),
       Plot.line(chartData3, {
     sort: "order",
@@ -439,7 +439,7 @@ export default async function chart(container, options = {}) {
     height: 300,
     marks: [
       Plot.dot(chartData, {
-    r: 10,
+    r: 1.7841241161527712,
   }),
     ],
   });
@@ -521,7 +521,7 @@ export default async function chart(container, options = {}) {
     marks: [
       Plot.dot(chartData2, {
     fill: () => "gray",
-    r: 5,
+    r: 1.2615662610100802,
   }),
       Plot.ruleX(chartData3, {}),
     ],
@@ -636,7 +636,7 @@ export default async function chart(container, options = {}) {
     marks: [
       Plot.dot(chartData2, {
     fill: () => "steelblue",
-    r: 10,
+    r: 1.7841241161527712,
   }),
     ],
   });
@@ -653,15 +653,7 @@ export default async function chart(container, options = {}) {
   let chartData = await d3.csv(new URL("data/species.csv", options.baseURL ?? import.meta.url), d3.autoType);
   // vl2plot: skipped unsupported transform type "lookup" (--ignore-unsupported)
   // vl2plot: unsupported mark type "geoshape", skipped (--ignore-unsupported)
-  const node = Plot.plot({
-    document: container.ownerDocument,
-    width: 300,
-    height: 200,
-    color: {scheme: "viridis", legend: true},
-    symbol: {legend: true},
-    marks: [
-    ],
-  });
+  const node = Plot.plot({document: container.ownerDocument, marks: []});
   container.appendChild(node);
   return node;
 }

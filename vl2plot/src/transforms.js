@@ -6,10 +6,10 @@
 // explicit (an aggregate transform always lists its own `groupby` fields),
 // so they need no channel-inference logic, just a direct translation.
 //
-// v1 scope: filter, calculate, aggregate, bin, timeUnit, stack, density,
-// window. Anything else throws a clear "unsupported" error naming the
-// transform, unless `ignoreUnsupported` is set, in which case the step is
-// skipped entirely.
+// v1 scope: filter, calculate, aggregate, bin, timeUnit, flatten, stack,
+// density, window. Anything else throws a clear "unsupported" error naming
+// the transform, unless `ignoreUnsupported` is set, in which case the step
+// is skipped entirely.
 
 import {filterToExpr, translateExpr} from './expr.js';
 import {isSupportedD3AggregateOp, aggregateExpr} from './aggops.js';
@@ -80,6 +80,9 @@ function renderOne(t, dataVar, ignoreUnsupported) {
     }
     const keyExpr = `d => JSON.stringify([${groupby.map(f => `d[${JSON.stringify(f)}]`).join(', ')}])`;
     return [`${dataVar} = Array.from(d3.rollup(${dataVar}, ${reducer}, ${keyExpr}).values());`];
+  }
+  if ('flatten' in t) {
+    return [`${dataVar} = vlFlatten(${dataVar}, {fields: ${JSON.stringify(t.flatten)}, as: ${JSON.stringify(t.as)}});`];
   }
   if ('stack' in t) {
     const opts = {
