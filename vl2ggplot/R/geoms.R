@@ -353,17 +353,27 @@ error_bounds <- function(encoding, axis, ignore_unsupported = FALSE, .notes = NU
 # own `aes_pairs[["y"]]` is exactly the top edge) and the ranged/y2 case
 # (geom_ribbon, whose `y` has already been replaced by ymin/ymax by the
 # time this runs, so its caller passes the pre-replacement value instead).
-build_area_overlay_layers <- function(aes_pairs, y_expr, mark_props, data_arg) {
+build_area_overlay_layers <- function(aes_pairs, y_expr, mark_props, data_arg, fixed = list()) {
   if (is.null(y_expr) || (!isTRUE(mark_props[["line"]]) && !isTRUE(mark_props[["point"]]))) return(character(0))
   overlay_aes <- aes_pairs[intersect(c("x", "y"), names(aes_pairs))]
   overlay_aes[["y"]] <- y_expr
   if (!is.null(aes_pairs[["fill"]])) overlay_aes[["colour"]] <- aes_pairs[["fill"]]
+  # The overlay tracks the main mark's own resolved style/stat exactly --
+  # a mark-level (or literal `.value`-bound encoding) colour (e.g. layer_
+  # overlay.vl.json's own `color: {"value": "darkred"}`, rendered as a
+  # FIXED `colour = "darkred"` param, not an aes mapping, since there's no
+  # per-row field to map) and, for an inline-aggregated line/area (`stat =
+  # "summary", fun = "..."`), the SAME aggregate -- omitted here, the
+  # overlay would draw with ggplot2's own default black point/line color,
+  # and (for `stat`/`fun`) one raw point per UNAGGREGATED row instead of
+  # one per aggregated group, mismatching the main mark's own position.
+  overlay_fixed <- fixed[intersect(c("colour", "stat", "fun"), names(fixed))]
   extra_layers <- character(0)
   if (isTRUE(mark_props[["line"]])) {
-    extra_layers <- c(extra_layers, build_call("ggplot2::geom_line", overlay_aes, list(), data_arg))
+    extra_layers <- c(extra_layers, build_call("ggplot2::geom_line", overlay_aes, overlay_fixed, data_arg))
   }
   if (isTRUE(mark_props[["point"]])) {
-    extra_layers <- c(extra_layers, build_call("ggplot2::geom_point", overlay_aes, list(), data_arg))
+    extra_layers <- c(extra_layers, build_call("ggplot2::geom_point", overlay_aes, overlay_fixed, data_arg))
   }
   extra_layers
 }
@@ -558,8 +568,16 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # adjacent occupied bins (e.g. a dense histogram-like binned field with
   # no aggregate) all touch edge-to-edge and visually merge into one
   # solid, undifferentiated block instead of showing as distinct bars.
+  # `min + (max - min) / 2` (not `(min + max) / 2`, though the two are
+  # algebraically identical for plain numbers) -- when min/max are Date
+  # objects (a binned/ranged TEMPORAL axis, e.g. layer_falkensee.vl.json's
+  # own `year_start`/`year_end`), `Date + Date` has no defined meaning at
+  # all in R ("binary + is not defined for 'Date' objects", a real runtime
+  # crash), while `Date - Date` (a difftime) and `Date + <numeric-like>`
+  # both work -- this formula only ever adds a DIFFERENCE to one of the
+  # original endpoints, never adds two endpoints together.
   shrink_range <- function(min_expr, max_expr, factor = 0.9) {
-    mid <- sprintf("((%s) + (%s)) / 2", min_expr, max_expr)
+    mid <- sprintf("(%s) + ((%s) - (%s)) / 2", min_expr, max_expr, min_expr)
     half <- sprintf("(((%s) - (%s)) / 2) * %s", max_expr, min_expr, format_value(factor))
     list(min = sprintf("(%s) - (%s)", mid, half), max = sprintf("(%s) + (%s)", mid, half))
   }
@@ -678,7 +696,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
       # ordered), so `overlay_y_expr` (captured before ymin/ymax replaced
       # `y` above) is exactly the "top edge" Vega-Lite itself draws the
       # line/point overlay along.
-      extra_layers <- build_area_overlay_layers(aes_pairs, overlay_y_expr, mark_props, data_arg)
+      extra_layers <- build_area_overlay_layers(aes_pairs, overlay_y_expr, mark_props, data_arg, fixed)
       if (length(extra_layers) == 0) return(main_call)
       return(paste(c(main_call, extra_layers), collapse = " +\n  "))
     }
@@ -751,7 +769,7 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   }
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["x"]]) && is.null(aes_pairs[["y"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
-      identical(mark_props[["orient"]], "vertical")) {
+      (identical(mark_props[["orient"]], "vertical") || identical(encoding[["x"]][["type"]], "temporal"))) {
     # A bar/rect mark with only a position (x) channel and no value (y)
     # axis at all, and no x2/y2 range either (e.g. a vertical highlight
     # band marking specific x positions, like a null-data day) -- this is
@@ -762,17 +780,25 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     # band at that x position instead. Width is derived from the smallest
     # gap between this layer's own sorted x values (falling back to a
     # fixed guess when there's only one), since there's no bin/band width
-    # to read off the (continuous) x scale. Only triggers when `mark.orient`
+    # to read off the (continuous) x scale. Triggers when `mark.orient`
     # *explicitly* conflicts with the one channel given (e.g.
     # bar_1d_dimension_only.vl.json's own y-only mirror of this, `orient:
     # "horizontal"`, just below) -- that's Vega-Lite's own signal that this
     # channel is deliberately playing the discrete/category role, not a
-    # value; every other spec shape (no orient override, or one that
-    # doesn't conflict) reaching this point is a real, un-aggregated
-    # magnitude instead (facet_bullet.vl.json's own `ranges[N]`/
-    # `measures[N]` fields, e.g.) and gets the zero-baseline treatment in
-    # the plain fallback further below regardless of whether that magnitude
-    # came from an inline VL `aggregate` or not.
+    # value -- OR when the one channel given is TEMPORAL (e.g.
+    # layer_null_data.vl.json's own `x: {timeUnit: "yearmonthdate", field:
+    # "a", type: "temporal", bandPosition: 0}`, no `orient` override at
+    # all): a date is never a plausible zero-baseline magnitude regardless
+    # of what `orient` says (`pmin(0, <a Date>)`/`pmax(0, ...)` -- the
+    # fallback further below's own zero-baseline formula -- mixes a Date
+    # with a raw epoch-day number, silently spanning from 1970 out to the
+    # real date instead of a narrow one-day band). Every other spec shape
+    # reaching this point (no orient override, a genuinely non-temporal
+    # channel) is a real, un-aggregated magnitude instead (facet_bullet.vl
+    # .json's own `ranges[N]`/`measures[N]` fields, e.g.) and gets the
+    # zero-baseline treatment in the plain fallback further below
+    # regardless of whether that magnitude came from an inline VL
+    # `aggregate` or not.
     x_expr <- aes_pairs[["x"]]
     half_width_expr <- sprintf(
       "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 * 0.9 else 0.45 })(%s)",
@@ -787,11 +813,12 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   }
   # Mirrors the x-present/y-absent branch just above, transposed: a bare
   # y position with no x at all and an explicit `orient: "horizontal"`
-  # conflict -- e.g. `bar_1d_dimension_only`, a `y`-only "horizontal" bar
-  # mark with a plain (non-aggregate) field.
+  # conflict (or a temporal y, same reasoning as the x-side's own
+  # `type == "temporal"` check) -- e.g. `bar_1d_dimension_only`, a
+  # `y`-only "horizontal" bar mark with a plain (non-aggregate) field.
   if (mark_type %in% c("bar", "rect") && !is.null(aes_pairs[["y"]]) && is.null(aes_pairs[["x"]]) &&
       is.null(x_range) && is.null(y_range) && !isTRUE(plan$use_histogram) && is.null(fixed[["stat"]]) &&
-      identical(mark_props[["orient"]], "horizontal")) {
+      (identical(mark_props[["orient"]], "horizontal") || identical(encoding[["y"]][["type"]], "temporal"))) {
     y_expr <- aes_pairs[["y"]]
     half_width_expr <- sprintf(
       "(function(.v) { .u <- sort(unique(as.numeric(.v))); if (length(.u) > 1) min(diff(.u)) / 2 * 0.9 else 0.45 })(%s)",
@@ -981,8 +1008,23 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
   # a ranged area's own `ymin`/`ymax` aes has no single obvious "top edge"
   # `y` to reuse, so that case is left as area-only (an accepted, narrower
   # gap rather than guessing which bound the overlay means).
-  extra_layers <- if (mark_type == "area" && !is.null(aes_pairs[["y"]])) {
-    build_area_overlay_layers(aes_pairs, aes_pairs[["y"]], mark_props, data_arg)
+  #
+  # `mark.point` on a plain LINE mark (e.g. layer_overlay.vl.json's own
+  # top-level `config: {line: {point: true}}`, applied to every line mark
+  # via apply_config_mark_defaults()) is the identical composite-mark
+  # idiom, minus the "line" half (a line mark drawing ANOTHER geom_line()
+  # overlay on top of its own already-drawn line would just double it) --
+  # `mark_props[["line"]]` is stripped before reusing the same helper here
+  # so only the point marker gets added.
+  extra_layers <- if (mark_type %in% c("area", "line") && !is.null(aes_pairs[["y"]])) {
+    overlay_props <- if (mark_type == "line") {
+      mp <- mark_props
+      mp[["line"]] <- NULL
+      mp
+    } else {
+      mark_props
+    }
+    build_area_overlay_layers(aes_pairs, aes_pairs[["y"]], overlay_props, data_arg, fixed)
   } else {
     character(0)
   }

@@ -19,11 +19,31 @@ const DISCRETE_TYPES = new Set(['ordinal', 'nominal']);
 // temporal, while a single *cyclic* one (month, day, quarter, hours, ...)
 // reduces to a plain integer/cyclic value instead (see `timeunit.js`'s own
 // `isCyclicTimeUnit()`), so it does NOT imply temporal here.
+// A quantitative-only (or temporal-only) `scale.type` is a real signal
+// too -- e.g. layer_line_window.vl.json's own `y: {field: "fps", scale:
+// {type: "log"}}`, no explicit "type" at all: a log scale only ever
+// applies to a quantitative field, so this can infer just as confidently
+// as an explicit `type`. Missing this previously fed straight into
+// orientation()'s own `isQuantitative(x) && !isQuantitative(y)` heuristic
+// -- x (an explicitly quantitative "row" field) read as quantitative, y
+// (this log-scaled "fps" field, no explicit type) read as NOT
+// quantitative purely for lack of an explicit label, misclassifying an
+// ordinary vertical line chart as "horizontal" and, via that, feeding the
+// line's own default sort-by-domain-field fallback the WRONG field
+// (`enc.y.field`, "fps", instead of `enc.x.field`, "row") -- silently
+// connecting the line's points in ascending-fps order instead of trial
+// order.
+const QUANTITATIVE_ONLY_SCALE_TYPES = new Set(['linear', 'log', 'pow', 'sqrt', 'symlog']);
+const TEMPORAL_ONLY_SCALE_TYPES = new Set(['time', 'utc']);
+
 export function effectiveType(def) {
   if (!def || typeof def !== 'object') return null;
   if (def.type) return def.type;
   if (def.aggregate != null || def.bin) return 'quantitative';
   if (def.timeUnit) return isCyclicTimeUnit(def.timeUnit) ? 'quantitative' : 'temporal';
+  const scaleType = def.scale && def.scale.type;
+  if (QUANTITATIVE_ONLY_SCALE_TYPES.has(scaleType)) return 'quantitative';
+  if (TEMPORAL_ONLY_SCALE_TYPES.has(scaleType)) return 'temporal';
   return null;
 }
 
@@ -58,7 +78,7 @@ export function hasField(def) {
 // entirely: Plot never applies the string-vs-column heuristic to a
 // function's own return value, so this is always safe, for a literal
 // that happens to look like a valid CSS color too.
-function literalChannelExpr(value) {
+export function literalChannelExpr(value) {
   if (typeof value !== 'string') return formatValue(value);
   return `() => ${formatValue(value)}`;
 }

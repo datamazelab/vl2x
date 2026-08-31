@@ -453,6 +453,59 @@ test('resolve: {scale: {y: "independent"}} draws a real dual-axis chart, not one
   }
 });
 
+test('a rect with an x/x2 range and no y at all draws the real range, not a heuristic-width box', async () => {
+  // layer_falkensee.vl.json's own shape: a reference-band rect with `x`/
+  // `x2` (a temporal start/end range) and NO y channel at all (meant to
+  // span the full plot height) -- renderBar()'s own "no companion axis
+  // at all" branch (used for a genuinely 1D temporal bar, e.g. one tick
+  // per date with no value to size it by) matched this shape FIRST,
+  // discarding the real x2 range for a fixed heuristic width estimated
+  // from category spacing -- silently drawing every band the same
+  // (wrong) width regardless of how long its own real date range was.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {start: '2000-01-01', end: '2003-01-01', event: 'A'},
+      {start: '2005-01-01', end: '2012-01-01', event: 'B'},
+    ]},
+    mark: {type: 'rect', color: 'steelblue'},
+    encoding: {
+      x: {field: 'start', type: 'temporal'},
+      x2: {field: 'end', type: 'temporal'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /unsupported mark type/);
+  const rects = marksOf(document, 'rect');
+  assert.equal(rects.length, 2);
+  const widths = rects.map(r => Number(r.getAttribute('width')));
+  // The second event's real date range (2005-2012, 7 years) is more than
+  // double the first's (2000-2003, 3 years) -- a real x2-based width
+  // reflects that; a fixed heuristic width would make both identical.
+  assert.ok(widths[1] > widths[0] * 2, `expected the wider (7-year) band to be proportionally wider, got widths ${widths}`);
+});
+
+test('config.line.point (a top-level default, not a per-mark property) overlays a point marker per vertex', async () => {
+  // layer_overlay.vl.json's own shape: `config: {line: {point: true}}`,
+  // no per-mark `point` property anywhere -- `renderArea()`'s own
+  // `line`/`point` composite-mark overlay handling had no line-mark
+  // equivalent at all, so a line spec'd this way drew with no point
+  // markers whatsoever, regardless of whether `point` came from the
+  // mark object directly or (as here) a config-level default.
+  const {document, code} = await renderSpec({
+    config: {line: {point: true}},
+    data: {values: [{c: 1, h: 10}, {c: 2, h: 20}, {c: 1, h: 15}]},
+    mark: 'line',
+    encoding: {
+      x: {field: 'c', type: 'ordinal'},
+      y: {aggregate: 'max', field: 'h', type: 'quantitative'},
+      color: {value: 'darkred'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /\.selectAll\("circle"\)/);
+  const circles = marksOf(document, 'circle');
+  assert.equal(circles.length, 2, 'expected one point marker per distinct x, from the config-level default');
+  for (const c of circles) assert.equal(c.getAttribute('fill'), 'darkred');
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

@@ -175,21 +175,61 @@ export class VlTrail extends Plot.Mark {
 // that a per-row channel value can't express).
 export class VlQBar extends Plot.Mark {
   constructor(data, options = {}) {
-    const {pos, valueStart, valueEnd, fill, title, orientation = 'vertical', width = 5} = options;
+    const {pos, valueStart, valueEnd, fill, title, orientation = 'vertical', width = 5, autoWidth = false, opacity} = options;
     const posScale = orientation === 'vertical' ? 'x' : 'y';
     const valueScale = orientation === 'vertical' ? 'y' : 'x';
     const channels = {pos: {value: pos, scale: posScale}};
     if (valueStart != null) channels.valueStart = {value: valueStart, scale: valueScale};
     if (valueEnd != null) channels.valueEnd = {value: valueEnd, scale: valueScale};
-    if (fill != null) channels.fill = {value: fill, scale: 'color'};
-    if (title != null) channels.title = {value: title, optional: true};
+    // `filter: null` on both -- these are STYLE-ish channels (a per-row
+    // fill/title), not real position/value data, but Plot's own default
+    // per-channel row filter (`Mark.prototype.filter`, mark.js) excludes
+    // any row whose channel resolves to null/undefined for EVERY declared,
+    // non-`filter: null` channel -- confirmed empirically to silently
+    // drop every row (index.length === 0, `render()` never even called)
+    // whenever `fill`'s own value happens to be a literal CSS-color string
+    // that ISN'T also a real column name in the data (Plot's own value
+    // resolution reads a bare string as a column accessor first): the
+    // real per-row fill value then resolves to `undefined` for every row,
+    // and the (unfiltered) default `defined()` check treats that as "this
+    // row doesn't have a fill, exclude it" for the WHOLE mark, not just a
+    // missing swatch. A literal fill (marks.js's own `literalChannelExpr()`
+    // wraps one as a bare `() => "..."` accessor specifically to dodge the
+    // column-name ambiguity above) is also NOT meant to participate in the
+    // shared categorical color scale at all -- real Vega-Lite's own
+    // `mark.color`/`encoding.color.value` is a constant applied directly,
+    // unaffected by whatever domain/range the real color-*field* channel
+    // (if any) resolves to elsewhere on the same plot -- so only a genuine
+    // field-name STRING gets `scale: 'color'` here; a function accessor
+    // (always and only a literal, in this codebase's own convention) skips
+    // scale resolution and applies as-is.
+    if (fill != null) channels.fill = {value: fill, scale: typeof fill === 'function' ? null : 'color', filter: null};
+    if (title != null) channels.title = {value: title, optional: true, filter: null};
     super(data, channels, options, {ariaLabel: 'bar'});
     this.width = width;
+    this.autoWidth = autoWidth;
     this.orientation = orientation;
+    this.opacity = opacity;
   }
   render(index, scales, values, dimensions, context) {
     const g = d3.select(context.document.createElementNS('http://www.w3.org/2000/svg', 'g'));
-    const halfWidth = this.width / 2;
+    // `autoWidth` (e.g. layer_null_data.vl.json's own shape: a bar with a
+    // single TEMPORAL, timeUnit-bucketed position and no value channel at
+    // all -- real Vega-Lite's own compiled output gives this a full
+    // one-timeUnit-bucket-wide box, not the fixed `continuousBandSize`
+    // (5px) this same mark otherwise uses for a genuinely CONTINUOUS
+    // quantitative position) -- derived from the actual resolved pixel
+    // spacing between distinct rows' own positions (mirroring vl2d3's own
+    // identical `temporalBarWidthDecl()` estimate: 70% of the average
+    // consecutive gap, so adjacent boxes read as distinct rather than one
+    // solid touching block), not a literal constant.
+    const width = this.autoWidth
+      ? (() => {
+          const xs = Array.from(new Set(index.map(i => values.pos[i]))).sort((a, b) => a - b);
+          return xs.length > 1 ? ((xs[xs.length - 1] - xs[0]) / (xs.length - 1)) * 0.7 : 20;
+        })()
+      : this.width;
+    const halfWidth = width / 2;
     const hasValue = values.valueStart != null;
     const fullLo = this.orientation === 'vertical' ? dimensions.marginTop : dimensions.marginLeft;
     const fullHi = this.orientation === 'vertical' ? dimensions.height - dimensions.marginBottom : dimensions.width - dimensions.marginRight;
@@ -200,9 +240,10 @@ export class VlQBar extends Plot.Mark {
       const fill = values.fill ? values.fill[i] : 'currentColor';
       const rect =
         this.orientation === 'vertical'
-          ? g.append('rect').attr('x', p - halfWidth).attr('y', lo).attr('width', this.width).attr('height', len)
-          : g.append('rect').attr('x', lo).attr('y', p - halfWidth).attr('width', len).attr('height', this.width);
+          ? g.append('rect').attr('x', p - halfWidth).attr('y', lo).attr('width', width).attr('height', len)
+          : g.append('rect').attr('x', lo).attr('y', p - halfWidth).attr('width', len).attr('height', width);
       rect.attr('fill', fill);
+      if (this.opacity != null) rect.attr('opacity', this.opacity);
       if (values.title) rect.append('title').text(values.title[i]);
     }
     return g.node();

@@ -748,6 +748,20 @@ export function renderMark(mark, encoding, scales, dims, dataVar, ignoreUnsuppor
           return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
         }
       }
+      // A companion range on exactly ONE axis, with no channel at all on
+      // the other (e.g. layer_falkensee.vl.json's own `x`/`x2` reference-
+      // band rect, spanning the FULL plot height with no y/y2 given) --
+      // just as well-defined as the two shapes above: renderBar's own
+      // `encoding.x2 && !encoding.y2` (or its y2 mirror) branch already
+      // falls back to the plot's own full opposite-axis extent whenever
+      // that other channel is genuinely absent, so this doesn't need
+      // ignoreUnsupported either.
+      if (encoding.x2 && encoding.x.field && encoding.x2.field && !encoding.y && !encoding.y2) {
+        return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      }
+      if (encoding.y2 && encoding.y.field && encoding.y2.field && !encoding.x && !encoding.x2) {
+        return renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
+      }
       if (ignoreUnsupported) {
         return renderApproximateMark(type, encoding, scales, dims, dataVar, markProps, ignoreUnsupported);
       }
@@ -900,7 +914,7 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(temporalBarWidthDecl('xBarWidth2', 'x', dataVar, encoding.x.field));
     lines.push(temporalBarWidthDecl('yBarWidth2', 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
-  } else if (xTemporalBar && !encoding.y && !encoding.y2) {
+  } else if (xTemporalBar && !encoding.x2 && !encoding.y && !encoding.y2) {
     // A temporal x with *no* companion axis at all (e.g. a "1D bar" with
     // only a bare, un-aggregated temporal field -- one row per date, no
     // value to size a bar's length by): "zero baseline to the value" (the
@@ -908,10 +922,17 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     // date axis (`x(0)` means the 1970 epoch, producing one enormous bar
     // spanning from there to each date instead of a real per-date mark),
     // so this instead draws the same full-height thin tick per distinct
-    // date the reference-band case uses elsewhere in this file.
+    // date the reference-band case uses elsewhere in this file. Guarded on
+    // `!encoding.x2` (previously missing) -- a REAL explicit x2 range
+    // (e.g. layer_falkensee.vl.json's own `x`/`x2` reference-band rect,
+    // no y at all) is an exact, given span, not something to estimate
+    // from category spacing; this branch used to fire for it anyway
+    // (checked before the real `encoding.x2 && !encoding.y2` branch
+    // further down ever got a chance to), silently discarding x2 for a
+    // fixed heuristic-width box centered on x alone.
     lines.push(temporalBarWidthDecl(xBarWidthVar, 'x', dataVar, encoding.x.field));
     needsWidthBlock = true;
-  } else if (yTemporalBar && !encoding.x && !encoding.x2) {
+  } else if (yTemporalBar && !encoding.y2 && !encoding.x && !encoding.x2) {
     lines.push(temporalBarWidthDecl(yBarWidthVar, 'y', dataVar, encoding.y.field));
     needsWidthBlock = true;
   } else if (xTemporalBar && encoding.xOffset && encoding.xOffset.field && !yBand && encoding.y && encoding.y.type !== 'temporal' && !encoding.y2) {
@@ -1011,12 +1032,12 @@ function renderBar(encoding, scales, dims, dataVar, markProps, ignoreUnsupported
     lines.push(`    .attr("width", xBarWidth2)`);
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - yBarWidth2 / 2)`);
     lines.push(`    .attr("height", yBarWidth2)`);
-  } else if (xTemporalBar && !encoding.y && !encoding.y2) {
+  } else if (xTemporalBar && !encoding.x2 && !encoding.y && !encoding.y2) {
     lines.push(`    .attr("x", d => x(d[${JSON.stringify(encoding.x.field)}]) - ${xBarWidthVar} / 2)`);
     lines.push(`    .attr("width", ${xBarWidthVar})`);
     lines.push(`    .attr("y", ${dims.marginTopExpr})`);
     lines.push(`    .attr("height", ${dims.heightMinusBottomExpr} - ${dims.marginTopExpr})`);
-  } else if (yTemporalBar && !encoding.x && !encoding.x2) {
+  } else if (yTemporalBar && !encoding.y2 && !encoding.x && !encoding.x2) {
     lines.push(`    .attr("y", d => y(d[${JSON.stringify(encoding.y.field)}]) - ${yBarWidthVar} / 2)`);
     lines.push(`    .attr("height", ${yBarWidthVar})`);
     lines.push(`    .attr("x", ${dims.marginLeftExpr})`);
@@ -1636,6 +1657,33 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
       `    .attr("d", d3.line()${definedClause}${curve}.x(d => ${cx}).y(d => ${cy})` +
         `(${dataVar}.slice().sort((a, b) => d3.ascending(a[${JSON.stringify(sortField)}], b[${JSON.stringify(sortField)}]))));`
     );
+  }
+  // Vega-Lite's composite-mark shorthand for a line (`mark: {"type":
+  // "line", "point": true}`, or the identical `config.line.point: true`
+  // top-level default -- see translate_layer()'s own generic `config.
+  // <markType>` merge, translator.js) overlays a solid point marker at
+  // each vertex on top of the plain stroked line -- previously never read
+  // at all here (renderArea()'s own identical `line`/`point` composite-
+  // mark handling, just above, has no line-mark equivalent), so a line
+  // spec'd this way silently drew with no point markers whatsoever
+  // (layer_overlay.vl.json's own "no points drawn" symptom). Filled with
+  // this row's own resolved color (matching the line's own stroke),
+  // grouped/keyed the same way the line itself already is above.
+  if (markProps.point) {
+    const rowColorField = encoding.color && encoding.color.field ? encoding.color.field : null;
+    const pointFill = rowColorField
+      ? `color(d[${JSON.stringify(rowColorField)}])`
+      : encoding.color && 'value' in encoding.color
+        ? formatValue(encoding.color.value)
+        : JSON.stringify(markColorFallback(markProps, 'stroke', DEFAULT_STROKE));
+    lines.push(`svg.append("g")`);
+    lines.push(`  .selectAll("circle")`);
+    lines.push(`  .data(${dataVar})`);
+    lines.push(`  .join("circle")`);
+    lines.push(`    .attr("fill", d => ${pointFill})`);
+    lines.push(`    .attr("cx", d => ${cx})`);
+    lines.push(`    .attr("cy", d => ${cy})`);
+    lines.push(`    .attr("r", 3);`);
   }
   return singleAxisNote + lines.join('\n');
 }

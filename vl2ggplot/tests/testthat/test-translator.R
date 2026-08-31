@@ -401,3 +401,105 @@ test_that("resolve: {scale: {y: independent}} (dual axis) rescales the secondary
   expect_true(all(secondary_data$y >= 0 & secondary_data$y <= 30))
   expect_true(max(secondary_data$y) > 5, "expected the rescaled line to actually use the shared range, not collapse near zero")
 })
+
+test_that("a binned/ranged TEMPORAL rect's own midpoint-shrink formula doesn't add two Dates together", {
+  # layer_falkensee.vl.json's own shape: a rect mark with a temporal
+  # x/x2 range (`start`/`end` years) -- shrink_range()'s own box-spacing
+  # formula previously computed a midpoint as `(min + max) / 2`, which
+  # crashes at *render* time ("binary + is not defined for 'Date'
+  # objects") once min/max are real Date-typed fields, not plain numbers.
+  # The fix (`min + (max - min) / 2`, algebraically identical for plain
+  # numbers) only ever adds a numeric *difference* to one endpoint,
+  # never adds two Dates together.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"start": "2000-01-01", "end": "2003-01-01", "event": "A"},
+      {"start": "2005-01-01", "end": "2007-01-01", "event": "B"}
+    ]},
+    "mark": "rect",
+    "encoding": {
+      "x": {"field": "start", "type": "temporal"},
+      "x2": {"field": "end", "type": "temporal"},
+      "fill": {"field": "event", "type": "nominal"}
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  r <- run_spec(spec)
+  expect_equal(nrow(r$built$data[[1]]), 2)
+  expect_true(all(is.finite(as.numeric(r$built$data[[1]]$xmin))))
+  expect_true(all(is.finite(as.numeric(r$built$data[[1]]$xmax))))
+  expect_true(all(r$built$data[[1]]$xmax > r$built$data[[1]]$xmin))
+})
+
+test_that("a bar/rect with a single TEMPORAL position and no value channel gets a full-height reference band, not a zero-baseline bar", {
+  # layer_null_data.vl.json's own shape: a second layer highlighting each
+  # null-data date with a translucent reference band --
+  # `mark: {type: "bar", color: "red", opacity: 0.2}`, `x: {timeUnit:
+  # "yearmonthdate", field: "a", type: "temporal", bandPosition: 0}`, no
+  # `y` at all, no `orient` override either. The "genuinely 1D, no value
+  # channel" reference-band branch previously only fired with an
+  # EXPLICIT `mark.orient` override, so this fell through to the
+  # zero-baseline fallback instead -- `pmin(0, <a Date>)`/`pmax(0, ...)`
+  # mixes a Date with a raw epoch-day number, silently spanning from
+  # 1970 out to the real date instead of a narrow one-day band. A
+  # temporal position is never a plausible zero-baseline magnitude
+  # regardless of `orient`.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"a": "2000-01-01", "b": 1}, {"a": "2000-01-02", "b": null}, {"a": "2000-01-03", "b": 2}
+    ]},
+    "layer": [
+      {"mark": "line", "encoding": {
+        "x": {"field": "a", "type": "temporal"},
+        "y": {"field": "b", "type": "quantitative"}
+      }},
+      {
+        "transform": [{"filter": "datum.b === null"}],
+        "mark": {"type": "bar", "color": "red", "opacity": 0.2},
+        "encoding": {"x": {"field": "a", "type": "temporal", "bandPosition": 0}}
+      }
+    ]
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_false(grepl("pmin\\(0", code), "expected no zero-baseline formula for a temporal position")
+  expect_match(code, "ymin = -Inf")
+  expect_match(code, "ymax = Inf")
+  r <- run_spec(spec)
+  rect_data <- r$built$data[[2]]
+  expect_equal(nrow(rect_data), 1)
+  epoch <- as.numeric(as.Date("1970-01-01"))
+  expect_true(all(as.numeric(rect_data$xmin) > epoch), "expected the band's own xmin to be near the real date, not the 1970 epoch")
+  expect_true(diff(c(rect_data$xmin, rect_data$xmax)) < 5, "expected a narrow, roughly one-day-wide band")
+})
+
+test_that("config.line.point (a top-level default, not a per-mark property) overlays a matching-colour point", {
+  # layer_overlay.vl.json's own shape: `config: {line: {point: true}}`,
+  # no per-mark `point` property anywhere, and a mark-level literal
+  # colour (`color: {value: "darkred"}`) on one of the two line layers.
+  # Two gaps: (1) config-level mark defaults were never read at all --
+  # only a mark object's own explicit properties reached geoms.R; (2)
+  # the composite line+point overlay helper (build_area_overlay_layers())
+  # only ever handled AREA marks, and even there dropped the main mark's
+  # own fixed colour/stat params, so a fixed-color line's own point
+  # overlay would have drawn in ggplot2's default black instead of
+  # matching.
+  spec <- spec_from_json('{
+    "config": {"line": {"point": true}},
+    "data": {"values": [
+      {"c": 1, "h": 10}, {"c": 2, "h": 20}, {"c": 1, "h": 15}
+    ]},
+    "mark": "line",
+    "encoding": {
+      "x": {"field": "c", "type": "ordinal"},
+      "y": {"aggregate": "max", "field": "h", "type": "quantitative"},
+      "color": {"value": "darkred"}
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "ggplot2::geom_point")
+  r <- run_spec(spec)
+  expect_equal(length(r$built$data), 2)
+  point_data <- r$built$data[[2]]
+  expect_equal(nrow(point_data), 2, info = "expected one point per aggregated x-group, not one per raw row")
+  expect_true(all(point_data$colour == "darkred"))
+})

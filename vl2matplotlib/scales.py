@@ -24,6 +24,8 @@ from .literals import format_value
 
 _TEMPORAL_TYPES = {"temporal"}
 _DISCRETE_TYPES = {"ordinal", "nominal"}
+_QUANTITATIVE_ONLY_SCALE_TYPES = {"linear", "log", "pow", "sqrt", "symlog"}
+_TEMPORAL_ONLY_SCALE_TYPES = {"time", "utc"}
 
 # A small, Vega-Lite/D3-adjacent categorical palette (10 colors) -- matches
 # matplotlib's own default `tab10` cycle almost exactly (it *is* `tab10`),
@@ -59,6 +61,24 @@ def effective_type(def_: dict) -> str | None:
 
         name = unit["unit"] if isinstance(unit, dict) else unit
         return "temporal" if name in _COMBINED else "quantitative"
+    # A quantitative-only (or temporal-only) `scale.type` is a real signal
+    # too, even with no explicit "type" at all -- e.g. layer_line_window.vl
+    # .json's own `y: {field: "fps", scale: {type: "log"}}`: a log scale
+    # only ever applies to a quantitative field. Missing this previously
+    # fed straight into `_is_value_channel()`'s (marks.py) own line/area
+    # orientation heuristic -- an explicitly quantitative x plus this
+    # untyped-but-log-scaled y read as "neither channel is confirmed
+    # quantitative enough to call the other the value axis", misclassifying
+    # an ordinary vertical line chart as horizontal and, through that,
+    # handing the line's own sort-before-drawing step the WRONG field
+    # (y's own "fps" instead of x's "row") -- silently connecting points in
+    # ascending-value order instead of trial order.
+    scale = def_.get("scale")
+    scale_type = scale.get("type") if isinstance(scale, dict) else None
+    if scale_type in _QUANTITATIVE_ONLY_SCALE_TYPES:
+        return "quantitative"
+    if scale_type in _TEMPORAL_ONLY_SCALE_TYPES:
+        return "temporal"
     return None
 
 

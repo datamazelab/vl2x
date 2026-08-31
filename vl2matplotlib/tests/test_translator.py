@@ -1379,3 +1379,50 @@ def test_a_line_marks_own_mark_level_stroke_is_used_not_just_color():
     }, ignore_unsupported=True)
     ax = fig.axes[0]
     assert ax.get_lines()[0].get_color() == "#85A9C5"
+
+
+def test_an_untyped_y_with_only_a_quantitative_only_scale_type_still_counts_as_quantitative():
+    # layer_line_window.vl.json's own shape: `x: {field: "row", type:
+    # "quantitative"}`, `y: {field: "fps", scale: {type: "log"}}` -- no
+    # explicit "type" on y at all. `_is_value_channel()`'s own orientation
+    # heuristic (marks.py) previously read the untyped y as NOT
+    # quantitative purely for lacking an explicit label (even though a log
+    # scale only ever applies to a quantitative field), misclassifying
+    # this as a horizontal line and, through that, sorting the rows by
+    # the WRONG field (y's own "fps" instead of x's "row") before drawing
+    # -- silently connecting points in ascending-fps order instead of
+    # trial order, a scrambled zigzag instead of a smooth curve.
+    fig, code = render({
+        "data": {"values": [{"row": 1, "fps": 60}, {"row": 2, "fps": 30}, {"row": 3, "fps": 45}]},
+        "mark": "line",
+        "encoding": {
+            "x": {"field": "row", "type": "quantitative"},
+            "y": {"field": "fps", "scale": {"type": "log"}},
+        },
+    }, ignore_unsupported=True)
+    assert 'sort_values("row")' in code
+    assert 'sort_values("fps")' not in code
+    ax = fig.axes[0]
+    xdata = list(ax.get_lines()[0].get_xdata())
+    assert xdata == sorted(xdata), f"expected points connected in x order, got {xdata}"
+
+
+def test_config_line_point_a_top_level_default_not_a_per_mark_property_still_overlays_points():
+    # layer_overlay.vl.json's own shape: `config: {line: {point: true}}`,
+    # no per-mark `point` property anywhere -- `_render_line_or_area()`
+    # already reads `mark_props.get("point")` for a plain line mark, but
+    # `mark_props` previously only ever came from the mark object itself,
+    # never merged with an identical config-level default -- silently
+    # drawing a plain line with no point markers at all.
+    fig, code = render({
+        "config": {"line": {"point": True}},
+        "data": {"values": [{"c": 1, "h": 10}, {"c": 2, "h": 20}, {"c": 1, "h": 15}]},
+        "mark": "line",
+        "encoding": {
+            "x": {"field": "c", "type": "ordinal"},
+            "y": {"aggregate": "max", "field": "h", "type": "quantitative"},
+        },
+    }, ignore_unsupported=True)
+    assert "marker=" in code
+    ax = fig.axes[0]
+    assert ax.get_lines()[0].get_marker() != "None"

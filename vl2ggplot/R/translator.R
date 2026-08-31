@@ -42,6 +42,51 @@ resolve_dataset_refs <- function(node, datasets) {
   node
 }
 
+# `config.<markType>` (e.g. layer_overlay.vl.json's own top-level
+# `config: {line: {point: true}}`) supplies a *default* mark property for
+# any mark of that type that doesn't itself override it -- most notably
+# the composite line/area overlay properties (`point`, `line`), which a
+# config-level default triggers exactly the same as an identical per-mark
+# `mark: {type: "line", point: true}` would, but which the mark-rendering
+# code (geoms.R) previously only ever saw when set directly on the mark
+# object, silently ignoring a config-only default (layer_overlay.vl.json's
+# own "no points drawn" symptom). Applied here, once, up front (mutating a
+# bare mark type STRING into an object when defaults actually apply)
+# rather than threaded as a new parameter through every translate_*()
+# call, since `config` only ever lives on the ROOT spec while `mark` can
+# be nested at any depth -- mirrors resolve_dataset_refs()'s own explicit
+# layer/hconcat/vconcat/concat/spec recursion (rather than blindly walking
+# every key) for the same reason: those are the only places a nested unit
+# view (and so a `mark`) can live. A mark's own explicit properties always
+# win (later assignments below overwrite the config defaults for anything
+# the mark itself also sets).
+apply_config_mark_defaults <- function(node, config) {
+  if (!is.list(node)) return(node)
+  if (!is.null(node$mark)) {
+    mark <- node$mark
+    mark_type <- if (is.character(mark)) mark else mark$type
+    defaults <- if (is.character(mark_type)) config[[mark_type]] else NULL
+    if (length(defaults) > 0) {
+      merged <- defaults
+      if (is.character(mark)) {
+        merged$type <- mark
+      } else {
+        for (k in names(mark)) merged[[k]] <- mark[[k]]
+      }
+      node$mark <- merged
+    }
+  }
+  for (key in c("layer", "hconcat", "vconcat", "concat")) {
+    if (!is.null(node[[key]])) {
+      node[[key]] <- lapply(node[[key]], apply_config_mark_defaults, config = config)
+    }
+  }
+  if (!is.null(node$spec)) {
+    node$spec <- apply_config_mark_defaults(node$spec, config)
+  }
+  node
+}
+
 new_emitter <- function(include_source_paths = FALSE) {
   e <- new.env()
   e$lines <- character(0)
@@ -1503,6 +1548,9 @@ vegalite_to_ggplot <- function(spec, chart_var = "chart", ignore_unsupported = F
   if (!is.null(spec$datasets)) {
     spec <- resolve_dataset_refs(spec, spec$datasets)
     spec$datasets <- NULL
+  }
+  if (length(spec$config) > 0) {
+    spec <- apply_config_mark_defaults(spec, spec$config)
   }
 
   emitter <- new_emitter(include_source_paths)

@@ -829,6 +829,44 @@ def _unescape_field_refs(node: object) -> None:
             _unescape_field_refs(item)
 
 
+def _apply_config_mark_defaults(node: object, config: dict) -> None:
+    """`config.<markType>` (e.g. layer_overlay.vl.json's own top-level
+    `config: {line: {point: true}}`) supplies a *default* mark property
+    for any mark of that type that doesn't itself override it -- most
+    notably the composite line/area overlay properties (`point`, `line`),
+    which a config-level default triggers exactly the same as an
+    identical per-mark `mark: {type: "line", point: true}` would, but
+    which `render_mark()` previously only ever saw when set directly on
+    the mark object, silently ignoring a config-only default (`layer_
+    overlay.vl.json`'s own "no points drawn" symptom). Applied here, once,
+    up front (mutating a bare mark type STRING into an object when
+    defaults actually apply) rather than threaded as a new parameter
+    through every translate_*() call, since `config` only ever lives on
+    the ROOT spec while a `mark` key can be nested at any depth (a layer
+    child, a facet/repeat template, ...). Walked recursively, mirroring
+    `_unescape_field_refs()`'s identical traversal; a mark's own explicit
+    properties always win (`merged.update(mark)` overwrites the config
+    defaults for anything the mark itself also sets)."""
+    if isinstance(node, dict):
+        mark = node.get("mark")
+        if mark is not None:
+            mark_type = mark if isinstance(mark, str) else mark.get("type")
+            defaults = config.get(mark_type) if isinstance(mark_type, str) else None
+            if defaults:
+                merged = dict(defaults)
+                if isinstance(mark, dict):
+                    merged.update(mark)
+                else:
+                    merged["type"] = mark
+                node["mark"] = merged
+        for k, v in node.items():
+            if k != "mark":
+                _apply_config_mark_defaults(v, config)
+    elif isinstance(node, list):
+        for item in node:
+            _apply_config_mark_defaults(item, config)
+
+
 def _fallback_geo_position(node: object) -> None:
     """Geographic positioning (`longitude`/`latitude`, real corpus usage)
     has no map-projection support in this project at all -- rather than
@@ -923,6 +961,9 @@ def _resolve_param_expr_shapes(node: object, params: dict) -> None:
 def translate_top(root: dict, emitter: Emitter, hint: str, ignore_unsupported: bool = False) -> str:
     _unescape_field_refs(root)
     _fallback_geo_position(root)
+    config = root.get("config")
+    if config:
+        _apply_config_mark_defaults(root, config)
     emitter.params = _resolve_top_level_params(root.get("params"))
     _resolve_param_expr_shapes(root, emitter.params)
     shorthand = _rewrite_encoding_facet_shorthand(root)

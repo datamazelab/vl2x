@@ -1318,3 +1318,85 @@ test('resolve: {scale: {y: "independent"}} (dual axis) draws each layer on its o
   const rightAxisX = Number(rightAxisText.getAttribute('transform').match(/translate\(([\d.]+),/)[1]);
   assert.ok(rightAxisX > 100, `expected the independent y-axis anchored on the right (large x), got ${rightAxisX}`);
 });
+
+test('an untyped y with only a quantitative-only scale.type still counts as quantitative for orientation', async () => {
+  // layer_line_window.vl.json's own shape: `x: {field: "row", type:
+  // "quantitative"}`, `y: {field: "fps", scale: {type: "log"}}` -- no
+  // explicit "type" on y at all. orientation()'s own `isQuantitative(x)
+  // && !isQuantitative(y)` heuristic previously read the untyped y as
+  // NOT quantitative purely for lacking an explicit label (even though a
+  // log scale only ever applies to a quantitative field), misclassifying
+  // this as a "horizontal" line and, through that, handing the line's
+  // own default sort-by-domain-field fallback the WRONG field (y's own
+  // "fps", instead of x's "row") -- silently connecting points in
+  // ascending-fps order instead of trial order.
+  const {code} = await renderSpec({
+    data: {values: [{row: 1, fps: 60}, {row: 2, fps: 30}, {row: 3, fps: 45}]},
+    mark: 'line',
+    encoding: {
+      x: {field: 'row', type: 'quantitative'},
+      y: {field: 'fps', scale: {type: 'log'}},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /x: "row"/);
+  assert.match(code, /sort: "row"/);
+  assert.doesNotMatch(code, /sort: "fps"/);
+});
+
+test('a bar with a single temporal position and no value channel spans the full opposite axis', async () => {
+  // layer_null_data.vl.json's own shape: a second layer highlighting each
+  // null-data date with a translucent reference band --
+  // `mark: {type: "bar", color: "red", opacity: 0.2}`, `x: {timeUnit:
+  // "yearmonthdate", field: "a", bandPosition: 0}`, no y at all. Neither
+  // `Plot.barY` (needs a real band x scale; the shared x here is
+  // continuous, since the sibling line layer also plots on it) nor a
+  // literal `y1`/`y2` of `-Infinity`/`Infinity` (confirmed empirically:
+  // Plot silently draws nothing at all) can express this -- routed
+  // through the same VlQBar custom mark the quantitative "no value
+  // channel" bar shape already uses, with an auto-derived (not fixed
+  // 5px) width and the full plot height via `dimensions`.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {a: 'Jan 1, 2000', b: 28}, {a: 'Jan 2, 2000', b: null}, {a: 'Jan 3, 2000', b: 43},
+    ]},
+    layer: [
+      {mark: 'line', encoding: {
+        x: {timeUnit: 'yearmonthdate', field: 'a', type: 'temporal'},
+        y: {field: 'b', type: 'quantitative'},
+      }},
+      {
+        transform: [{filter: 'datum.b === null'}],
+        mark: {type: 'bar', color: 'red', opacity: 0.2},
+        encoding: {x: {timeUnit: 'yearmonthdate', field: 'a', type: 'temporal', bandPosition: 0}},
+      },
+    ],
+  }, {ignoreUnsupported: true});
+  assert.match(code, /new VlQBar/);
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[aria-label*="axis"]'));
+  assert.equal(rects.length, 1, 'expected exactly one reference band, for the one null-data row');
+  const rect = rects[0];
+  assert.equal(rect.getAttribute('fill'), 'red');
+  assert.equal(rect.getAttribute('opacity'), '0.2');
+  assert.ok(Number(rect.getAttribute('height')) > 100, `expected the band to span the full plot height, got ${rect.getAttribute('height')}`);
+  assert.ok(Number(rect.getAttribute('width')) > 0, `expected a real, non-degenerate width, got ${rect.getAttribute('width')}`);
+});
+
+test('config.line.point (a top-level default, not a per-mark property) still overlays point markers', async () => {
+  // layer_overlay.vl.json's own shape: `config: {line: {point: true}}`,
+  // no per-mark `point` property anywhere -- the composite line+point
+  // overlay previously only ever checked `markProps.point`, silently
+  // ignoring an identical config-level default and drawing a plain line
+  // with no point markers at all.
+  const {document, code} = await renderSpec({
+    config: {line: {point: true}},
+    data: {values: [{c: 1, h: 10}, {c: 2, h: 20}, {c: 1, h: 15}]},
+    mark: 'line',
+    encoding: {
+      x: {field: 'c', type: 'ordinal'},
+      y: {aggregate: 'max', field: 'h', type: 'quantitative'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /Plot\.dot/);
+  const circles = [...document.querySelectorAll('circle')].filter(c => !c.closest('[class*="swatch"]'));
+  assert.equal(circles.length, 2, 'expected one point marker per distinct x, from the config-level default');
+});

@@ -7,7 +7,7 @@
 // mark type," not real drawing logic.
 
 import {formatValue} from './literals.js';
-import {channelValue, effectiveType, isQuantitative, hasField} from './encoding.js';
+import {channelValue, effectiveType, isQuantitative, isTemporal, hasField, literalChannelExpr} from './encoding.js';
 import {applyTimeUnits, planTransform} from './prepare.js';
 import {plotReducer, aggregateExpr} from './aggops.js';
 import {planStack} from './stack.js';
@@ -374,6 +374,50 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
     ].filter(Boolean);
     return {statements, markExpr: `new VlQBar(${markDataVar}, ${objectSource(qPairs)})`};
   }
+  // A bar with a single TEMPORAL, timeUnit-bucketed position channel and
+  // NO value/companion channel at all (e.g. layer_null_data.vl.json's own
+  // second layer: a translucent reference band highlighting each null-data
+  // date -- `x: {timeUnit: "yearmonthdate", field: "a", bandPosition: 0}`,
+  // no `y` at all) -- real Vega-Lite's own compiled output spans this the
+  // same "full opposite axis" way `renderRule()`'s own groupless-1D-
+  // aggregate fix already handles for rule marks, but `Plot.barY`/`barX`
+  // have no equivalent default (confirmed empirically: silently draws a
+  // literal zero-height/zero-width box instead of throwing) -- AND the
+  // shared x/y scale here is a genuinely CONTINUOUS temporal scale (the
+  // chart's other layer also plots on it, e.g. a line), which `Plot.barY`/
+  // `barX` can't use at all regardless (both hard-require a real band
+  // scale for their own category channel) -- the same underlying
+  // limitation `VlQBar` above already exists to route around for a
+  // quantitative category, reused here with an auto-derived (not fixed
+  // 5px) width matching the field's own natural per-row spacing.
+  if (
+    isTemporal(enc[catCh]) &&
+    !hasCatCompanion &&
+    hasField(enc[catCh]) &&
+    !hasField(enc[valueCh]) &&
+    !(enc[valueCh] && typeof enc[valueCh] === 'object' && 'value' in enc[valueCh])
+  ) {
+    const colorDef = enc.color || enc.fill || enc.stroke;
+    // A mark-level literal (`mark: {"color": "red"}`, as opposed to an
+    // encoding channel's own `.value`) needs the SAME safe wrapping
+    // `channelValue()`/`literalChannelExpr()` already give a `.value`-bound
+    // channel -- VlQBar's own `fill` channel resolves a bare string as a
+    // column-name lookup first (Plot's usual convention), so an unwrapped
+    // literal like `"red"` (not itself a real column in the data) would
+    // resolve to `undefined` for every row instead of the constant color.
+    const colorValue = val(colorDef) ?? (typeof markProps.color === 'string' ? literalChannelExpr(markProps.color) : undefined);
+    const opacityValue = val(enc.opacity) ?? (typeof markProps.opacity === 'number' ? formatValue(markProps.opacity) : undefined);
+    const tooltipDef = Array.isArray(enc.tooltip) ? enc.tooltip[0] : enc.tooltip;
+    const qPairs = [
+      ['pos', val(enc[catCh])],
+      colorValue ? ['fill', colorValue] : null,
+      opacityValue ? ['opacity', opacityValue] : null,
+      tooltipDef ? ['title', val(tooltipDef)] : null,
+      ['orientation', formatValue(orient)],
+      ['autoWidth', 'true'],
+    ].filter(Boolean);
+    return {statements, markExpr: `new VlQBar(${dataVar}, ${objectSource(qPairs)})`};
+  }
   const pairs = hasCatCompanion
     ? [
         [`${catCh}1`, val(enc[catCh])],
@@ -524,13 +568,24 @@ function renderLineOrArea(isArea) {
     // same (possibly aggregated/stacked) position -- just the single
     // value channel, not the y1/y2 pair, since a line/dot has no fill
     // extent of its own.
+    // `config.line.point`/`config.area.point`/`config.area.line` (e.g.
+    // layer_overlay.vl.json's own top-level `config: {line: {point:
+    // true}}`, no per-mark `point` property at all) set the SAME
+    // composite-mark defaults globally for every line/area mark that
+    // doesn't override them -- previously only ever read off the mark
+    // object itself (`markProps.point`/`.line`), silently ignoring an
+    // identical config-level default and drawing a plain line/area with
+    // no point markers at all.
+    const markConfig = (markProps.__config && markProps.__config[markProps.type]) || {};
+    const effectivePoint = markProps.point ?? markConfig.point;
+    const effectiveLine = markProps.line ?? markConfig.line;
     const overlayMarks = [];
-    if (isArea && (markProps.line || markProps.point)) {
+    if (effectivePoint || (isArea && effectiveLine)) {
       const overlayValuePairs = [
         [domainCh, val(enc[domainCh])],
         [valueCh, val(enc[valueCh])],
       ];
-      if (markProps.line) {
+      if (isArea && effectiveLine) {
         const linePairs = [
           ...overlayValuePairs,
           ...commonChannels(enc, 'line', markProps),
@@ -538,7 +593,7 @@ function renderLineOrArea(isArea) {
         ].filter(Boolean);
         overlayMarks.push(`Plot.line(${dataVar}, ${wrapTransforms(linePairs, transformPlan, stackPlan)})`);
       }
-      if (markProps.point) {
+      if (effectivePoint) {
         // `colorChannelName('point', markProps)` normally reads
         // `markProps.filled` to decide fill-vs-stroke for a genuine POINT
         // mark -- meaningless here, since `markProps` is this AREA
