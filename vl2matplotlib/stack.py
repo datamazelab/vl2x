@@ -68,27 +68,39 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
     if encoding.get("xOffset") or encoding.get("yOffset"):
         return None
 
-    # An explicit x2/y2 companion range on EITHER axis already fully
-    # specifies the mark's own shape -- nothing left to stack, full stop
-    # (`bar_ranged_not_binned.vl.json`'s own shape: `x`/`y` both `"b"`,
-    # `y2: {"field": "b2"}` -- an explicit, already-complete zero-baseline
-    # range). Bails out here, before the per-channel loop below even
-    # picks a `pos_channel`, rather than each channel only checking its
-    # OWN same-name companion (`x2` for `x`, `y2` for `y`): once `y` was
-    # excluded for having its own `y2`, the loop used to fall through and
-    # pick `x` as the "value" channel instead, even though `x` (with no
-    # `x2` of its own) looked stackable in isolation -- silently stacking
-    # a mark that was never meant to stack at all, since the real signal
-    # ("this shape already has an explicit range") lived on the *other*
-    # channel from the one it ended up choosing.
-    if encoding.get("x2") or encoding.get("y2"):
-        return None
+    # An explicit x2/y2 companion range on the CANDIDATE value channel
+    # itself already fully specifies the mark's own shape -- nothing left
+    # to stack there (`bar_ranged_not_binned.vl.json`'s own shape: `x`/`y`
+    # both `"b"`, `y2: {"field": "b2"}` -- an explicit, already-complete
+    # zero-baseline range). Both candidate-selection paths below already
+    # check this per-channel (`not encoding.get(f"{candidate}2")`), so
+    # this doesn't need a blanket "does EITHER x2 or y2 exist ANYWHERE"
+    # early exit here -- that used to also fire for a companion on the
+    # unrelated CATEGORY channel (e.g. stacked_area_binned.vl.json's own
+    # `x2` -- a BIN's own end edge, from prepare_encoding()'s real
+    # binning -- has nothing to do with whether `y`, the real value
+    # channel, should stack), silently skipping stacking whenever a
+    # binned category channel happened to carry its own companion.
 
     # The value axis is whichever of x/y is quantitative. `is_quantitative()`
     # (not a bare `type` check) so an `aggregate`/`bin`-implied quantitative
     # channel with no explicit `type` at all -- the same common shape fixed
     # elsewhere for bar orientation/width -- still triggers stacking.
     from .scales import is_quantitative
+
+    # A bare `{"aggregate": "count"}` (e.g. stacked_area_binned.vl.json's
+    # own `y: {aggregate: "count"}`, no `field` at all) is just as real a
+    # stackable value as a `sum`/`mean`-of-some-field aggregate -- `d.get
+    # ("field")` alone excluded it here entirely (no field to check),
+    # silently skipping stacking for any bare-count bar/area regardless of
+    # a real color/detail grouping alongside it (drawing every group's own
+    # count fully overlapping from zero instead). The aggregation step
+    # (marks.py's own binned-groupby path) always names a bare count
+    # aggregate's own output column literally "count" (mirroring vl2ggplot's
+    # identical convention), so that's used as `value_field` below whenever
+    # there's no real field of its own.
+    def _is_stackable_value(d):
+        return isinstance(d, dict) and is_quantitative(d) and (d.get("field") or d.get("aggregate") == "count")
 
     explicit_orient = mark.get("orient") if isinstance(mark, dict) else None
     pos_channel = None
@@ -105,12 +117,12 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
     if explicit_orient in ("horizontal", "vertical"):
         candidate = "x" if explicit_orient == "horizontal" else "y"
         d = encoding.get(candidate)
-        if isinstance(d, dict) and is_quantitative(d) and d.get("field") and not encoding.get(f"{candidate}2"):
+        if _is_stackable_value(d) and not encoding.get(f"{candidate}2"):
             pos_channel = candidate
     if pos_channel is None:
         for channel in ("y", "x"):
             d = encoding.get(channel)
-            if not isinstance(d, dict) or not is_quantitative(d) or not d.get("field"):
+            if not _is_stackable_value(d):
                 continue
             if encoding.get(f"{channel}2"):
                 continue
@@ -166,7 +178,7 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
 
     return {
         "pos_channel": pos_channel,
-        "value_field": encoding[pos_channel]["field"],
+        "value_field": encoding[pos_channel].get("field") or "count",
         "category_field": category_def["field"],
         "group_field": encoding[group_channel]["field"] if group_channel else None,
         "mode": mode,

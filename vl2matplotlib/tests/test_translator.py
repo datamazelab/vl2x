@@ -1520,3 +1520,35 @@ def test_an_explicit_encoding_order_overrides_the_default_domain_position_connec
     # so this also checks the real y sequence (3 -> 2 -> 1, decreasing).
     assert xdata == [5, 8, 10]
     assert ydata == [3, 2, 1]
+
+
+def test_a_binned_position_channel_with_a_count_aggregate_and_a_real_groupby_channel_stacks():
+    # stacked_area_binned.vl.json's own shape: `x: {bin: True, field:
+    # "v"}` + `y: {aggregate: "count"}` + `color: {field: "g"}`, `mark:
+    # "area"` -- two independent bugs. (1) `plan_stacking()`'s own
+    # eligibility check required a real `field` on the value channel,
+    # excluding a bare count aggregate (no field of its own) entirely,
+    # even though `prepare_encoding()` already resolves it to a real
+    # "count" column by the time stacking would run. (2) even after (1),
+    # a blanket "does x2 or y2 exist ANYWHERE" early exit fired for the
+    # BINNED CATEGORY channel's own x2 (its bin end edge, unrelated to
+    # whether the VALUE channel should stack), skipping stacking
+    # entirely -- every color group's own count was drawn fully
+    # overlapping from zero instead of stacked.
+    fig, code = render({
+        "data": {"values": [
+            {"v": 1, "g": "A"}, {"v": 1.2, "g": "A"}, {"v": 1.4, "g": "B"},
+            {"v": 5, "g": "A"}, {"v": 5.2, "g": "B"}, {"v": 5.4, "g": "B"},
+        ]},
+        "mark": "area",
+        "encoding": {
+            "x": {"bin": True, "field": "v"},
+            "y": {"aggregate": "count"},
+            "color": {"field": "g"},
+        },
+    }, ignore_unsupported=True)
+    assert "count_stack1" in code
+    assert "count_stack0" in code
+    ax = fig.axes[0]
+    # Two color groups, each its own fill_between polygon.
+    assert len(ax.collections) == 2

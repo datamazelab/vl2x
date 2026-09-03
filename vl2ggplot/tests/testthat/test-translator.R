@@ -569,3 +569,30 @@ test_that("an explicit encoding.order overrides geom_line()'s own default ascend
   expect_equal(line_data$x, c(5, 8, 10))
   expect_equal(line_data$y, c(3, 2, 1))
 })
+
+test_that("a binned position channel with a count aggregate and a real groupby channel draws a real stacked geom_area, not a single-color geom_histogram", {
+  # stacked_area_binned.vl.json's own shape: `x: {bin: true, field: "v"}`
+  # + `y: {aggregate: "count"}` + `color: {field: "g"}`, `mark: "area"` --
+  # the generic "binning + groupby conflict" fallback previously dropped
+  # the color grouping entirely and forced geom_histogram() -- a plain
+  # single-color BAR histogram, regardless of the real "area" mark type
+  # and completely ignoring the requested stacking.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"v": 1, "g": "A"}, {"v": 1.2, "g": "A"}, {"v": 1.4, "g": "B"},
+      {"v": 5, "g": "A"}, {"v": 5.2, "g": "B"}, {"v": 5.4, "g": "B"}
+    ]},
+    "mark": "area",
+    "encoding": {
+      "x": {"bin": true, "field": "v"},
+      "y": {"aggregate": "count"},
+      "color": {"field": "g"}
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "ggplot2::geom_area")
+  expect_false(grepl("ggplot2::geom_histogram", code))
+  expect_match(code, "fill = g")
+  r <- run_spec(spec)
+  expect_equal(length(unique(r$built$data[[1]]$fill)), 2, info = "expected both color groups to survive (not dropped)")
+})

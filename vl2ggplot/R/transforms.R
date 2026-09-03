@@ -645,6 +645,48 @@ plan_layer_data <- function(mark_type, encoding, var_name, ignore_unsupported = 
     return(plan)
   }
 
+  # A binned position channel combined with a real groupby channel and a
+  # `count` aggregate (e.g. stacked_area_binned.vl.json's own `x: {bin:
+  # true, field: "IMDB Rating"}` + `y: {aggregate: "count"}` + `color:
+  # {field: "Major Genre"}`) would otherwise fall into the generic
+  # "binning + groupby conflict" fallback just below, which drops the
+  # groupby channel entirely and forces geom_histogram() -- a plain
+  # single-color BAR histogram, regardless of the real mark type ("area"
+  # here) and completely ignoring the color grouping/stacking the spec
+  # actually asked for. Materializes the bin's own MIDPOINT as a real
+  # numeric column (the same pretty()/findInterval() binning the plain,
+  # no-aggregate case above already uses), then treats it as just another
+  # plain groupby key alongside color -- plan_explicit_aggregate()'s own
+  # generic dplyr::group_by()/summarise() already handles an arbitrary
+  # combination of groupby fields, so this needs no bespoke aggregation
+  # logic of its own; ggplot2's own geom_area()/geom_col() then stack by
+  # color/fill NATIVELY (their own default `position = "stack"`), no
+  # explicit cumsum needed at all here (unlike vl2d3/vl2matplotlib/
+  # vl2plot, none of which have ggplot2's own auto-stacking).
+  if (length(bin_keys) == 1 && length(agg_keys) == 1 && identical(encoding[[agg_keys[1]]]$aggregate, "count") &&
+      (length(plain_keys) > 0 || length(tu_only_keys) > 0) && mark_type %in% c("area", "bar")) {
+    k <- bin_keys[1]
+    def <- encoding[[k]]
+    max_bins <- if (is.list(def$bin) && !is.null(def$bin$maxbins)) def$bin$maxbins else 30
+    field <- field_ref(def$field)
+    out_field <- out_field_name(def$field, "bin_mid")
+    bin_statements <- c(
+      sprintf("%s <- dplyr::mutate(%s, .brks = list(pretty(%s, %d)))", var_name, var_name, field, max_bins),
+      sprintf(
+        "%s <- dplyr::mutate(%s, %s = (.brks[[1]][findInterval(%s, .brks[[1]], all.inside = TRUE)] + .brks[[1]][findInterval(%s, .brks[[1]], all.inside = TRUE) + 1]) / 2, .brks = NULL)",
+        var_name, var_name, render_name(unescape_field_path(out_field)), field, field
+      )
+    )
+    rewritten <- encoding
+    rewritten[[k]]$field <- out_field
+    rewritten[[k]]$bin <- NULL
+    rewritten[[k]]$type <- "quantitative"
+    plan <- plan_explicit_aggregate(rewritten, agg_keys, c(k, plain_keys, tu_only_keys), var_name, ignore_unsupported)
+    plan$statements <- c(bin_statements, plan$statements)
+    plan$aggregated <- TRUE
+    return(plan)
+  }
+
   # From here, at least one channel aggregates.
   plan_notes <- character(0)
   bin_group_conflict <- length(bin_keys) > 1 || (length(bin_keys) == 1 && (length(plain_keys) > 0 || length(tu_only_keys) > 0))
