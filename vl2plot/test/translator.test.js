@@ -1506,3 +1506,30 @@ test('a bar with both fill and stroke encoding channels draws a real border, not
     assert.equal(r.getAttribute('stroke'), 'white');
   }
 });
+
+test('an errorband mark draws a real interval band, with borders', async () => {
+  // errorband_2d_horizontal_color_encoding.vl.json's own shape:
+  // `mark: {type: "errorband", extent: "ci", borders: true}` -- Plot has
+  // no native equivalent for this composite mark's own per-category
+  // mean/stdev/stderr computation, and "errorband" wasn't even a
+  // recognized mark type at all -- the whole layer was silently skipped
+  // (--ignore-unsupported), drawing nothing whatsoever.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {year: 2000, mpg: 20}, {year: 2000, mpg: 24}, {year: 2000, mpg: 22},
+      {year: 2001, mpg: 25}, {year: 2001, mpg: 27}, {year: 2001, mpg: 29},
+    ]},
+    mark: {type: 'errorband', extent: 'ci', borders: true},
+    encoding: {
+      x: {field: 'year', type: 'ordinal'},
+      y: {field: 'mpg', type: 'quantitative'},
+      color: {value: 'black'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /Plot\.areaY/);
+  assert.match(code, /d3\.group/);
+  const areaPaths = [...document.querySelectorAll('path')].filter(p => p.getAttribute('fill') === 'black');
+  assert.equal(areaPaths.length, 1, 'expected exactly one filled band');
+  const borderPaths = [...document.querySelectorAll('path')].filter(p => p.getAttribute('stroke') === 'black');
+  assert.equal(borderPaths.length, 2, 'expected two border lines (lower and upper)');
+});

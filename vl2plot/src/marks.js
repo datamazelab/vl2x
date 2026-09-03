@@ -25,6 +25,13 @@ let barFixupCounter = 0;
 // unique within one generated file's own output.
 let ruleAggCounter = 0;
 
+// A fresh variable name per errorband mark's own precomputed per-category
+// summary-stat array (renderErrorband()'s own bypass of any Plot transform
+// -- there's no native Plot equivalent for this composite mark's own
+// mean/stdev/stderr/q1/q3 computation) -- only needs to be unique within
+// one generated file's own output.
+let errorBandCounter = 0;
+
 // A channel value ready to splice into a Plot options object -- a bare
 // field-name/literal expression already rendered as JS source by
 // `channelValue()`, or `undefined` (omit the key entirely) when the VL
@@ -979,6 +986,107 @@ function renderTrail(encoding, markProps, dataVar, ignoreUnsupported) {
   return {statements, markExpr: `new VlTrail(${dataVar}, ${optionsSrc})`};
 }
 
+// The (lower, upper) bound expressions for an errorbar/errorband's
+// `extent` -- computed from per-group summary stats already in scope
+// (mean/stdev/stderr/q1/q3, see renderErrorband() below). "ci" uses a
+// normal approximation (mean +/- 1.96*stderr) rather than Vega-Lite's own
+// bootstrapped resample of the raw values -- a reasonable, deterministic
+// stand-in, mirroring vl2d3's own identical errorExtentBounds().
+function errorExtentBounds(extent) {
+  if (extent === 'stdev') return {lower: 'mean - stdev', upper: 'mean + stdev'};
+  if (extent === 'ci') return {lower: 'mean - 1.96 * stderr', upper: 'mean + 1.96 * stderr'};
+  if (extent === 'iqr') return {lower: 'q1', upper: 'q3'};
+  return {lower: 'mean - stderr', upper: 'mean + stderr'}; // "stderr" -- Vega-Lite's own default extent.
+}
+
+// An "errorband" is Vega-Lite's own composite mark: a filled interval band
+// (mean +/- some extent, computed from RAW per-row values, not a pre-
+// aggregated field) connecting every distinct along-axis position, with
+// `mark.borders` optionally drawing its own two edges as separate outline
+// strokes (distinct from stroking the filled area itself, which would also
+// draw a stroke across the two connecting ends). Plot has no native
+// equivalent for this stat computation at all, so this precomputes the
+// per-category summary stats directly into a materialized array (mirroring
+// vl2d3's own identical renderErrorband(), adapted to Plot.areaY/line
+// instead of hand-rolled d3.area()/d3.line() paths) and draws it as an
+// ordinary `Plot.areaY`/`areaX` (y1/y2, a real range) plus an optional
+// `Plot.line` overlay per border. v1 scope: the (overwhelmingly common)
+// shape with a real along-axis category field, matching every corpus
+// example this project's own errorband specs actually use -- a genuinely
+// category-less band (a single reference interval spanning the whole
+// plot) is a documented gap, left unattempted (mirrors vl2d3's own
+// identical, separately-noted narrower fallback for that shape).
+function renderErrorband(encoding, markProps, dataVar, ignoreUnsupported) {
+  const {statements, encoding: enc} = prepareMark(encoding, dataVar, ignoreUnsupported, markProps);
+  const xIsValue = enc.x && enc.x.type === 'quantitative';
+  const yIsValue = enc.y && enc.y.type === 'quantitative';
+  if (!xIsValue && !yIsValue) {
+    if (ignoreUnsupported) {
+      return {
+        statements: [...statements, `// vl2plot: unsupported "errorband" orientation (no quantitative x or y encoding), skipped (--ignore-unsupported)`],
+        markExpr: null,
+      };
+    }
+    throw new Error('"errorband" mark requires a quantitative x or y encoding');
+  }
+  const valueCh = yIsValue ? 'y' : 'x';
+  const catCh = valueCh === 'y' ? 'x' : 'y';
+  const catDef = enc[catCh];
+  if (!hasField(catDef)) {
+    if (ignoreUnsupported) {
+      return {
+        statements: [...statements, `// vl2plot: unsupported "errorband" with no along-axis category channel, skipped (--ignore-unsupported)`],
+        markExpr: null,
+      };
+    }
+    throw new Error('Unsupported: an "errorband" mark with no along-axis category channel is not yet supported by vl2plot');
+  }
+  const valueField = enc[valueCh].field;
+  const catField = catDef.field;
+  const {lower, upper} = errorExtentBounds(markProps.extent);
+  const bandVar = `__errBand${++errorBandCounter}`;
+  statements.push(
+    `const ${bandVar} = Array.from(d3.group(${dataVar}, d => d[${JSON.stringify(catField)}]), ([, rows]) => {\n` +
+      `  const values = rows.map(d => d[${JSON.stringify(valueField)}]).filter(v => v != null);\n` +
+      `  const sorted = values.slice().sort(d3.ascending);\n` +
+      `  const mean = d3.mean(values);\n` +
+      `  const stdev = d3.deviation(values) ?? 0;\n` +
+      `  const stderr = stdev / Math.sqrt(values.length);\n` +
+      `  const q1 = d3.quantile(sorted, 0.25), q3 = d3.quantile(sorted, 0.75);\n` +
+      `  return {...rows[0], lower: ${lower}, upper: ${upper}};\n` +
+      `}).sort((a, b) => d3.ascending(a[${JSON.stringify(catField)}], b[${JSON.stringify(catField)}]));`
+  );
+
+  const colorDef = enc.color || enc.fill || enc.stroke;
+  const fillValue = val(colorDef) ?? (typeof markProps.color === 'string' ? literalChannelExpr(markProps.color) : undefined);
+  const fillOpacity = markProps.opacity !== undefined ? formatValue(markProps.opacity) : formatValue(0.3);
+  const fn = valueCh === 'y' ? 'areaY' : 'areaX';
+  const areaPairs = [
+    [catCh, formatValue(catField)],
+    [`${valueCh}1`, formatValue('lower')],
+    [`${valueCh}2`, formatValue('upper')],
+    fillValue !== undefined ? ['fill', fillValue] : null,
+    ['fillOpacity', fillOpacity],
+  ].filter(Boolean);
+  const overlayMarks = [];
+  if (markProps.borders) {
+    const bordersProps = typeof markProps.borders === 'object' ? markProps.borders : {};
+    const borderStroke = bordersProps.color ? formatValue(bordersProps.color) : (fillValue ?? formatValue('#4c78a8'));
+    const borderOpacity = bordersProps.opacity !== undefined ? formatValue(bordersProps.opacity) : formatValue(1);
+    for (const bound of ['lower', 'upper']) {
+      const linePairs = [
+        [catCh, formatValue(catField)],
+        [valueCh, formatValue(bound)],
+        ['stroke', borderStroke],
+        ['strokeOpacity', borderOpacity],
+      ];
+      overlayMarks.push(`Plot.line(${bandVar}, ${objectSource(linePairs)})`);
+    }
+  }
+  const markExpr = [`Plot.${fn}(${bandVar}, ${objectSource(areaPairs)})`, ...overlayMarks].join(', ');
+  return {statements, markExpr};
+}
+
 const RENDERERS = {
   point: renderDot,
   circle: renderDot,
@@ -993,6 +1101,7 @@ const RENDERERS = {
   boxplot: renderBoxplot,
   arc: renderArc,
   trail: renderTrail,
+  errorband: renderErrorband,
 };
 
 export function renderMark(mark, encoding, dataVar, ignoreUnsupported = false, facetChannels, config) {

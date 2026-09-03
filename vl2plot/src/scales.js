@@ -126,6 +126,23 @@ export function buildScaleOptions(def, ctx = {}) {
     }
     if (Array.isArray(scale.domain)) out.domain = scale.domain;
     if (Array.isArray(scale.range)) out.range = scale.range;
+    // Observable Plot's own `inferRadialRange()` (a real library bug,
+    // `scales/quantitative.js`) computes its own AUTO-inferred range as
+    // `3 * Math.sqrt(domain[0] / h25)` whenever no explicit `range` is
+    // given -- `Math.sqrt()` of a negative ratio is NaN the moment
+    // `domain[0]` is negative (e.g. dynamic_color_legend.vl.json's own
+    // `size: {field: "precipitation", scale: {domain: [-1, 50]}}`, a
+    // deliberate small negative padding so a zero-precipitation dot
+    // still gets a small visible radius, not a literal zero). Confirmed
+    // empirically: a NaN range endpoint makes EVERY dot's own scaled
+    // radius NaN, and Plot's own per-channel `finite` check then
+    // silently excludes every row -- drawing NOTHING at all, not just a
+    // wrong size. An explicit range (matching Plot's own un-negative-
+    // domain convention: 0 up to a capped ~20px) sidesteps the buggy
+    // auto-inference path entirely.
+    if (ctx.channel === 'r' && !out.range && Array.isArray(out.domain) && typeof out.domain[0] === 'number' && out.domain[0] < 0) {
+      out.range = [0, 20];
+    }
     if (scale.scheme) {
       Object.assign(out, mapScheme(scale.scheme, ctx.ignoreUnsupported));
     }
