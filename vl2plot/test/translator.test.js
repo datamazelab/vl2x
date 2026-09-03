@@ -1533,3 +1533,33 @@ test('an errorband mark draws a real interval band, with borders', async () => {
   const borderPaths = [...document.querySelectorAll('path')].filter(p => p.getAttribute('stroke') === 'black');
   assert.equal(borderPaths.length, 2, 'expected two border lines (lower and upper)');
 });
+
+test('a size/r scale with a negative domain minimum avoids Plot\'s own inferRadialRange NaN bug', async () => {
+  // dynamic_color_legend.vl.json's own shape: `size: {field:
+  // "precipitation", scale: {domain: [-1, 50]}}` -- a deliberate small
+  // negative padding so a zero-precipitation dot still gets a small
+  // visible radius, not a literal zero. Observable Plot's own
+  // `inferRadialRange()` (scales/quantitative.js) computes its own
+  // AUTO-inferred range as `3 * Math.sqrt(domain[0] / h25)` whenever no
+  // explicit `range` is given -- `Math.sqrt()` of a negative ratio is
+  // NaN the instant `domain[0]` is negative, making EVERY dot's own
+  // scaled radius NaN and silently excluding every row from the render
+  // (confirmed empirically against a real, minimal Plot.plot() call) --
+  // not a vl2plot bug directly, but a real Plot library bug this project
+  // needs to route around by supplying an explicit range itself.
+  const {document, code} = await renderSpec({
+    data: {values: [{x: 1, y: 1, p: 0}, {x: 2, y: 2, p: 5}, {x: 3, y: 3, p: 20}]},
+    mark: 'point',
+    encoding: {
+      x: {field: 'x', type: 'quantitative'},
+      y: {field: 'y', type: 'quantitative'},
+      size: {field: 'p', type: 'quantitative', scale: {domain: [-1, 50]}},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /r: \{domain: \[-1, 50\], range: \[0, 20\]/);
+  const circles = [...document.querySelectorAll('circle')].filter(c => !c.closest('[class*="swatch"]'));
+  assert.equal(circles.length, 3, 'expected one circle per row, not zero');
+  for (const c of circles) {
+    assert.ok(Number.isFinite(Number(c.getAttribute('r'))), `expected a finite radius, got ${c.getAttribute('r')}`);
+  }
+});
