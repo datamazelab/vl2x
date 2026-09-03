@@ -924,6 +924,35 @@ def test_area_orientation_flips_when_x_is_the_value_channel():
     assert len(fig.axes[0].collections) == 1
 
 
+def test_a_stacked_area_with_a_color_group_missing_data_at_some_category_has_no_gap():
+    # stacked_area_ordinal.vl.json's own shape: an aggregated, color-grouped
+    # area chart where one color group ("b") has no row at all for one x
+    # category ("2") -- a real, common shape (e.g. a car model only sold in
+    # some years). Without reindexing the full category x group grid to a
+    # real zero row first, that group's own fill_between() polygon would
+    # simply skip x=2 and draw a straight line directly from x=1 to x=3,
+    # a visible tear/gap in the stacked area rather than a flat zero-height
+    # wedge.
+    fig, code = render({
+        "data": {"values": [
+            {"x": 1, "g": "a", "v": 1}, {"x": 2, "g": "a", "v": 1}, {"x": 3, "g": "a", "v": 1},
+            {"x": 1, "g": "b", "v": 5}, {"x": 3, "g": "b", "v": 5},
+        ]},
+        "mark": "area",
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"aggregate": "sum", "field": "v"},
+            "color": {"field": "g", "type": "nominal"},
+        },
+    })
+    assert ".reindex(" in code
+    ax = fig.axes[0]
+    assert len(ax.collections) == 2
+    for coll in ax.collections:
+        xs = coll.get_paths()[0].vertices[:, 0]
+        assert xs.min() <= 1 and xs.max() >= 3, "each color group's own polygon must span the full x domain, not stop short where its data was missing"
+
+
 def test_dodge_and_stack_combine_when_color_differs_from_xoffset():
     # bar_grouped_stacked.vl.json's own shape: dodge by one field, stack by
     # a genuinely different color field within each dodge slot.

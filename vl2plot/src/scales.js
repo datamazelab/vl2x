@@ -154,6 +154,43 @@ export function buildScaleOptions(def, ctx = {}) {
     if (scale.nice === false) out.nice = false;
   }
 
+  // An explicit `type: "ordinal"`/`"nominal"` on the CHANNEL itself (as
+  // opposed to an explicit `scale.type` override, already handled above)
+  // is Vega-Lite's own signal that this field should be treated as
+  // DISCRETE regardless of what its own raw values happen to look like --
+  // e.g. stacked_area_ordinal.vl.json's own `color: {field: "Cylinders",
+  // type: "ordinal"}`: "Cylinders" holds plain numbers (3, 4, 5, 6, 8),
+  // and with no explicit `scale.type` override at all, Plot's own
+  // auto-inference reads a numeric-valued color channel as CONTINUOUS
+  // (a gradient legend, "Q" in Vega-Lite's own type vocabulary), silently
+  // discarding the spec's own explicit "O" override. Only fires when
+  // nothing above (an explicit `scale.type`) already decided this, and
+  // only for `color`/`opacity`/`r`/`symbol` -- NOT `x`/`y`, which have
+  // their own separate, mark-aware position-scale handling elsewhere
+  // (`prepare.js`'s `resolvePositionScale()`) that already knows when a
+  // category axis needs Plot's own `band` scale instead of a plain
+  // `ordinal` one (confirmed empirically: forcing `ordinal` here for a
+  // bar/tick's own x/y throws "scale incompatible with channel: ordinal
+  // !== band" outright).
+  if (ctx.channel !== 'x' && ctx.channel !== 'y' && !out.type && (def.type === 'ordinal' || def.type === 'nominal')) {
+    out.type = 'ordinal';
+    // Plot's own "no scheme given" default only produces its clean
+    // qualitative palette (observable10 -- "#4269d0", "#efb118", ...)
+    // when it inferred discreteness ENTIRELY on its own, from string-
+    // valued data; forcing `type: "ordinal"` ourselves onto NUMERIC-
+    // valued data (the whole reason this branch exists at all) leaves
+    // Plot's own default color-scheme selection defaulting instead to a
+    // scattered set of colors that reads as an accidental gradient, not
+    // a clean categorical palette (confirmed empirically). Restores
+    // Plot's own natural default explicitly, matching the same palette
+    // every other ordinal/nominal color chart in this project already
+    // gets automatically -- only for `color` specifically, and only
+    // when nothing above already gave a real scheme of its own.
+    if (ctx.channel === 'color' && !out.scheme && !out.range) {
+      out.scheme = 'observable10';
+    }
+  }
+
   // `sort: "descending"`/an explicit array -- meaningful for an ordinal
   // position/color channel's own domain order. `sort: null` (Vega-Lite's
   // own "keep the data's natural order" request) is handled by

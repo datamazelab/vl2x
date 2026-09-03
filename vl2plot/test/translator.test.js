@@ -1563,3 +1563,34 @@ test('a size/r scale with a negative domain minimum avoids Plot\'s own inferRadi
     assert.ok(Number.isFinite(Number(c.getAttribute('r'))), `expected a finite radius, got ${c.getAttribute('r')}`);
   }
 });
+
+test('an explicit type: "ordinal" on a numeric-valued color field forces a discrete scale, not a gradient', async () => {
+  // stacked_area_ordinal.vl.json's own shape: `color: {field:
+  // "Cylinders", type: "ordinal"}` -- "Cylinders" holds plain numbers
+  // (3, 4, 5, 6, 8), and with no explicit `scale.type` override at all,
+  // Plot's own auto-inference previously read a numeric-valued color
+  // channel as CONTINUOUS (a gradient legend, "Q" in Vega-Lite's own
+  // type vocabulary), silently discarding the spec's own explicit "O"
+  // override. Fixing just the scale `type` alone isn't enough either --
+  // Plot's own default color-SCHEME selection only produces its clean
+  // qualitative palette when it inferred discreteness entirely on its
+  // own (from string-valued data); forcing `type: "ordinal"` here onto
+  // numeric data left Plot defaulting to a scattered, gradient-looking
+  // set of colors instead of a clean categorical one.
+  const {document, code} = await renderSpec({
+    data: {values: [{x: 1, y: 1, c: 3}, {x: 2, y: 2, c: 4}, {x: 3, y: 3, c: 5}]},
+    mark: 'point',
+    encoding: {
+      x: {field: 'x', type: 'quantitative'},
+      y: {field: 'y', type: 'quantitative'},
+      color: {field: 'c', type: 'ordinal'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /color: \{type: "ordinal", scheme: "observable10"/);
+  const circles = [...document.querySelectorAll('circle')].filter(c => !c.closest('[class*="swatch"]'));
+  // A plain (unfilled) "point" mark's own color naturally maps to
+  // "stroke" (Plot.dot's own default: hollow, ring-only), not "fill".
+  const strokes = new Set(circles.map(c => c.getAttribute('stroke')));
+  assert.equal(strokes.size, 3, 'expected 3 distinct stroke colors');
+  assert.ok([...strokes].every(s => /^#[0-9a-f]{6}$/i.test(s)), `expected clean hex colors (Plot's own observable10 palette), got ${[...strokes]}`);
+});

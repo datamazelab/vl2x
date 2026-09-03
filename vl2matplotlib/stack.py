@@ -182,6 +182,7 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
         "category_field": category_def["field"],
         "group_field": encoding[group_channel]["field"] if group_channel else None,
         "mode": mode,
+        "mark_type": mark_type,
     }
 
 
@@ -190,6 +191,7 @@ def render_stacking_statements(data_var: str, plan: dict) -> list[str]:
     cat = plan["category_field"]
     group = plan["group_field"]
     mode = plan.get("mode", "zero")
+    mark_type = plan.get("mark_type")
     start_col = f"{field}_stack0"
     end_col = f"{field}_stack1"
     # No color/detail group at all (see the module docstring) -- sort by
@@ -197,7 +199,31 @@ def render_stacking_statements(data_var: str, plan: dict) -> list[str]:
     # relative (stable-sort) order rather than a second key that doesn't
     # exist.
     sort_keys = [cat, group] if group else [cat]
-    stmts = [f"{data_var} = {data_var}.sort_values({sort_keys!r}).reset_index(drop=True)"]
+    stmts = []
+    if group and mark_type == "area":
+        # An area mark's own per-group polygon (marks.py's draw loop)
+        # connects only the rows that group actually has -- when the
+        # aggregate step above produced no row at all for some (category,
+        # group) combination (e.g. a car model with only 3 cylinders
+        # wasn't sold in every year -- stacked_area_ordinal.vl.json's own
+        # shape), the missing category position isn't drawn as a real
+        # zero-height segment there, it's simply ABSENT, so fill_between()
+        # draws a straight line directly between the nearest two
+        # categories that DO exist for that group -- visible as a jagged
+        # tear/gap slicing through the stacked area (reported as "white
+        # space between layers"), not the flat zero-height wedge a real
+        # stacked area shows for a category a group has no data for.
+        # Reindexing to the full category x group cross product first
+        # (filling each missing combination's own value with 0) gives
+        # every group a real row at every category position, so both the
+        # zero-baseline cumsum below and the later per-group draw loop see
+        # a complete, gapless grid.
+        stmts.append(
+            f"{data_var} = {data_var}.set_index([{cat!r}, {group!r}])"
+            f".reindex(pd.MultiIndex.from_product([{data_var}[{cat!r}].unique(), {data_var}[{group!r}].unique()], "
+            f"names=[{cat!r}, {group!r}]), fill_value=0).reset_index()"
+        )
+    stmts.append(f"{data_var} = {data_var}.sort_values({sort_keys!r}).reset_index(drop=True)")
 
     if mode == "normalize":
         # Normalize the per-row *value* first (each category's own rows
