@@ -76,7 +76,22 @@ export function planStack(markType, encoding, orientation) {
 
   const stackSetting = valueDef.stack;
   if (!implicit && stackSetting === undefined) return null;
-  if (stackSetting === false || stackSetting === null) return null;
+  if (stackSetting === false || stackSetting === null) {
+    // An EXPLICIT `stack: null`/`false` (e.g. bar_layered_transparent.vl
+    // .json's own `y: {aggregate: "sum", field: "people", stack: null}`,
+    // paired with a `color` field and `opacity: {value: 0.7}` -- meant to
+    // draw fully-overlapping, translucent bars) isn't just "this module
+    // adds no Plot.stackY/stackX wrapper of its own": `Plot.barY`/`barX`
+    // ALWAYS call `maybeStackY`/`maybeStackX` INTERNALLY (confirmed from
+    // Plot's own source, transforms/stack.js) whenever both `y1`/`y2` (or
+    // `x1`/`x2`) are left undefined -- meaning a bare `y: <value>` pair
+    // gets silently auto-stacked by Plot ITSELF regardless of whether
+    // this module wraps the call in its own `Plot.stackY` or not.
+    // `disabled: true` tells the mark renderer to explicitly supply its
+    // own `y1`/`y2` (a real, zero-baselined, unstacked range) instead of
+    // a bare `y`, the only way to bypass Plot's own built-in default.
+    return {disabled: true};
+  }
   const offset = stackSetting === 'normalize' || stackSetting === 'center' ? stackSetting : null;
 
   return {fn: valueChannel === 'x' ? 'stackX' : 'stackY', offset};

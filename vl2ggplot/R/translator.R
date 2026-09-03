@@ -653,6 +653,24 @@ prepare_unit <- function(node, emitter, hint, inherited_data_var = NULL, inherit
     quantitative_coercion <- render_quantitative_coercion(work_var, collect_quantitative_fields(encoding_effective, node$transform %||% list()))
     if (length(quantitative_coercion)) emit(emitter, quantitative_coercion)
 
+    # An explicit `encoding.order` (e.g. connected_scatterplot.vl.json's
+    # own `order: {field: "year"}`, with BOTH x/y quantitative -- a
+    # connected scatterplot deliberately connects points in chronological
+    # order, not ascending-x order) always wins over `geom_line()`'s own
+    # DEFAULT connection order -- ggplot2's `geom_line()` (unlike
+    # `geom_path()`) always sorts by the x aesthetic internally,
+    # regardless of the data's own row order, so this ALSO needs
+    # render_geom_layer_code()'s own matching switch to `geom_path()`
+    # (below) to actually take effect -- sorting the rows alone wouldn't
+    # be enough, `geom_line()` would just re-sort them back to ascending-x
+    # order right after. Previously never read at all, so a connected
+    # scatterplot's own path zigzagged in ascending-x order instead of
+    # its real chronology.
+    order_field <- if (mark_type0 %in% c("line", "trail", "area")) encoding_effective$order$field else NULL
+    if (!is.null(order_field)) {
+      emit(emitter, sprintf("%s <- dplyr::arrange(%s, %s)", work_var, work_var, render_name(unescape_field_path(order_field))))
+    }
+
     if (mark_type0 %in% c("line", "trail", "area") && !has_aggregating_channel(encoding_effective, node$transform)) {
       continuity_fields <- collect_path_continuity_fields(mark_type0, encoding_effective, node$transform)
       if (length(continuity_fields)) {

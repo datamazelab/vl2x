@@ -984,6 +984,16 @@ render_geom_layer_code <- function(mark, encoding, data_arg, plan, ignore_unsupp
     fixed[["position"]] <- fixed[["position"]] %||% '"fill"'
   }
   fn <- if (isTRUE(plan$use_histogram)) "ggplot2::geom_histogram" else geom_function_name(mark_type, mark_props, has_y = !is.null(aes_pairs[["y"]]), ignore_unsupported, .notes)
+  # `encoding$order$field` (e.g. connected_scatterplot.vl.json's own
+  # `order: {field: "year"}`) needs `geom_path()` instead of the default
+  # `geom_line()` -- `geom_line()` always sorts by its own x aesthetic
+  # internally, discarding any other row order (prepare_unit()'s own
+  # matching `dplyr::arrange()` pre-sort, translator.R, would otherwise
+  # be immediately undone). `geom_path()` draws in the data's own existing
+  # row order instead, with an otherwise identical aes()/style surface.
+  if (identical(fn, "ggplot2::geom_line") && !is.null(encoding$order$field)) {
+    fn <- "ggplot2::geom_path"
+  }
   main_call <- build_call(fn, aes_pairs, fixed, data_arg)
   # A synthesized constant `""` position (just above, the 1D-strip
   # fallback) has no real data-driven meaning at all -- left un-hidden,

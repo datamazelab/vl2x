@@ -8,7 +8,7 @@
 
 import {formatValue} from './literals.js';
 import {channelValue, effectiveType, isQuantitative, isTemporal, hasField, literalChannelExpr} from './encoding.js';
-import {applyTimeUnits, planTransform} from './prepare.js';
+import {applyTimeUnits, resolveNestedFieldPaths, planTransform} from './prepare.js';
 import {plotReducer, aggregateExpr} from './aggops.js';
 import {planStack} from './stack.js';
 
@@ -146,13 +146,36 @@ function injectConstantChannel(optionsSrc, channel, indent = 2) {
 // every row its own singleton group instead of one bar per age.
 const UNGROUPABLE_STYLE_CHANNELS = new Set(['opacity', 'r', 'symbol', 'title']);
 
+// A pair's own already-rendered value SOURCE (not the channel def -- by
+// this point it's plain JS text) is a genuine per-row FIELD reference only
+// when it's a bare, unwrapped double-quoted string (`channelValue()`'s own
+// rendering for a `.field`-bound channel, literals.js's `formatValue()`
+// always double-quotes) -- a literal `.value`/`.datum` (e.g.
+// bar_layered_transparent.vl.json's own `opacity: {"value": 0.7}`) renders
+// as a bare number/boolean, or (for a literal STRING specifically)
+// `literalChannelExpr()`'s own `() => "..."` wrapper -- never a bare
+// quoted string on its own. Used to narrow UNGROUPABLE_STYLE_CHANNELS
+// filtering (below) to only the case it actually protects against: a
+// REAL per-row field varying with the data, which Plot's own group/bin
+// transform would otherwise silently treat as an extra implicit groupby
+// key. A constant carries no such risk and was being dropped for no
+// reason (confirmed against bar_layered_transparent.vl.json's own
+// "opaque, not translucent, overlapping bars" symptom: `opacity: {value:
+// 0.7}` on an aggregated, color-grouped bar never reached the generated
+// Plot.barY call at all).
+function isFieldReferenceSource(src) {
+  return /^"([^"\\]|\\.)*"$/.test(src);
+}
+
 // Builds the mark's own options-object JS source from `pairs` and wraps it
 // in this mark's own bin/group transform (from `prepare.js`) and/or
 // implicit stack transform (from `stack.js`), innermost (bin/group) first
 // -- matches the composition order verified empirically (`Plot.stackY(Plot.
 // groupX(outputs, options))`).
 function wrapTransforms(pairs, transformPlan, stackPlan, indent = 2) {
-  const filteredPairs = transformPlan ? pairs.filter(([k]) => !UNGROUPABLE_STYLE_CHANNELS.has(k)) : pairs;
+  const filteredPairs = transformPlan
+    ? pairs.filter(([k, v]) => !UNGROUPABLE_STYLE_CHANNELS.has(k) || !isFieldReferenceSource(v))
+    : pairs;
   let src = objectSource(filteredPairs, indent);
   if (transformPlan) {
     if (transformPlan.needsConstantKey) {
@@ -160,7 +183,13 @@ function wrapTransforms(pairs, transformPlan, stackPlan, indent = 2) {
     }
     src = `Plot.${transformPlan.fn}(${formatValue(transformPlan.outputs)}, ${src})`;
   }
-  if (stackPlan) {
+  // `stackPlan.disabled` (an explicit `stack: null`/`false`, stack.js's
+  // own doc comment): no Plot.stackY/stackX wrapper at all -- the caller
+  // (renderBar()) is expected to have already supplied its own literal
+  // `y1`/`y2` (or `x1`/`x2`) pair directly in `pairs`, the only way to
+  // stop `Plot.barY`/`barX` from auto-stacking via their own internal
+  // default (see stack.js).
+  if (stackPlan && !stackPlan.disabled) {
     src = stackPlan.offset
       ? `Plot.${stackPlan.fn}(${formatValue({offset: stackPlan.offset})}, ${src})`
       : `Plot.${stackPlan.fn}(${src})`;
@@ -168,11 +197,15 @@ function wrapTransforms(pairs, transformPlan, stackPlan, indent = 2) {
   return src;
 }
 
-// Shared per-mark preamble: timeUnit derivation (data statements + a
-// rewritten encoding with plain field names only) and orientation.
+// Shared per-mark preamble: nested-field-path derivation, timeUnit
+// derivation (both: data statements + a rewritten encoding with plain,
+// already-flat field names only) and orientation. Nested-path resolution
+// runs FIRST so a channel combining both (a nested path with its own
+// timeUnit) hands applyTimeUnits() an already-flat field to derive from.
 function prepareMark(encoding, dataVar, ignoreUnsupported, markProps) {
-  const {statements, encoding: enc} = applyTimeUnits(encoding, dataVar, ignoreUnsupported);
-  return {statements, encoding: enc, orient: orientation(enc, markProps && markProps.orient)};
+  const nested = resolveNestedFieldPaths(encoding, dataVar);
+  const {statements: timeUnitStatements, encoding: enc} = applyTimeUnits(nested.encoding, dataVar, ignoreUnsupported);
+  return {statements: [...nested.statements, ...timeUnitStatements], encoding: enc, orient: orientation(enc, markProps && markProps.orient)};
 }
 
 // Vega-Lite's `sort: {"op": ..., "field": ..., "order": ...}` form (sort
@@ -210,6 +243,22 @@ function commonChannels(encoding, markType, markProps) {
   // all) silently rendered with Plot's own default styling instead.
   const colorValue = val(colorDef) ?? (typeof markProps.color === 'string' ? formatValue(markProps.color) : undefined);
   const opacityValue = val(encoding.opacity) ?? (typeof markProps.opacity === 'number' ? formatValue(markProps.opacity) : undefined);
+  // A genuinely SEPARATE `encoding.stroke` (as opposed to `stroke` merely
+  // being used as this mark's own PRIMARY color fallback above, via
+  // `colorDef`'s own OR-chain, for a mark type whose natural color
+  // channel already IS stroke -- line/rule/tick/an unfilled point) is a
+  // real, independent border color -- e.g.
+  // bar_multi_values_per_categories.vl.json's own `fill: {value:
+  // "steelblue"}` + `stroke: {value: "white"}`, a white border separating
+  // adjacent stacked segments. `Plot.barY`/`areaY`/`rect`/`dot` all
+  // accept BOTH `fill` and `stroke` at once -- previously never emitted
+  // for any of these mark types at all: `colorDef` only ever falls back
+  // to `stroke` when NEITHER `color` nor `fill` is set, so a spec giving
+  // both silently dropped its own `stroke` channel entirely.
+  const strokeValue =
+    colorCh !== 'stroke'
+      ? val(encoding.stroke) ?? (typeof markProps.stroke === 'string' ? formatValue(markProps.stroke) : undefined)
+      : undefined;
   // An explicit `fx`/`fy` channel on the mark itself, matching the facet
   // this mark's own view is nested inside (threaded down from
   // translateFacet() via renderMark()'s own `facetChannels` param, spliced
@@ -238,6 +287,7 @@ function commonChannels(encoding, markType, markProps) {
   // the frame instead of being cut off at it.
   return [
     [colorCh, colorValue],
+    ['stroke', strokeValue],
     ['opacity', opacityValue],
     ['z', val(encoding.detail)],
     ['title', val(tooltipDef)],
@@ -418,21 +468,8 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
     ].filter(Boolean);
     return {statements, markExpr: `new VlQBar(${dataVar}, ${objectSource(qPairs)})`};
   }
-  const pairs = hasCatCompanion
-    ? [
-        [`${catCh}1`, val(enc[catCh])],
-        [catCompanionCh, val(enc[catCompanionCh])],
-        [valueCh, val(enc[valueCh])],
-        ...commonChannels(enc, 'bar', markProps),
-      ]
-    : [
-        ...catChannelPairs(enc, catCh),
-        [valueCh, val(enc[valueCh])],
-        [valueCompanionCh, val(enc[valueCompanionCh])],
-        ['sort', sortMarkOption(enc, catCh, valueCh)],
-        ...commonChannels(enc, 'bar', markProps),
-      ];
-  const transformPlan = planTransform(enc, ignoreUnsupported);
+  const stackPlan = planStack('bar', enc, orient);
+  let transformPlan = planTransform(enc, ignoreUnsupported);
   // Plot's `groupX`/`groupY` transforms always treat their own axis as
   // ordinal/band, even when the grouping keys happen to be numbers -- that
   // conflicts outright with a continuous bin-interval category axis
@@ -446,7 +483,52 @@ function renderBar(encoding, markProps, dataVar, ignoreUnsupported) {
     }
     throw new Error('Unsupported: an aggregated value on a bar with a continuous bin-interval category axis is not yet supported by vl2plot');
   }
-  const stackPlan = planStack('bar', enc, orient);
+  // An EXPLICIT `stack: null`/`false` (stackPlan.disabled, stack.js's own
+  // doc comment) needs its own literal `y1`/`y2` (or `x1`/`x2`) pair
+  // supplied directly here -- a bare `valueCh` pair would otherwise still
+  // get silently auto-stacked by `Plot.barY`/`barX` THEMSELVES (their own
+  // built-in default whenever y1/y2 are both left undefined, regardless
+  // of whether this module's own Plot.stackY/stackX wrapper is applied),
+  // the actual mechanism `wrapTransforms()`'s own `stackPlan.disabled`
+  // check exists to route around. When the value channel is ALSO
+  // aggregated (transformPlan wraps the mark in `Plot.groupX`/`groupY`),
+  // a plain extra `y1: 0` pair doesn't survive at all -- confirmed
+  // empirically that Plot's own group transform silently DROPS any
+  // option key that isn't the position channel it groups by, z/fill/
+  // stroke, or one of its own declared `outputs` reducers. `y1` has to be
+  // declared as its OWN output reducer (any reducer works, since its
+  // real per-row input is a constant `() => 0` literal accessor --
+  // confirmed empirically with `"first"`) for it to survive into the
+  // final rendered mark at all.
+  const valuePairs =
+    stackPlan && stackPlan.disabled
+      ? transformPlan
+        ? (() => {
+            transformPlan = {...transformPlan, outputs: {...transformPlan.outputs, [`${valueCh}1`]: 'first'}};
+            return [
+              [`${valueCh}1`, '() => 0'],
+              [valueCh, val(enc[valueCh])],
+            ];
+          })()
+        : [
+            [`${valueCh}1`, '0'],
+            [valueCh, val(enc[valueCh])],
+          ]
+      : [[valueCh, val(enc[valueCh])]];
+  const pairs = hasCatCompanion
+    ? [
+        [`${catCh}1`, val(enc[catCh])],
+        [catCompanionCh, val(enc[catCompanionCh])],
+        ...valuePairs,
+        ...commonChannels(enc, 'bar', markProps),
+      ]
+    : [
+        ...catChannelPairs(enc, catCh),
+        ...valuePairs,
+        [valueCompanionCh, val(enc[valueCompanionCh])],
+        ['sort', sortMarkOption(enc, catCh, valueCh)],
+        ...commonChannels(enc, 'bar', markProps),
+      ];
   const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
   const fn = orient === 'horizontal' ? 'barX' : 'barY';
   // A dodged/grouped bar's own sub-band (xOffset/yOffset, turned into a
@@ -509,9 +591,18 @@ function renderLineOrArea(isArea) {
     // channel `size` still takes precedence when present.
     const staticStrokeWidth = markProps.strokeWidth ?? markProps.size;
     const strokeWidthValue = val(enc.size) ?? (staticStrokeWidth != null ? formatValue(staticStrokeWidth) : undefined);
+    // An EXPLICIT `stack: null`/`false` on an area with no y2 companion
+    // of its own (stackPlan.disabled, stack.js's own doc comment) needs
+    // an explicit literal `y1: 0` here too -- same underlying reason as
+    // renderBar()'s own identical fix: `Plot.areaY`/`areaX` ALSO call
+    // `maybeStackY`/`maybeStackX` internally (Plot's own source,
+    // marks/area.js), auto-stacking a bare `y` pair regardless of
+    // whether this module's own Plot.stackY wrapper is applied.
+    const areaStackPlan = isArea ? planStack('area', enc, orient) : null;
+    const areaStackDisabled = Boolean(areaStackPlan && areaStackPlan.disabled && !enc[companionCh]);
     const pairs = [
       [domainCh, val(enc[domainCh])],
-      isArea && enc[companionCh] ? [`${valueCh}1`, val(enc[companionCh])] : null,
+      isArea && enc[companionCh] ? [`${valueCh}1`, val(enc[companionCh])] : areaStackDisabled ? [`${valueCh}1`, '0'] : null,
       isArea && enc[companionCh] ? [`${valueCh}2`, val(enc[valueCh])] : [valueCh, val(enc[valueCh])],
       ...commonChannels(enc, isArea ? 'area' : 'line', markProps),
       !isArea ? ['strokeWidth', strokeWidthValue] : null,
@@ -554,7 +645,7 @@ function renderLineOrArea(isArea) {
       }
       transformPlan = {...transformPlan, outputs: remappedOutputs};
     }
-    const stackPlan = planStack(isArea ? 'area' : 'line', enc, orient);
+    const stackPlan = isArea ? areaStackPlan : null;
     const wrapped = wrapTransforms(pairs, transformPlan, stackPlan);
     const fn = isArea ? (orient === 'horizontal' ? 'areaX' : 'areaY') : 'line';
     // Vega-Lite's composite-mark shorthand for an area: `mark: {"type":

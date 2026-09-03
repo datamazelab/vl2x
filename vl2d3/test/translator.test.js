@@ -506,6 +506,28 @@ test('config.line.point (a top-level default, not a per-mark property) overlays 
   for (const c of circles) assert.equal(c.getAttribute('fill'), 'darkred');
 });
 
+test('an explicit encoding.order overrides the default domain-position connection order', async () => {
+  // connected_scatterplot.vl.json's own shape: `x`/`y` both quantitative
+  // (a scatterplot, not a normal domain-ordered line), `order: {field:
+  // "year"}` -- a connected scatterplot deliberately connects points in
+  // chronological order, not ascending-x order. `order` was never read
+  // at all, so the path zigzagged in ascending-x order regardless of the
+  // real chronology.
+  const {code} = await renderSpec({
+    data: {values: [
+      {miles: 10, gas: 1, year: 2003}, {miles: 5, gas: 3, year: 2001}, {miles: 8, gas: 2, year: 2002},
+    ]},
+    mark: {type: 'line', point: true},
+    encoding: {
+      x: {field: 'miles', type: 'quantitative'},
+      y: {field: 'gas', type: 'quantitative'},
+      order: {field: 'year'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /d3\.ascending\(a\["year"\], b\["year"\]\)/);
+  assert.doesNotMatch(code, /d3\.ascending\(a\["miles"\], b\["miles"\]\)/);
+});
+
 test('facet throws a clear, named error', async () => {
   const {vegaLiteToD3Code} = await import('../src/index.js');
   assert.throws(

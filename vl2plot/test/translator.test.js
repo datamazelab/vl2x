@@ -1400,3 +1400,109 @@ test('config.line.point (a top-level default, not a per-mark property) still ove
   const circles = [...document.querySelectorAll('circle')].filter(c => !c.closest('[class*="swatch"]'));
   assert.equal(circles.length, 2, 'expected one point marker per distinct x, from the config-level default');
 });
+
+test('an explicit stack: null on an aggregated, color-grouped bar draws real overlapping (not stacked) bars, with opacity applied', async () => {
+  // bar_layered_transparent.vl.json's own shape: `y: {aggregate: "sum",
+  // field: "people", stack: null}` + `color: {field: "gender"}` +
+  // `opacity: {value: 0.7}` -- two independent bugs. (1) `Plot.barY`/
+  // `barX` call `maybeStackY`/`maybeStackX` INTERNALLY (Plot's own
+  // source), auto-stacking a bare `y` pair regardless of whether this
+  // module's own Plot.stackY wrapper is applied -- an explicit `y1: 0`
+  // pair doesn't survive AT ALL once the value channel is grouped
+  // through `Plot.groupX` (confirmed empirically: Plot's own group
+  // transform silently drops any option key that isn't the position
+  // channel, z/fill/stroke, or one of its own declared `outputs`
+  // reducers), so `y1` has to be declared as its own output reducer,
+  // fed a constant `() => 0` literal accessor as its real per-row input.
+  // (2) `opacity: {value: 0.7}` (a genuine literal, not a per-row field)
+  // was unconditionally stripped from a GROUPED mark's own options by
+  // UNGROUPABLE_STYLE_CHANNELS, a filter meant only for a real per-row
+  // opacity FIELD (which Plot's group transform can't reduce), not a
+  // constant.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {a: 'A', g: 'x', v: 3}, {a: 'A', g: 'y', v: 5},
+      {a: 'B', g: 'x', v: 2}, {a: 'B', g: 'y', v: 4},
+    ]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'a', type: 'ordinal'},
+      y: {aggregate: 'sum', field: 'v', stack: null},
+      color: {field: 'g', type: 'nominal'},
+      opacity: {value: 0.7},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /opacity: 0\.7/);
+  const rects = [...document.querySelectorAll('rect')].filter(r => !r.closest('[class*="swatch"]'));
+  assert.equal(rects.length, 4);
+  for (const r of rects) assert.equal(r.getAttribute('opacity'), '0.7');
+  const byX = {};
+  for (const r of rects) {
+    const x = r.getAttribute('x');
+    (byX[x] ??= []).push(Number(r.getAttribute('y')) + Number(r.getAttribute('height')));
+  }
+  for (const bottoms of Object.values(byX)) {
+    assert.equal(bottoms.length, 2);
+    assert.ok(
+      Math.abs(bottoms[0] - bottoms[1]) < 0.01,
+      `expected both bars at the same x to share the same zero-baseline bottom (overlapping, not stacked), got ${bottoms}`
+    );
+  }
+});
+
+test('a nested-object field path (one or two levels deep) resolves to real per-row data, not undefined', async () => {
+  // bar_layered_weather.vl.json's own shape: `y: {field: "record.low"}`,
+  // `y2: {field: "record.high"}` (one level), and `y: {field: "forecast.
+  // low.low"}` (two levels) -- Plot resolves a bare field-name STRING as
+  // a plain `d[name]` lookup (no path-drilling of its own), so passing a
+  // nested path straight through silently resolves to `undefined` for
+  // every row, and Plot's own per-channel `defined()` row filter then
+  // excludes every row entirely -- "no data plotted" for the whole mark,
+  // not just a wrong value. `vlFlattenOneLevel()` only ever runs for
+  // inline `values` data (not a URL-loaded dataset) and only flattens
+  // one level deep -- insufficient for the two-level `forecast.low.low`
+  // shape either way.
+  const {document, code} = await renderSpec({
+    data: {values: [
+      {id: 0, record: {low: 15, high: 62}, forecast: {low: {low: 35, high: 40}}},
+      {id: 1, record: {low: 23, high: 62}, forecast: {low: {low: 37, high: 42}}},
+    ]},
+    layer: [
+      {mark: 'bar', encoding: {x: {field: 'id', type: 'ordinal'}, y: {field: 'record.low'}, y2: {field: 'record.high'}}},
+      {mark: 'bar', encoding: {x: {field: 'id', type: 'ordinal'}, y: {field: 'forecast.low.low'}, y2: {field: 'forecast.low.high'}}},
+    ],
+  }, {ignoreUnsupported: true});
+  assert.doesNotMatch(code, /"record\.low"/, `expected no raw dotted field name spliced in as-is, got: ${code}`);
+  const rects = marksOf(document, 'rect');
+  assert.equal(rects.length, 4, 'expected 2 rows x 2 layers = 4 real bars, not zero');
+  for (const r of rects) {
+    assert.ok(Number(r.getAttribute('height')) > 0, `expected a real, non-degenerate bar height, got ${r.getAttribute('height')}`);
+  }
+});
+
+test('a bar with both fill and stroke encoding channels draws a real border, not just the fill', async () => {
+  // bar_multi_values_per_categories.vl.json's own shape: `fill: {value:
+  // "steelblue"}` + `stroke: {value: "white"}`, a white border separating
+  // adjacent stacked segments -- commonChannels()'s own `colorDef` OR-
+  // chain (`encoding.color || encoding.fill || encoding.stroke`) only
+  // ever falls back to `stroke` when NEITHER `color` nor `fill` is set,
+  // so a spec giving BOTH silently dropped `stroke` entirely (it never
+  // reached the fallback, since `fill` already won).
+  const {document, code} = await renderSpec({
+    data: {values: [{a: 'A', b: 1}, {a: 'A', b: 2}, {a: 'B', b: 3}]},
+    mark: 'bar',
+    encoding: {
+      x: {field: 'a', type: 'nominal'},
+      y: {field: 'b', type: 'quantitative', stack: true},
+      fill: {value: 'steelblue'},
+      stroke: {value: 'white'},
+    },
+  }, {ignoreUnsupported: true});
+  assert.match(code, /stroke: \(\) => "white"/);
+  const rects = marksOf(document, 'rect');
+  assert.ok(rects.length > 0);
+  for (const r of rects) {
+    assert.equal(r.getAttribute('fill'), 'steelblue');
+    assert.equal(r.getAttribute('stroke'), 'white');
+  }
+});

@@ -1568,7 +1568,15 @@ function renderLine(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
   // other vertically.
   const cx = x ? dodgeAwareAccessor(encoding, scales, 'x') : dims.centerXExpr;
   const cy = y ? dodgeAwareAccessor(encoding, scales, 'y') : dims.centerYExpr;
-  const sortField = x ? encoding.x.field : encoding.y.field;
+  // An explicit `encoding.order` (e.g. connected_scatterplot.vl.json's
+  // own `order: {field: "year"}`, with BOTH x/y quantitative -- a
+  // connected scatterplot deliberately connects points in chronological
+  // order, not ascending-x order) always wins over the domain-position
+  // default -- Vega-Lite's own documented purpose for this channel is
+  // exactly to override the default "sort by the domain axis" connection
+  // order. Previously never read at all, so a connected scatterplot's own
+  // path zigzagged in ascending-x order instead of its real chronology.
+  const sortField = (encoding.order && encoding.order.field) || (x ? encoding.x.field : encoding.y.field);
   const groupField = seriesGroupField(encoding);
   // A `detail` field DISTINCT from whatever seriesGroupField() already
   // picked as the primary groupField (e.g. repeat_child_layer.vl.json's
@@ -1846,7 +1854,10 @@ function renderArea(encoding, scales, dims, dataVar, markProps, ignoreUnsupporte
       : valueFallback;
 
   const groupField = seriesGroupField(encoding);
-  const sortField = encoding[alongChannel] ? encoding[alongChannel].field : encoding[valueChannel].field;
+  // An explicit `encoding.order` always wins over the domain-position
+  // default -- see renderLine()'s own identical fix/comment for why.
+  const sortField =
+    (encoding.order && encoding.order.field) || (encoding[alongChannel] ? encoding[alongChannel].field : encoding[valueChannel].field);
   const sortFieldJson = JSON.stringify(sortField);
   const lines = [];
   const fill = fillExpr(encoding, scales, markColorFallback(markProps, 'fill', DEFAULT_FILL), ignoreUnsupported);

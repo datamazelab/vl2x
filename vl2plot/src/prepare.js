@@ -68,6 +68,89 @@ function hasField(def) {
   return def && typeof def === 'object' && typeof def.field === 'string';
 }
 
+// Splits a field name on every UNESCAPED dot (Vega-Lite's own nested-
+// object-path convention, e.g. bar_layered_weather.vl.json's own
+// `"forecast.low.low"` meaning `datum.forecast.low.low`) into its own
+// real path segments, unescaping an escaped `\.` within a segment back to
+// a literal "." the same way unescapeFieldName() does for the plain,
+// single-segment case. A field with no unescaped dot at all still comes
+// back as a single-element array (its own unescaped name), so callers
+// don't need a separate "is this even nested" branch of their own.
+function splitFieldPath(field) {
+  const segments = [];
+  let current = '';
+  for (let i = 0; i < field.length; i++) {
+    if (field[i] === '\\' && field[i + 1] === '.') {
+      current += '.';
+      i++;
+    } else if (field[i] === '.') {
+      segments.push(current);
+      current = '';
+    } else {
+      current += field[i];
+    }
+  }
+  segments.push(current);
+  return segments;
+}
+
+// A null-safe property-access CHAIN for a nested field path (`segments`,
+// from splitFieldPath() above), e.g. `["forecast", "low", "low"]` ->
+// `((d.forecast == null ? null : d.forecast.low) == null ? null :
+// (d.forecast == null ? null : d.forecast.low).low)` -- mirrors vl2d3's
+// own identical null-safe accessor chain for the same shape (its own
+// prepare.js), so an intermediate level genuinely missing on some row
+// (e.g. this same spec's own `forecast` field, present only on the
+// weekend rows) resolves to `null` rather than throwing "Cannot read
+// properties of undefined."
+function nestedFieldAccessExpr(rowVar, segments) {
+  let expr = fieldRef(rowVar, segments[0]);
+  for (let i = 1; i < segments.length; i++) {
+    expr = `(${expr} == null ? null : ${fieldRef(expr, segments[i])})`;
+  }
+  return expr;
+}
+
+// A field name with a genuinely nested nested-object path (e.g. `"record.
+// low"`, `"forecast.low.low"`) needs a real derived flat column before
+// Plot ever sees it -- Plot resolves a bare field-name STRING as a plain
+// `d[name]` lookup (no path-drilling of its own), so passing a nested
+// path straight through as a channel's own `field` silently resolves to
+// `undefined` for every row: Plot's own per-channel `defined()` row
+// filter (see marks.js's own UNGROUPABLE_STYLE_CHANNELS doc comment)
+// then excludes every row entirely (bar_layered_weather.vl.json's own
+// "no data plotted" symptom). `vlFlattenOneLevel()` (runtime.js) already
+// solves this for INLINE `values` data, but only flattens one level deep
+// and only ever runs for that one data-source shape -- this instead
+// derives the flat column directly, working for a URL-loaded dataset and
+// for arbitrarily deep nesting (this spec's own `forecast.low.low` is two
+// levels) alike. Mirrors applyTimeUnits()'s own shape exactly (a `map()`
+// statement deriving new columns, plus a rewritten encoding whose
+// `field`s all point at real, already-flat names) so nothing downstream
+// ever needs to know a nested path was involved at all.
+export function resolveNestedFieldPaths(encoding, dataVar) {
+  const statements = [];
+  const rewritten = {...encoding};
+  const assigns = [];
+  const seen = new Set();
+  for (const ch of ALL_CHANNELS) {
+    const def = encoding[ch];
+    if (!hasField(def)) continue;
+    const segments = splitFieldPath(def.field);
+    if (segments.length < 2) continue;
+    const outField = segments.join('__');
+    if (!seen.has(outField)) {
+      seen.add(outField);
+      assigns.push(`${JSON.stringify(outField)}: ${nestedFieldAccessExpr('d', segments)}`);
+    }
+    rewritten[ch] = {...def, field: outField};
+  }
+  if (assigns.length) {
+    statements.push(`${dataVar} = ${dataVar}.map(d => ({...d, ${assigns.join(', ')}}));`);
+  }
+  return {statements, encoding: rewritten};
+}
+
 // Rewrites every `timeUnit`-bearing channel into a plain `field` pointing
 // at a newly derived column, returning `{statements, encoding}` --
 // `encoding` has every `timeUnit` key stripped (each channel's `field` now

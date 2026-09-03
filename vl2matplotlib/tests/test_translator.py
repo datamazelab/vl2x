@@ -1426,3 +1426,97 @@ def test_config_line_point_a_top_level_default_not_a_per_mark_property_still_ove
     assert "marker=" in code
     ax = fig.axes[0]
     assert ax.get_lines()[0].get_marker() != "None"
+
+
+def test_an_explicit_stack_null_on_an_aggregated_color_grouped_bar_draws_real_overlapping_bars():
+    # bar_layered_transparent.vl.json's own shape: `y: {aggregate: "sum",
+    # field: "people", stack: null}` + `color: {field: "gender"}` +
+    # `opacity: {value: 0.7}` -- `plan_stacking()`'s own `stack_setting is
+    # False` check couldn't tell an explicit `stack: null` (parses to
+    # Python `None`) apart from the key being absent entirely (`.get()`
+    # also returns `None` then) -- an explicit null silently fell through
+    # to the SAME default "zero" stacking as if `stack` had never been
+    # mentioned, instead of drawing each color's own bar independently
+    # from a shared zero baseline.
+    fig, code = render({
+        "data": {"values": [
+            {"a": "A", "g": "x", "v": 3}, {"a": "A", "g": "y", "v": 5},
+            {"a": "B", "g": "x", "v": 2}, {"a": "B", "g": "y", "v": 4},
+        ]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "a", "type": "ordinal"},
+            "y": {"aggregate": "sum", "field": "v", "stack": None},
+            "color": {"field": "g", "type": "nominal"},
+            "opacity": {"value": 0.7},
+        },
+    }, ignore_unsupported=True)
+    assert "_stack1" not in code and "_stack0" not in code
+    ax = fig.axes[0]
+    bars = ax.patches
+    assert len(bars) == 4
+    for b in bars:
+        assert b.get_y() == pytest.approx(0.0), f"expected every bar to start at the zero baseline, got y={b.get_y()}"
+        assert b.get_alpha() == pytest.approx(0.7)
+
+
+def test_a_bar_with_both_fill_and_stroke_encoding_channels_draws_a_real_border_not_just_the_fill():
+    # bar_multi_values_per_categories.vl.json's own shape: `fill: {value:
+    # "steelblue"}` + `stroke: {value: "white"}`, a white border
+    # separating adjacent stacked segments -- two bugs. (1)
+    # `_color_source()` only ever consulted `encoding.get("color")`, with
+    # no awareness of `fill`/`stroke` at all, so a bar relying solely on
+    # `fill` (no `color` channel) got the flat generic default color
+    # instead. (2) even after (1), `encoding.stroke` was never rendered
+    # as `ax.bar()`'s own `edgecolor=` at all -- a real, independent
+    # border color, not just a fallback for the primary fill.
+    fig, code = render({
+        "data": {"values": [{"a": "A", "b": 1}, {"a": "A", "b": 2}, {"a": "B", "b": 3}]},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "a", "type": "nominal"},
+            "y": {"field": "b", "type": "quantitative", "stack": True},
+            "fill": {"value": "steelblue"},
+            "stroke": {"value": "white"},
+        },
+    }, ignore_unsupported=True)
+    assert "edgecolor=" in code
+    ax = fig.axes[0]
+    bars = ax.patches
+    assert len(bars) > 0
+    for b in bars:
+        assert b.get_facecolor()[:3] == pytest.approx((0.2745, 0.5098, 0.7059), abs=0.01), "expected steelblue fill"
+        assert b.get_edgecolor()[:3] == pytest.approx((1.0, 1.0, 1.0), abs=0.01), "expected white edge"
+
+
+def test_an_explicit_encoding_order_overrides_the_default_domain_position_connection_order():
+    # connected_scatterplot.vl.json's own shape: `x`/`y` both quantitative
+    # (a scatterplot, not a normal domain-ordered line), `order: {field:
+    # "year"}` -- a connected scatterplot deliberately connects points in
+    # chronological order, not ascending-x order. `order` was never read
+    # at all, so the path zigzagged in ascending-x order regardless of
+    # the real chronology.
+    fig, code = render({
+        "data": {"values": [
+            {"miles": 10, "gas": 1, "year": 2003},
+            {"miles": 5, "gas": 3, "year": 2001},
+            {"miles": 8, "gas": 2, "year": 2002},
+        ]},
+        "mark": {"type": "line", "point": True},
+        "encoding": {
+            "x": {"field": "miles", "type": "quantitative"},
+            "y": {"field": "gas", "type": "quantitative"},
+            "order": {"field": "year"},
+        },
+    }, ignore_unsupported=True)
+    assert 'sort_values("year")' in code
+    assert 'sort_values("miles")' not in code
+    ax = fig.axes[0]
+    xdata = list(ax.get_lines()[0].get_xdata())
+    ydata = list(ax.get_lines()[0].get_ydata())
+    # In chronological (year) order the path is 2001 (miles=5) -> 2002
+    # (miles=8) -> 2003 (miles=10, an increasing x sequence that a WRONG
+    # ascending-x sort would coincidentally also produce for this data),
+    # so this also checks the real y sequence (3 -> 2 -> 1, decreasing).
+    assert xdata == [5, 8, 10]
+    assert ydata == [3, 2, 1]

@@ -1072,6 +1072,17 @@ plan_explicit_aggregate <- function(encoding, agg_keys, group_keys, var_name, ig
     paste0(render_name(unescape_field_path(out)), " = ", expr)
   }, character(1))
 
+  # Two DIFFERENT channels can resolve to the identical underlying field
+  # (e.g. layer_bar_labels_grey.vl.json's own text layer: the wrapper's
+  # own `y: {field: "Major Genre"}` plus this layer's own `text: {field:
+  # "Major Genre"}`, inherited alongside it) -- the loop above pushes one
+  # `group_field_refs` entry per CHANNEL, with no awareness that two of
+  # them might name the same column, so `dplyr::group_by()` previously
+  # got the identical backtick-quoted column reference twice
+  # (`` `Major Genre`, `Major Genre` ``), a real dplyr error ("Column name
+  # ... must not be duplicated"), not just redundant grouping.
+  group_field_refs <- unique(group_field_refs)
+
   stmts <- notes
   if (length(pre_assigns) > 0) {
     stmts <- c(stmts, sprintf("%s <- dplyr::mutate(%s, %s)", var_name, var_name, paste(pre_assigns, collapse = ", ")))

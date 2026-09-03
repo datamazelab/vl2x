@@ -142,7 +142,20 @@ def plan_stacking(mark, encoding: dict) -> dict | None:
         return None
 
     stack_setting = encoding[pos_channel].get("stack")
-    if stack_setting is False:
+    # `stack: null` (e.g. bar_layered_transparent.vl.json's own `y:
+    # {aggregate: "sum", field: "people", stack: null}`, paired with a
+    # `color` field and `opacity: {value: 0.7}` -- meant to draw fully
+    # overlapping, translucent bars) parses to Python `None`, the exact
+    # same value `.get("stack")` returns when the key is simply ABSENT
+    # (Vega-Lite's own real default, which for bar/area DOES stack) --
+    # `stack_setting is False` alone can't tell an explicit `null` apart
+    # from no setting at all, so an explicit `null` silently fell through
+    # to the same default "zero" stacking as if `stack` had never been
+    # mentioned. `"stack" in encoding[pos_channel]` distinguishes them:
+    # the key is genuinely present (with a null value) only for a real
+    # explicit override.
+    stack_explicitly_none = stack_setting is None and "stack" in encoding[pos_channel]
+    if stack_setting is False or stack_explicitly_none:
         return None
     if explicit_only and stack_setting is None:
         return None

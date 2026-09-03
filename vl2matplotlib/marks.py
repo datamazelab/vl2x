@@ -127,7 +127,16 @@ def _color_source(
     evaluated; a `param`-keyed one (a selection, which has nothing bound in
     a static image) falls back to the base value too, the same convention
     every other selection-driven encoding in this project already uses."""
-    color_def = encoding.get("color")
+    # `color` is Vega-Lite's own generic channel name, but `fill`/`stroke`
+    # (a bar/area's natural "which one is the primary color" property, or
+    # an unfilled point's own border) are equally valid ways to set the
+    # SAME thing when `color` itself is absent -- e.g.
+    # bar_multi_values_per_categories.vl.json's own `fill: {value:
+    # "steelblue"}`, no `color` channel at all, previously fell straight
+    # through to the flat default (`fallback`) since only `encoding.get
+    # ("color")` was ever consulted here. Mirrors vl2plot's own identical
+    # `color || fill || stroke` convention.
+    color_def = encoding.get("color") or encoding.get("fill") or encoding.get("stroke")
     if isinstance(color_def, dict) and color_def.get("field") and not is_quantitative(color_def):
         return color_def["field"], fallback
     if isinstance(color_def, dict) and "condition" in color_def:
@@ -831,6 +840,26 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         if not _legend_hidden(color_def):
             colorbar_stmt = f"plt.colorbar(plt.cm.ScalarMappable(norm={norm_var}, cmap={cmap_var}), ax={ax_var})"
 
+    # `encoding.stroke` (as opposed to it merely being `_color_source()`'s
+    # own FALLBACK primary color when `color`/`fill` are both absent --
+    # see its own updated docstring above) is a real, independent BORDER
+    # color once a `color`/`fill` channel is ALSO present -- e.g.
+    # bar_multi_values_per_categories.vl.json's own `fill: {value:
+    # "steelblue"}` + `stroke: {value: "white"}`, a white border
+    # separating adjacent stacked segments. `ax.bar()`'s own `edgecolor=`
+    # is the direct equivalent -- previously never emitted at all here,
+    # since nothing in this function ever looked at `encoding.stroke`
+    # except as a `_color_source()` fallback for the primary color.
+    stroke_def = encoding.get("stroke")
+    stroke_is_primary_color = not encoding.get("color") and not encoding.get("fill")
+    edgecolor_expr = None
+    if not stroke_is_primary_color:
+        if isinstance(stroke_def, dict) and "value" in stroke_def:
+            edgecolor_expr = format_color_value(stroke_def["value"])
+        elif isinstance(mark_props.get("stroke"), str):
+            edgecolor_expr = format_color_value(mark_props["stroke"])
+    edgecolor_kw = f", edgecolor={edgecolor_expr}" if edgecolor_expr else ""
+
     def draw(rows, color, label):
         r_cat = cat_col if rows == data_var else cat_col.replace(data_var, rows)
         r_height = height_expr if rows == data_var else height_expr.replace(data_var, rows)
@@ -840,7 +869,7 @@ def _render_bar(encoding, mark_props, data_var, ax_var, ignore_unsupported) -> l
         r_color = continuous_color_col if continuous_color_col is not None else color
         return [
             f"{ax_var}.{call}({r_cat}, {r_height}, {length_kw}={r_width}, {bottom_kw}={r_base}, "
-            f"color={r_color}, alpha={alpha}{label_kw}{align_kw}{transform_kw})"
+            f"color={r_color}, alpha={alpha}{label_kw}{align_kw}{transform_kw}{edgecolor_kw})"
         ]
 
     stmts += _grouped_or_single(encoding, mark_props, data_var, draw, stmts=stmts)
@@ -1537,7 +1566,10 @@ def _render_trail(encoding, mark_props, data_var, ax_var, ignore_unsupported) ->
     if scale_type(y_def) == "temporal":
         stmts.append(f"{ax_var}.yaxis_date()")
 
-    x_field_for_sort = x_def.get("field")
+    # An explicit `encoding.order` always wins over the domain-position
+    # default -- see `_render_line_or_area()`'s own identical fix/comment.
+    order_def = encoding.get("order")
+    x_field_for_sort = (order_def.get("field") if isinstance(order_def, dict) else None) or x_def.get("field")
     alpha = _opacity_value(encoding, mark_props)
     size_def = encoding.get("size")
     width_expr = "2"
@@ -1652,7 +1684,16 @@ def _render_line_or_area(is_area: bool):
             return is_quantitative(d) and not d.get("timeUnit") and not d.get("_was_timeunit")
 
         horizontal = _is_value_channel(x_def) and not _is_value_channel(y_def)
-        domain_field_for_sort = y_def.get("field") if horizontal else x_def.get("field")
+        # An explicit `encoding.order` (e.g. connected_scatterplot.vl.json's
+        # own `order: {field: "year"}`, with BOTH x/y quantitative -- a
+        # connected scatterplot deliberately connects points in
+        # chronological order, not ascending-x order) always wins over the
+        # domain-position default. Previously never read at all, so a
+        # connected scatterplot's own path zigzagged in ascending-x order
+        # instead of its real chronology.
+        order_def = encoding.get("order")
+        order_field = order_def.get("field") if isinstance(order_def, dict) else None
+        domain_field_for_sort = order_field or (y_def.get("field") if horizontal else x_def.get("field"))
         alpha = _opacity_value(encoding, mark_props)
         value_channel = "x" if horizontal else "y"
         companion = encoding.get(f"{value_channel}2")

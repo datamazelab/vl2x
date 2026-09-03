@@ -503,3 +503,69 @@ test_that("config.line.point (a top-level default, not a per-mark property) over
   expect_equal(nrow(point_data), 2, info = "expected one point per aggregated x-group, not one per raw row")
   expect_true(all(point_data$colour == "darkred"))
 })
+
+test_that("two different channels resolving to the same field don't duplicate a dplyr::group_by() column", {
+  # layer_bar_labels_grey.vl.json's own shape: a wrapper-level `y: {field:
+  # "Major Genre"}` inherited by a text layer whose OWN `text: {field:
+  # "Major Genre"}` names the identical column -- plan_explicit_
+  # aggregate()'s own groupby-field loop previously pushed one
+  # `group_field_refs` entry per CHANNEL with no awareness that two
+  # channels can name the same field, so `dplyr::group_by()` got the
+  # identical backtick-quoted column reference twice -- a real dplyr
+  # error ("Column name ... must not be duplicated"), not just redundant
+  # grouping.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"g": "A", "v": 1}, {"g": "A", "v": 2}, {"g": "B", "v": 3}
+    ]},
+    "encoding": {"y": {"field": "g", "type": "nominal"}},
+    "layer": [
+      {"mark": "bar", "encoding": {"x": {"aggregate": "mean", "field": "v"}}},
+      {"mark": {"type": "text", "align": "left", "x": 5}, "encoding": {"text": {"field": "g"}, "detail": {"aggregate": "count"}}}
+    ]
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_false(grepl("group_by\\([^)]*`g`[^)]*,[^)]*`g`", code), info = "expected \"g\" grouped by only once")
+  r <- run_spec(spec)
+  expect_equal(length(r$built$data), 2)
+  expect_equal(nrow(r$built$data[[2]]), 2, info = "expected one text label per distinct group value")
+})
+
+test_that("an explicit encoding.order overrides geom_line()'s own default ascending-x connection order", {
+  # connected_scatterplot.vl.json's own shape: `x`/`y` both quantitative
+  # (a scatterplot, not a normal domain-ordered line), `order: {field:
+  # "year"}` -- a connected scatterplot deliberately connects points in
+  # chronological order, not ascending-x order. Two things needed fixing:
+  # (1) `order` was never read at all, and (2) even sorting the data by
+  # it alone wouldn't be enough -- `geom_line()` ALWAYS re-sorts by its
+  # own x aesthetic internally, discarding any other row order, so this
+  # also needs `geom_path()` (which draws in the data's own existing row
+  # order) instead.
+  spec <- spec_from_json('{
+    "data": {"values": [
+      {"miles": 10, "gas": 1, "year": 2003},
+      {"miles": 5, "gas": 3, "year": 2001},
+      {"miles": 8, "gas": 2, "year": 2002}
+    ]},
+    "mark": {"type": "line", "point": true},
+    "encoding": {
+      "x": {"field": "miles", "type": "quantitative"},
+      "y": {"field": "gas", "type": "quantitative"},
+      "order": {"field": "year"}
+    }
+  }')
+  code <- vegalite_to_ggplot(spec, ignore_unsupported = TRUE)
+  expect_match(code, "dplyr::arrange\\(chart_data, year\\)")
+  expect_match(code, "ggplot2::geom_path")
+  expect_false(grepl("ggplot2::geom_line\\(", code))
+  r <- run_spec(spec)
+  line_data <- r$built$data[[1]]
+  # In chronological (year) order the path is 2001 (miles=5) -> 2002
+  # (miles=8) -> 2003 (miles=10), a monotonically INCREASING x sequence
+  # along the drawn path -- a wrong ascending-x sort would coincidentally
+  # produce the same order for this data, so this also checks the real y
+  # sequence (3 -> 2 -> 1, decreasing) isn't re-sorted back to ascending-x
+  # by the geom itself.
+  expect_equal(line_data$x, c(5, 8, 10))
+  expect_equal(line_data$y, c(3, 2, 1))
+})
